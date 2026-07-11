@@ -3584,8 +3584,9 @@ func (b *Bot) showUsersView(ctx context.Context, userID int64, page int, search 
 	}
 	search = strings.TrimSpace(search)
 	b.setUserSearch(userID, search)
+	status := b.getUserStatus(userID)
 	const pageSize = 8
-	items, total, err := cli.ListUsersEx(ctx, page+1, pageSize, sub2api.UserListFilter{Search: search})
+	items, total, err := cli.ListUsersEx(ctx, page+1, pageSize, sub2api.UserListFilter{Search: search, Status: status})
 	if err != nil {
 		return "用户列表失败: " + err.Error(), manageComponents()
 	}
@@ -3593,6 +3594,9 @@ func (b *Bot) showUsersView(ctx context.Context, userID int64, page int, search 
 	bld.WriteString("**实例用户**（Sub2API）\n")
 	if search != "" {
 		fmt.Fprintf(&bld, "搜索: `%s`\n", truncate(search, 40))
+	}
+	if status != "" {
+		fmt.Fprintf(&bld, "状态筛选: `%s`\n", status)
 	}
 	fmt.Fprintf(&bld, "第 %d 页 · 共 `%d`\n点选用户查看详情\n\n", page+1, total)
 	opts := make([]discord.SelectOpt, 0, len(items))
@@ -3636,6 +3640,25 @@ func (b *Bot) showUsersView(ctx context.Context, userID int64, page int, search 
 	if len(nav) > 0 {
 		comps = append(comps, discord.ActionRow(nav...))
 	}
+	stRow := []discord.Component{}
+	for _, st := range []struct {
+		label, val string
+	}{
+		{"全部", ""},
+		{"active", "active"},
+		{"disabled", "disabled"},
+	} {
+		lab := st.label
+		if st.val == status || (st.val == "" && status == "") {
+			lab = "· " + lab
+		}
+		cb := "mgr_ust"
+		if st.val != "" {
+			cb = "mgr_ust:" + st.val
+		}
+		stRow = append(stRow, discord.Button(lab, cb, 2))
+	}
+	comps = append(comps, discord.ActionRow(stRow...))
 	action := []discord.Component{discord.Button("🔎 搜索", "mgr_user_search", 2)}
 	if search != "" {
 		action = append(action, discord.Button("清除搜索", "mgr_user_clear", 2))

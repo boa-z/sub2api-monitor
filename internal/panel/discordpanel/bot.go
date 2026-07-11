@@ -46,6 +46,7 @@ type session struct {
 	BrowsePage   int
 	// UserSearch/GroupSearch remember last instance user/group list query.
 	UserSearch  string
+	UserStatus  string
 	GroupSearch string
 }
 
@@ -493,6 +494,17 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		text, comps := b.showUsersView(ctx, uid, 0, "")
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_ust" || strings.HasPrefix(data, "mgr_ust:"):
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
+		}
+		st := ""
+		if strings.HasPrefix(data, "mgr_ust:") {
+			st = strings.TrimPrefix(data, "mgr_ust:")
+		}
+		b.setUserStatus(uid, st)
+		text, comps := b.showUsersView(ctx, uid, 0, b.getUserSearch(uid))
 		return b.update(ctx, it, text, comps)
 	case strings.HasPrefix(data, "mgr_user:"):
 		if !b.canOpsRead(uid) {
@@ -1142,6 +1154,28 @@ func (b *Bot) getUserSearch(userID int64) string {
 		return ""
 	}
 	return s.UserSearch
+}
+
+func (b *Bot) setUserStatus(userID int64, status string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.UserStatus = strings.ToLower(strings.TrimSpace(status))
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getUserStatus(userID int64) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return ""
+	}
+	return s.UserStatus
 }
 
 func (b *Bot) setGroupSearch(userID int64, search string) {

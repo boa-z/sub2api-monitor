@@ -1032,8 +1032,9 @@ func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page i
 	}
 	search = strings.TrimSpace(search)
 	b.setUserSearch(userID, search)
+	status := b.getUserStatus(userID)
 	const pageSize = 8
-	items, total, err := cli.ListUsersEx(ctx, page+1, pageSize, sub2api.UserListFilter{Search: search})
+	items, total, err := cli.ListUsersEx(ctx, page+1, pageSize, sub2api.UserListFilter{Search: search, Status: status})
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "用户列表失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 	}
@@ -1041,6 +1042,9 @@ func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page i
 	bld.WriteString(telegram.Bold("实例用户") + "（Sub2API）\n")
 	if search != "" {
 		fmt.Fprintf(&bld, "搜索: %s\n", telegram.Code(truncateRunes(search, 40)))
+	}
+	if status != "" {
+		fmt.Fprintf(&bld, "状态筛选: %s\n", telegram.Code(status))
 	}
 	fmt.Fprintf(&bld, "第 %d 页 · 共 %s\n点用户查看详情\n\n", page+1, telegram.Code(itoa(total)))
 	rows := [][]telegram.InlineKeyboardButton{}
@@ -1085,6 +1089,25 @@ func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page i
 	if len(nav) > 0 {
 		rows = append(rows, nav)
 	}
+	stRow := []telegram.InlineKeyboardButton{}
+	for _, st := range []struct {
+		label, val string
+	}{
+		{"全部", ""},
+		{"active", "active"},
+		{"disabled", "disabled"},
+	} {
+		lab := st.label
+		if st.val == status || (st.val == "" && status == "") {
+			lab = "· " + lab
+		}
+		cb := "mgr_ust"
+		if st.val != "" {
+			cb = "mgr_ust:" + st.val
+		}
+		stRow = append(stRow, telegram.Btn(lab, cb))
+	}
+	rows = append(rows, stRow)
 	action := []telegram.InlineKeyboardButton{telegram.Btn("🔎 搜索", "mgr_user_search")}
 	if search != "" {
 		action = append(action, telegram.Btn("清除搜索", "mgr_user_clear"))

@@ -46,6 +46,7 @@ type session struct {
 	BrowsePage   int
 	// UserSearch/GroupSearch remember last instance user/group list query.
 	UserSearch  string
+	UserStatus  string
 	GroupSearch string
 }
 
@@ -518,6 +519,16 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return nil
 		}
 		return b.showUsers(ctx, chatID, msgID, cq.From.ID, 0, "")
+	case data == "mgr_ust" || strings.HasPrefix(data, "mgr_ust:"):
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		st := ""
+		if strings.HasPrefix(data, "mgr_ust:") {
+			st = strings.TrimPrefix(data, "mgr_ust:")
+		}
+		b.setUserStatus(cq.From.ID, st)
+		return b.showUsers(ctx, chatID, msgID, cq.From.ID, 0, b.getUserSearch(cq.From.ID))
 	case strings.HasPrefix(data, "mgr_user:"):
 		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
@@ -2665,6 +2676,28 @@ func (b *Bot) getUserSearch(userID int64) string {
 		return ""
 	}
 	return s.UserSearch
+}
+
+func (b *Bot) setUserStatus(userID int64, status string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.UserStatus = strings.ToLower(strings.TrimSpace(status))
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getUserStatus(userID int64) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return ""
+	}
+	return s.UserStatus
 }
 
 func (b *Bot) setGroupSearch(userID int64, search string) {

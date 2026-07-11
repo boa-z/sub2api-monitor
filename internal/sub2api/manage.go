@@ -187,6 +187,9 @@ func (c *Client) ListUsersEx(ctx context.Context, page, pageSize int, f UserList
 	if pageSize <= 0 {
 		pageSize = 20
 	}
+	f.Search = strings.TrimSpace(f.Search)
+	f.Status = strings.ToLower(strings.TrimSpace(f.Status))
+	f.Role = strings.ToLower(strings.TrimSpace(f.Role))
 	q := url.Values{}
 	q.Set("page", strconv.Itoa(page))
 	q.Set("page_size", strconv.Itoa(pageSize))
@@ -209,14 +212,21 @@ func (c *Client) ListUsersEx(ctx context.Context, page, pageSize int, f UserList
 	if err != nil {
 		return nil, 0, err
 	}
-	if f.Search == "" {
+	needLocal := false
+	if f.Search != "" && !listLooksUserSearchAware(items, f.Search) {
+		needLocal = true
+	}
+	if f.Status != "" && !listLooksUserStatusAware(items, f.Status) {
+		needLocal = true
+	}
+	if f.Role != "" && !listLooksUserRoleAware(items, f.Role) {
+		needLocal = true
+	}
+	if !needLocal {
 		return items, total, nil
 	}
-	if listLooksUserSearchAware(items, f.Search) {
-		return items, total, nil
-	}
-	// API ignored search — limited client-side scan.
-	return c.searchUsersLocal(ctx, page, pageSize, f.Search)
+	// API ignored filters — limited client-side scan.
+	return c.filterUsersLocal(ctx, page, pageSize, f)
 }
 
 // GetUser fetches one instance user. Tries detail endpoint, then list/search fallback.
@@ -341,7 +351,44 @@ func listLooksGroupSearchAware(items []Group, q string) bool {
 	return true
 }
 
-func (c *Client) searchUsersLocal(ctx context.Context, page, pageSize int, q string) ([]User, int64, error) {
+func userMatchesFilter(u User, f UserListFilter) bool {
+	if f.Search != "" && !userMatchesSearch(u, f.Search) {
+		return false
+	}
+	if f.Status != "" && !strings.EqualFold(strings.TrimSpace(u.Status), f.Status) {
+		return false
+	}
+	if f.Role != "" && !strings.EqualFold(strings.TrimSpace(u.Role), f.Role) {
+		return false
+	}
+	return true
+}
+
+func listLooksUserStatusAware(items []User, status string) bool {
+	if len(items) == 0 {
+		return true
+	}
+	for _, u := range items {
+		if !strings.EqualFold(strings.TrimSpace(u.Status), status) {
+			return false
+		}
+	}
+	return true
+}
+
+func listLooksUserRoleAware(items []User, role string) bool {
+	if len(items) == 0 {
+		return true
+	}
+	for _, u := range items {
+		if !strings.EqualFold(strings.TrimSpace(u.Role), role) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Client) filterUsersLocal(ctx context.Context, page, pageSize int, f UserListFilter) ([]User, int64, error) {
 	if page <= 0 {
 		page = 1
 	}
@@ -356,7 +403,7 @@ func (c *Client) searchUsersLocal(ctx context.Context, page, pageSize int, q str
 			return nil, 0, err
 		}
 		for _, u := range items {
-			if userMatchesSearch(u, q) {
+			if userMatchesFilter(u, f) {
 				matched = append(matched, u)
 			}
 		}
@@ -374,6 +421,11 @@ func (c *Client) searchUsersLocal(ctx context.Context, page, pageSize int, q str
 		end = len(matched)
 	}
 	return matched[start:end], total, nil
+}
+
+// searchUsersLocal keeps a thin alias for tests/callers that only pass keyword.
+func (c *Client) searchUsersLocal(ctx context.Context, page, pageSize int, q string) ([]User, int64, error) {
+	return c.filterUsersLocal(ctx, page, pageSize, UserListFilter{Search: q})
 }
 
 func (c *Client) searchGroupsLocal(ctx context.Context, page, pageSize int, q string) ([]Group, int64, error) {
