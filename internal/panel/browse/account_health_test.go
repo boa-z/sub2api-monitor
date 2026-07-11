@@ -138,3 +138,12 @@ func TestDashboardTriage(t *testing.T) {
 		t.Fatalf("error wins: %s %s %s", ops, bad, data)
 	}
 }
+
+func TestPlatformProblemScore(t *testing.T) {
+	if PlatformProblemScore(1, 0) <= PlatformProblemScore(0, 9) {
+		t.Fatal("errors should outrank pure rl")
+	}
+	if PlatformProblemScore(0, 0) != 0 {
+		t.Fatal("healthy")
+	}
+}

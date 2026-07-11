@@ -296,3 +296,15 @@ func DashboardTriage(st *sub2api.DashboardStats) (opsLabel, badLabel, badData st
 	}
 	return opsLabel, badLabel, badData, false
 }
+
+// PlatformProblemScore ranks a platform bucket for ops jump buttons.
+// Higher means more urgent (errors weighted over rate limits).
+func PlatformProblemScore(errN, rlN int) int {
+	if errN < 0 {
+		errN = 0
+	}
+	if rlN < 0 {
+		rlN = 0
+	}
+	return errN*10 + rlN
+}

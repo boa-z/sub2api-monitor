@@ -2004,19 +2004,48 @@ func (b *Bot) showAvailabilityView(ctx context.Context, userID int64) (string, [
 			discord.Button("« 主面板", "home", 2),
 		),
 	}
+	// keep account buttons to one row so platform jumps + footer fit Discord 5-row limit
 	var row []discord.Component
 	for i, st := range bad {
-		if i >= 4 || st.AccountID <= 0 {
+		if i >= 2 || st.AccountID <= 0 {
 			break
 		}
 		row = append(row, discord.Button(fmt.Sprintf("管理 #%d", st.AccountID), fmt.Sprintf("mgr_acc:%d", st.AccountID), 1))
-		if len(row) == 2 {
-			comps = append(comps, discord.ActionRow(row...))
-			row = nil
-		}
 	}
 	if len(row) > 0 {
 		comps = append(comps, discord.ActionRow(row...))
+	}
+	type platJump struct {
+		key   string
+		score int
+	}
+	var pj []platJump
+	for _, p := range plats {
+		if strings.HasPrefix(p.k, "g:") {
+			continue // group synthetic keys are not account browser platform filters
+		}
+		score := browse.PlatformProblemScore(p.v.ErrorNum(), p.v.RateLimitNum())
+		if score <= 0 {
+			continue
+		}
+		pj = append(pj, platJump{p.k, score})
+	}
+	sort.Slice(pj, func(i, j int) bool {
+		if pj[i].score != pj[j].score {
+			return pj[i].score > pj[j].score
+		}
+		return pj[i].key < pj[j].key
+	})
+	var platBtns []discord.Component
+	for i, p := range pj {
+		if i >= 3 {
+			break
+		}
+		label := truncate(p.key, 10)
+		platBtns = append(platBtns, discord.Button("🏷 "+label, "mgr_browse:"+browse.Token("plat:"+p.key)+":0", 2))
+	}
+	if len(platBtns) > 0 {
+		comps = append(comps, discord.ActionRow(platBtns...))
 	}
 	badJumpLabel, badJumpData := "异常账号", "ops_badacc:error:0"
 	switch {

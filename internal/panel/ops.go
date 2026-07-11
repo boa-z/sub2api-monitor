@@ -416,6 +416,36 @@ func (b *Bot) showAvailability(ctx context.Context, chatID, msgID, userID int64)
 	if len(accRow) > 0 {
 		rows = append(rows, accRow)
 	}
+	// platforms with errors/rate-limits → account browser platform filter
+	type platJump struct {
+		key   string
+		score int
+	}
+	var pj []platJump
+	for _, r := range plats {
+		score := browse.PlatformProblemScore(r.err, r.rl)
+		if score <= 0 {
+			continue
+		}
+		pj = append(pj, platJump{r.key, score})
+	}
+	sort.Slice(pj, func(i, j int) bool {
+		if pj[i].score != pj[j].score {
+			return pj[i].score > pj[j].score
+		}
+		return pj[i].key < pj[j].key
+	})
+	var platRow []telegram.InlineKeyboardButton
+	for i, p := range pj {
+		if i >= 3 {
+			break
+		}
+		label := truncateRunes(p.key, 10)
+		platRow = append(platRow, telegram.Btn("🏷 "+label, "mgr_browse:plat|"+p.key+":0"))
+	}
+	if len(platRow) > 0 {
+		rows = append(rows, platRow)
+	}
 	// count modes for triage shortcuts
 	nErr, nRL, nOL, nUnav := 0, 0, 0, 0
 	for _, st := range bad {
