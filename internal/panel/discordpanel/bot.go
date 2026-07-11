@@ -35,6 +35,9 @@ type session struct {
 	UpdatedAt time.Time
 	AccountID int64
 	Window    string
+	// OpsErrorKind/Page remember last errors view for resolve refresh.
+	OpsErrorKind string
+	OpsErrorPage int
 }
 
 // Bot is the Discord interactive panel.
@@ -173,7 +176,7 @@ func (b *Bot) handleCommand(ctx context.Context, it *discord.Interaction, uid in
 		if !b.isAdmin(uid) {
 			return b.respond(ctx, it, "⛔ 运维视图仅管理员可用。", b.homeComponents(uid), true)
 		}
-		return b.respond(ctx, it, opsMenuText(), opsComponents(), false)
+		return b.respond(ctx, it, b.opsMenuText(ctx, uid), opsComponents(), false)
 	case "manage":
 		if !b.isAdmin(uid) {
 			return b.respond(ctx, it, "⛔ 账号管理仅管理员可用。", b.homeComponents(uid), true)
@@ -291,7 +294,7 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, opsMenuText(), opsComponents())
+		return b.update(ctx, it, b.opsMenuText(ctx, uid), opsComponents())
 	case data == "ops_dash":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -439,8 +442,9 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
+		_ = b.update(ctx, it, "⏳ 批量清错处理中…", nil)
 		text, comps := b.bulkAccountActionExecute(ctx, uid, "clear_err")
-		return b.update(ctx, it, text, comps)
+		return b.followupEdit(ctx, it, text, comps)
 	case data == "mgr_bulk_recover":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -451,8 +455,9 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
+		_ = b.update(ctx, it, "⏳ 批量恢复处理中…", nil)
 		text, comps := b.bulkAccountActionExecute(ctx, uid, "recover")
-		return b.update(ctx, it, text, comps)
+		return b.followupEdit(ctx, it, text, comps)
 	case data == "mgr_bulk_sched_on":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -463,8 +468,9 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
+		_ = b.update(ctx, it, "⏳ 批量开调度处理中…", nil)
 		text, comps := b.bulkAccountActionExecute(ctx, uid, "sched_on")
-		return b.update(ctx, it, text, comps)
+		return b.followupEdit(ctx, it, text, comps)
 	case data == "mgr_bulk_clear_rl":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -475,8 +481,9 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
+		_ = b.update(ctx, it, "⏳ 批量清限速处理中…", nil)
 		text, comps := b.bulkAccountActionExecute(ctx, uid, "clear_rl")
-		return b.update(ctx, it, text, comps)
+		return b.followupEdit(ctx, it, text, comps)
 	case data == "mgr_bulk_heal":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -487,8 +494,9 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
+		_ = b.update(ctx, it, "⏳ 批量一键修复处理中…", nil)
 		text, comps := b.bulkAccountActionExecute(ctx, uid, "heal")
-		return b.update(ctx, it, text, comps)
+		return b.followupEdit(ctx, it, text, comps)
 	case data == "mgr_search":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -672,7 +680,46 @@ func (b *Bot) roleLabel(userID int64) string {
 func (b *Bot) setAwait(userID int64, kind string, accountID int64, window string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.sessions[userID] = &session{Await: kind, UpdatedAt: time.Now(), AccountID: accountID, Window: window}
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.Await = kind
+	s.UpdatedAt = time.Now()
+	s.AccountID = accountID
+	s.Window = window
+}
+
+func (b *Bot) setOpsErrorView(userID int64, kind string, page int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.OpsErrorKind = kind
+	s.OpsErrorPage = page
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getOpsErrorView(userID int64) (kind string, page int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return "all", 0
+	}
+	kind = s.OpsErrorKind
+	page = s.OpsErrorPage
+	if kind == "" {
+		kind = "all"
+	}
+	if page < 0 {
+		page = 0
+	}
+	return kind, page
 }
 
 func (b *Bot) userClient(userID int64, timeout time.Duration) (*sub2api.Client, *userstore.Profile, error) {

@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -548,5 +549,16 @@ func TestWriteErrorItemsLiveHealButtons(t *testing.T) {
 		if !ids[want] {
 			t.Fatalf("missing %s in %+v", want, ids)
 		}
+	}
+}
+
+func TestOpsMenuTextContainsHints(t *testing.T) {
+	b, _ := testBot(t)
+	text := b.opsMenuText(context.Background(), 1001)
+	if !strings.Contains(text, "运维视图") {
+		t.Fatal(text)
+	}
+	if !strings.Contains(text, "异常账号") {
+		t.Fatal(text)
 	}
 }

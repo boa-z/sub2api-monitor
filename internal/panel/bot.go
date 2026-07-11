@@ -216,7 +216,7 @@ func (b *Bot) handleMessage(ctx context.Context, m *telegram.InMessage) error {
 		if !b.isAdmin(m.From.ID) {
 			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 运维视图仅管理员可用。", b.homeKeyboardFor(m.From.ID))
 		}
-		return b.tg.SendChat(ctx, m.Chat.ID, b.opsMenuText(), opsKeyboard())
+		return b.tg.SendChat(ctx, m.Chat.ID, b.opsMenuText(ctx, m.From.ID), opsKeyboard())
 	case cmd == "/manage" || cmd == "/mgr" || cmd == "管理":
 		if !b.isAdmin(m.From.ID) {
 			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 账号管理仅管理员可用。", b.homeKeyboardFor(m.From.ID))
@@ -279,7 +279,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
-		return b.showOpsMenu(ctx, chatID, msgID)
+		return b.showOpsMenu(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_dash":
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil

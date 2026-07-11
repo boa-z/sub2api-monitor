@@ -57,24 +57,46 @@ func opsViewKeyboard(refreshData string) *telegram.InlineKeyboardMarkup {
 	}
 }
 
-func (b *Bot) opsMenuText() string {
-	return telegram.Bold("运维视图") + `
+// opsMenuText builds the ops hub text; when cli is available includes a live health line.
+func (b *Bot) opsMenuText(ctx context.Context, userID int64) string {
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold("运维视图") + "\n\n")
+	// live snapshot (best-effort, never blocks the menu)
+	if cli, _, err := b.userClient(userID, 6*time.Second); err == nil && cli != nil {
+		if st, err := cli.GetDashboardStats(ctx); err == nil && st != nil {
+			fmt.Fprintf(&bld, "健康: 正常 %s · 异常 %s · 限速 %s · 过载 %s\n",
+				telegram.Code(itoa(st.NormalAccounts)),
+				telegram.Code(itoa(st.ErrorAccounts)),
+				telegram.Code(itoa(st.RatelimitAccounts)),
+				telegram.Code(itoa(st.OverloadAccounts)))
+			if st.RPM > 0 {
+				fmt.Fprintf(&bld, "RPM %s · 今日请求 %s\n",
+					telegram.Code(fmt.Sprintf("%.1f", st.RPM)),
+					telegram.Code(itoa(st.TodayRequests)))
+			}
+			if rt, err := cli.GetRealtimeDashboard(ctx); err == nil && rt != nil {
+				fmt.Fprintf(&bld, "实时: 活跃 %s · 错误率 %s%%\n",
+					telegram.Code(itoa(rt.ActiveRequests)),
+					telegram.Code(fmt.Sprintf("%.2f", rt.ErrorRate)))
+			}
+			bld.WriteString("\n")
+		}
+	}
+	bld.WriteString(`基于当前连接的 Admin API：
 
-基于你当前连接的 Sub2API Admin API，只读查看：
-
-• 看板 — 账号/用量/实时 RPM
+• 看板 — 账号/用量/实时流量
 • 可用性 — 平台/分组可用率
 • 告警 — 内置 alert-events
-• 错误 — 请求/上游错误（可标记已解决）
-• 并发 — 账号/分组负载
-• 渠道探测 — channel monitors
-• 异常账号 — status=error 列表
+• 错误 — 请求/上游（分页·解决·修复·实时）
+• 并发 / 渠道探测
+• 异常账号 — error/限速/停调度/汇总（分页·管理/实时/修复）
 
-点下方按钮查看；数据实时拉取。`
+点下方按钮查看；数据实时拉取。`)
+	return bld.String()
 }
 
-func (b *Bot) showOpsMenu(ctx context.Context, chatID, msgID int64) error {
-	return b.editOrSend(ctx, chatID, msgID, b.opsMenuText(), opsKeyboard())
+func (b *Bot) showOpsMenu(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.editOrSend(ctx, chatID, msgID, b.opsMenuText(ctx, userID), opsKeyboard())
 }
 
 func (b *Bot) showDashboard(ctx context.Context, chatID, msgID, userID int64) error {

@@ -637,12 +637,31 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 	if len(items) == 0 {
 		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有可处理的账号（"+telegram.EscapeHTML(scopeLabel)+"）。", manageKeyboard())
 	}
+	title := map[string]string{
+		"clear_err": "批量清错",
+		"recover":   "批量恢复",
+		"sched_on":  "批量开调度",
+		"clear_rl":  "批量清限速",
+		"heal":      "批量一键修复",
+	}[action]
+	if title == "" {
+		title = "批量操作"
+	}
+	n := len(items)
+	if n > maxOps {
+		n = maxOps
+	}
+	// progress kickoff
+	_ = b.editOrSend(ctx, chatID, msgID,
+		fmt.Sprintf("%s\n\n⏳ 处理中 0/%d …\n范围: %s · 约 %s 个",
+			telegram.Bold(title), n,
+			telegram.EscapeHTML(scopeLabel), telegram.Code(itoa(total))),
+		nil)
+
 	okN, failN := 0, 0
 	var fails []string
-	for i, a := range items {
-		if i >= maxOps {
-			break
-		}
+	for i := 0; i < n; i++ {
+		a := items[i]
 		var opErr error
 		switch action {
 		case "clear_err":
@@ -669,23 +688,17 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 		} else {
 			okN++
 		}
-	}
-	title := map[string]string{
-		"clear_err": "批量清错结果",
-		"recover":   "批量恢复结果",
-		"sched_on":  "批量开调度结果",
-		"clear_rl":  "批量清限速结果",
-		"heal":      "批量一键修复结果",
-	}[action]
-	if title == "" {
-		title = "批量操作结果"
+		// mid progress every 3 items or last
+		if (i+1)%3 == 0 || i+1 == n {
+			_ = b.editOrSend(ctx, chatID, msgID,
+				fmt.Sprintf("%s\n\n⏳ 处理中 %d/%d\n✅ %d · ❌ %d\n当前 #%d %s",
+					telegram.Bold(title), i+1, n, okN, failN,
+					a.ID, telegram.EscapeHTML(truncateRunes(a.Name, 16))),
+				nil)
+		}
 	}
 	var bld strings.Builder
-	bld.WriteString(telegram.Bold(title) + "\n\n")
-	n := len(items)
-	if n > maxOps {
-		n = maxOps
-	}
+	bld.WriteString(telegram.Bold(title+"结果") + "\n\n")
 	fmt.Fprintf(&bld, "范围: %s · 约 %s 个（本次 %d）\n",
 		telegram.EscapeHTML(scopeLabel), telegram.Code(itoa(total)), n)
 	fmt.Fprintf(&bld, "✅ 成功 %s · ❌ 失败 %s\n", telegram.Code(strconv.Itoa(okN)), telegram.Code(strconv.Itoa(failN)))
@@ -695,7 +708,20 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 			bld.WriteString("• " + telegram.EscapeHTML(f) + "\n")
 		}
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), manageKeyboard())
+	kb := &telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{
+				telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+				telegram.Btn("📚 账号浏览", "mgr_browse"),
+			},
+			{
+				telegram.Btn("« 管理菜单", "mgr_menu"),
+				telegram.Btn("« 运维", "ops_menu"),
+			},
+			{telegram.Btn("« 主面板", "home")},
+		},
+	}
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
 }
 
 // loadBulkTargets picks accounts for bulk actions.

@@ -227,8 +227,25 @@ func thrWindowComponents() []discord.Component {
 	}
 }
 
-func opsMenuText() string {
-	return "**运维视图**\n\n基于当前连接的 Admin API：\n• 看板 / 可用性 / 告警 / 并发 / 渠道\n• 错误（分标签分页，可标记已解决）\n• 异常账号（error/限速/停调度/汇总分标签分页 + 管理/实时/修复）"
+// opsMenuText builds the ops hub with optional live health snapshot.
+func (b *Bot) opsMenuText(ctx context.Context, userID int64) string {
+	var bld strings.Builder
+	bld.WriteString("**运维视图**\n\n")
+	if cli, _, err := b.userClient(userID, 6*time.Second); err == nil && cli != nil {
+		if st, err := cli.GetDashboardStats(ctx); err == nil && st != nil {
+			fmt.Fprintf(&bld, "健康: 正常 `%v` · 异常 `%v` · 限速 `%v` · 过载 `%v`\n",
+				st.NormalAccounts, st.ErrorAccounts, st.RatelimitAccounts, st.OverloadAccounts)
+			if st.RPM > 0 {
+				fmt.Fprintf(&bld, "RPM `%.1f` · 今日请求 `%v`\n", st.RPM, st.TodayRequests)
+			}
+			if rt, err := cli.GetRealtimeDashboard(ctx); err == nil && rt != nil {
+				fmt.Fprintf(&bld, "实时: 活跃 `%v` · 错误率 `%.2f%%`\n", rt.ActiveRequests, rt.ErrorRate)
+			}
+			bld.WriteString("\n")
+		}
+	}
+	bld.WriteString("基于当前连接的 Admin API：\n• 看板 / 可用性 / 告警 / 并发 / 渠道\n• 错误（分标签分页，解决后保留页码 · 修复/实时）\n• 异常账号（error/限速/停调度/汇总分标签分页 + 管理/实时/修复）")
+	return bld.String()
 }
 
 func opsComponents() []discord.Component {
@@ -566,6 +583,9 @@ func (b *Bot) showDashboard(ctx context.Context, userID int64) string {
 		fmt.Fprintf(&bld, "实时: 活跃 `%v` · RPM `%.2f` · 错误率 `%.2f%%`\n",
 			rt.ActiveRequests, rt.RequestsPerMinute, rt.ErrorRate)
 	}
+	if traf, err := cli.GetRealtimeTraffic(ctx, "5min"); err == nil && traf != nil {
+		fmt.Fprintf(&bld, "流量(%s): QPS `%.3f`\n", traf.WindowLabel(), traf.CurrentQPS())
+	}
 	return bld.String()
 }
 
@@ -756,6 +776,7 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 	if kind != "u" && kind != "r" {
 		kind = "all"
 	}
+	b.setOpsErrorView(userID, kind, page)
 
 	var bld strings.Builder
 	if notice != "" {
@@ -771,8 +792,9 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 	}
 
 	var resolveIDs []struct {
-		kind string
-		id   int64
+		kind      string
+		id        int64
+		accountID int64
 	}
 	writePage := func(label, k string, pageData *sub2api.OpsErrorPage, pullErr error, maxShow int) {
 		fmt.Fprintf(&bld, "\n**%s**\n", label)
@@ -807,9 +829,10 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 				e.ID, e.Severity, e.StatusCode, truncate(name, 14), when,
 				truncate(e.Message, 70))
 			resolveIDs = append(resolveIDs, struct {
-				kind string
-				id   int64
-			}{k, e.ID})
+				kind      string
+				id        int64
+				accountID int64
+			}{k, e.ID, e.AccountID})
 			shown++
 		}
 		if shown == 0 {
@@ -841,31 +864,54 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 		writePage("请求错误", "r", req, err2, 3)
 	}
 
-	var row []discord.Component
+	// Discord allows max 5 action rows: tabs + up to 2 error rows + resolve-all + footer.
+	// Prefer first 2 unresolved with full shortcuts.
 	for i, r := range resolveIDs {
-		if i >= 4 {
+		if i >= 2 {
 			break
 		}
-		row = append(row, discord.Button(fmt.Sprintf("解决 #%d", r.id), fmt.Sprintf("oe:r:%s:%d", r.kind, r.id), 3))
-		if len(row) == 2 {
-			comps = append(comps, discord.ActionRow(row...))
-			row = nil
+		row := []discord.Component{
+			discord.SuccessButton(fmt.Sprintf("✅ #%d", r.id), fmt.Sprintf("oe:r:%s:%d", r.kind, r.id)),
 		}
-	}
-	if len(row) > 0 {
+		if r.accountID > 0 {
+			row = append(row,
+				discord.Button("修复", fmt.Sprintf("live_act:heal:%d", r.accountID), 1),
+				discord.Button("实时", fmt.Sprintf("acc_live:%d", r.accountID), 2),
+				discord.Button("管理", fmt.Sprintf("mgr_acc:%d", r.accountID), 2),
+			)
+		}
 		comps = append(comps, discord.ActionRow(row...))
+	}
+	// If there is a nav row already, drop it when we need room for resolve-all+footer.
+	// Rebuild comps to keep: tabs (first), error rows, optional nav, then footer actions.
+	// Simpler: always append resolve-all + compact footer (nav merged if present).
+	footer := []discord.Component{
+		discord.Button("刷新", fmt.Sprintf("ops_errors:%s:%d", kind, page), 2),
+		discord.Button("« 运维", "ops_menu", 2),
+		discord.Button("« 主面板", "home", 2),
 	}
 	comps = append(comps,
 		discord.ActionRow(
-			discord.SuccessButton("全部解决上游", "oe:resolve_all:u"),
-			discord.SuccessButton("全部解决请求", "oe:resolve_all:r"),
+			discord.SuccessButton("全解上游", "oe:resolve_all:u"),
+			discord.SuccessButton("全解请求", "oe:resolve_all:r"),
 		),
-		discord.ActionRow(
-			discord.Button("刷新", fmt.Sprintf("ops_errors:%s:%d", kind, page), 2),
-			discord.Button("« 运维", "ops_menu", 2),
-			discord.Button("« 主面板", "home", 2),
-		),
+		discord.ActionRow(footer...),
 	)
+	// Trim to 5 action rows if pagination was inserted earlier.
+	if len(comps) > 5 {
+		// Keep first (tabs), next 2 error rows if any, then last 2 (resolve-all + footer).
+		kept := []discord.Component{comps[0]}
+		// collect middle except last 2
+		mid := comps[1 : len(comps)-2]
+		for _, c := range mid {
+			if len(kept) >= 3 {
+				break
+			}
+			kept = append(kept, c)
+		}
+		kept = append(kept, comps[len(comps)-2], comps[len(comps)-1])
+		comps = kept
+	}
 	return bld.String(), comps
 }
 
@@ -916,10 +962,15 @@ func (b *Bot) resolveOpsError(ctx context.Context, userID int64, kind string, er
 	if tab != "u" && tab != "r" {
 		tab = "all"
 	}
-	if err := cli.ResolveOpsError(ctx, apiKind, errorID); err != nil {
-		return b.showErrorsView(ctx, userID, tab, 0, "❌ 标记失败: "+err.Error())
+	memKind, memPage := b.getOpsErrorView(userID)
+	page := 0
+	if memKind == tab {
+		page = memPage
 	}
-	return b.showErrorsView(ctx, userID, tab, 0, fmt.Sprintf("✅ 已标记错误 #%d 为已解决", errorID))
+	if err := cli.ResolveOpsError(ctx, apiKind, errorID); err != nil {
+		return b.showErrorsView(ctx, userID, tab, page, "❌ 标记失败: "+err.Error())
+	}
+	return b.showErrorsView(ctx, userID, tab, page, fmt.Sprintf("✅ 已标记错误 #%d 为已解决", errorID))
 }
 
 func (b *Bot) resolveAllOpsErrors(ctx context.Context, userID int64, apiKind, label string) (string, []discord.Component) {
@@ -938,8 +989,13 @@ func (b *Bot) resolveAllOpsErrors(ctx context.Context, userID int64, apiKind, la
 		apiKind = "upstream"
 		tab = "u"
 	}
+	memKind, memPage := b.getOpsErrorView(userID)
+	pageNo := 0
+	if memKind == tab {
+		pageNo = memPage
+	}
 	if err != nil {
-		return b.showErrorsView(ctx, userID, tab, 0, "❌ 拉取失败: "+err.Error())
+		return b.showErrorsView(ctx, userID, tab, pageNo, "❌ 拉取失败: "+err.Error())
 	}
 	okN, failN, n := 0, 0, 0
 	const maxOps = 15
@@ -958,9 +1014,9 @@ func (b *Bot) resolveAllOpsErrors(ctx context.Context, userID int64, apiKind, la
 		}
 	}
 	if n == 0 {
-		return b.showErrorsView(ctx, userID, tab, 0, "✅ 没有未解决的"+label+"错误。")
+		return b.showErrorsView(ctx, userID, tab, pageNo, "✅ 没有未解决的"+label+"错误。")
 	}
-	return b.showErrorsView(ctx, userID, tab, 0,
+	return b.showErrorsView(ctx, userID, tab, pageNo,
 		fmt.Sprintf("✅ 批量标记%s错误：成功 %d · 失败 %d", label, okN, failN))
 }
 
@@ -1636,14 +1692,25 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 		title = "批量操作"
 	}
 	var bld strings.Builder
-	fmt.Fprintf(&bld, "**%s**\n\nerror 账号约 %d 个（本次处理 %d）\n✅ 成功 %d · ❌ 失败 %d\n", title, total, n, okN, failN)
+	fmt.Fprintf(&bld, "**%s 结果**\n\n范围: %s · 约 %d 个（本次 %d）\n✅ 成功 %d · ❌ 失败 %d\n", title, scope, total, n, okN, failN)
 	if len(fails) > 0 {
 		bld.WriteString("\n失败样例:\n")
 		for _, f := range fails {
 			bld.WriteString("• " + f + "\n")
 		}
 	}
-	return bld.String(), manageComponents()
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button("异常账号", "ops_badacc:error:0", 2),
+			discord.Button("浏览", "mgr_browse:error:0", 2),
+			discord.Button("« 管理", "mgr_menu", 2),
+		),
+		discord.ActionRow(
+			discord.Button("« 运维", "ops_menu", 2),
+			discord.Button("« 主面板", "home", 2),
+		),
+	}
+	return bld.String(), comps
 }
 
 // healAccount best-effort: clear error, clear rate limit, recover, enable schedule.

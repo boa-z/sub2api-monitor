@@ -222,3 +222,22 @@ func TestOpsComponentsBadAccCallback(t *testing.T) {
 		t.Fatal("ops components missing badacc error:0")
 	}
 }
+
+func TestOpsErrorViewMemory(t *testing.T) {
+	b, _ := testBot(t)
+	kind, page := b.getOpsErrorView(42)
+	if kind != "all" || page != 0 {
+		t.Fatalf("default %s %d", kind, page)
+	}
+	b.setOpsErrorView(42, "u", 2)
+	kind, page = b.getOpsErrorView(42)
+	if kind != "u" || page != 2 {
+		t.Fatalf("got %s %d", kind, page)
+	}
+	// setAwait should not wipe ops memory
+	b.setAwait(42, awaitSearch, 0, "")
+	kind, page = b.getOpsErrorView(42)
+	if kind != "u" || page != 2 {
+		t.Fatalf("after setAwait %s %d", kind, page)
+	}
+}
