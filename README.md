@@ -251,6 +251,55 @@ Telegram 用户 ──getUpdates──► panel.Bot
 ```
 
 
+## Discord Bot 面板
+
+支持 **Discord** 作为通知通道 + 交互面板（与 Telegram 面板能力对齐，共享 `users.json` 多用户隔离与管理员权限模型）。
+
+```yaml
+discord:
+  bot_token: "你的 Bot Token"
+  default_channel_id: "全局告警频道ID"   # 可选
+  guild_id: "开发服务器ID"               # 可选，加速 slash 同步
+  panel:
+    enabled: true
+    admin_user_ids: [123456789012345678] # Discord 用户 snowflake
+    open_registration: true
+    # users_path 默认复用 telegram.panel.users_path
+```
+
+### 准备 Bot
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) 创建 Application → Bot → Reset Token  
+2. OAuth2 → URL Generator：scopes 勾选 `bot` + `applications.commands`；权限至少 Send Messages / Use Slash Commands / Embed Links  
+3. 用生成的 URL 邀请进服务器；面板也可在 **私信** 使用 slash 命令  
+4. 复制自己的用户 ID（开发者模式 → 右键用户 → 复制 ID）写入 `admin_user_ids`
+
+### 斜杠命令
+
+| 命令 | 说明 |
+|------|------|
+| `/panel` `/status` | 主面板（按钮导航） |
+| `/check` | 立即检查用量 |
+| `/setbase` `/setkey` | 配置连接 |
+| `/addaccount` | 添加监控账号 |
+| `/ops` `/manage` | 管理员：运维 / 账号管理 |
+| `/help` | 帮助 |
+
+按钮交互：连接、监控账号、阈值、运维看板、账号浏览（调度/清错/启停/测试/批量清错）等。  
+普通用户键盘隐藏运维/管理入口；管理员由 `discord.panel.admin_user_ids` 或 `users.json` 的 `role: admin` 判定。
+
+### 告警路由
+
+- Discord 用户监控告警发往 **用户 DM**（`discord:<user_id>`）  
+- 全局 ops 告警可发到 `default_channel_id`  
+- 与 Telegram / 飞书可同时启用（`notify` 多通道 fan-out）
+
+### 与 Telegram 并存
+
+- 同一进程可同时开 `telegram.panel` + `discord.panel`  
+- 默认共享 `./data/users.json`；用 `platform` 字段区分来源  
+- **注意**：Telegram 与 Discord 的数字 ID 空间不同，一般不会冲突；勿手工复用 ID
+
 ## 多通道通知架构
 
 告警与推送已从 Telegram 解耦，便于接入飞书等第三方：
@@ -260,11 +309,11 @@ collector ──Emit──► alerter.Engine
                        │ 格式化 plain/HTML/Markdown
                        ▼
                   notify.Multi (fan-out)
-                 /              \
-         telegram.Channel    feishu.Channel
-         (Bot API)           (Webhook 卡片)
-                 \              /
-              后续: webhook / email / slack ...
+              /        |         \
+     telegram.Channel  feishu   discord.Channel
+     (Bot API)       (Webhook)  (Bot REST + DM)
+              \        |         /
+           后续: webhook / email / slack ...
 ```
 
 | 包 | 职责 |

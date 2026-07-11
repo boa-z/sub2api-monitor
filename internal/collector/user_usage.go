@@ -37,6 +37,9 @@ func NewUserUsageCollector(cfg *config.Config, users *userstore.Store, engine *a
 func (c *UserUsageCollector) Interval() time.Duration {
 	d := c.cfg.Telegram.Panel.CheckInterval
 	if d <= 0 {
+		d = c.cfg.Discord.Panel.CheckInterval
+	}
+	if d <= 0 {
 		d = 5 * time.Minute
 	}
 	return d
@@ -87,10 +90,13 @@ func (c *UserUsageCollector) checkProfile(ctx context.Context, p *userstore.Prof
 	}
 	cooldown := c.cfg.Telegram.Panel.Cooldown
 	if cooldown <= 0 {
+		cooldown = c.cfg.Discord.Panel.Cooldown
+	}
+	if cooldown <= 0 {
 		cooldown = 2 * time.Hour
 	}
-	chatIDs := []string{p.ChatID}
-	if p.ChatID == "" {
+	chatIDs := p.NotifyRecipients()
+	if len(chatIDs) == 0 {
 		chatIDs = []string{fmt.Sprintf("%d", p.TelegramUserID)}
 	}
 

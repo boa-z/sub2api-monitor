@@ -34,12 +34,22 @@ const (
 	RoleAdmin = "admin"
 )
 
-// Profile is a Telegram user's monitoring configuration.
+// Platform identifiers for multi-channel panels.
+const (
+	PlatformTelegram = "telegram"
+	PlatformDiscord  = "discord"
+)
+
+// Profile is a panel user's monitoring configuration (Telegram or Discord).
 type Profile struct {
-	TelegramUserID int64  `json:"telegram_user_id"`
-	ChatID         string `json:"chat_id"`
-	Username       string `json:"username,omitempty"`
-	DisplayName    string `json:"display_name,omitempty"`
+	// TelegramUserID stores the platform-native numeric user id (Telegram or Discord snowflake).
+	// JSON field kept for backward compatibility with existing users.json.
+	TelegramUserID int64 `json:"telegram_user_id"`
+	// Platform is telegram|discord; empty means telegram for legacy profiles.
+	Platform    string `json:"platform,omitempty"`
+	ChatID      string `json:"chat_id"`
+	Username    string `json:"username,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
 	// Role is an optional per-profile override: "admin" | "user" | empty (derive from config).
 	Role string `json:"role,omitempty"`
 
@@ -82,6 +92,45 @@ func (p *Profile) EffectiveSource() string {
 		return p.Source
 	}
 	return "passive"
+}
+
+// EffectivePlatform returns telegram|discord.
+func (p *Profile) EffectivePlatform() string {
+	if p == nil {
+		return PlatformTelegram
+	}
+	switch strings.ToLower(strings.TrimSpace(p.Platform)) {
+	case PlatformDiscord:
+		return PlatformDiscord
+	default:
+		return PlatformTelegram
+	}
+}
+
+// NotifyRecipients returns alerter/notify recipient strings for this profile.
+// Discord users are routed as "discord:<user_id>"; Telegram uses chat_id / user id.
+func (p *Profile) NotifyRecipients() []string {
+	if p == nil {
+		return nil
+	}
+	if p.EffectivePlatform() == PlatformDiscord {
+		return []string{fmt.Sprintf("discord:%d", p.TelegramUserID)}
+	}
+	if p.ChatID != "" {
+		return []string{p.ChatID}
+	}
+	if p.TelegramUserID > 0 {
+		return []string{fmt.Sprintf("%d", p.TelegramUserID)}
+	}
+	return nil
+}
+
+// UserID is an alias for the platform-native id field.
+func (p *Profile) UserID() int64 {
+	if p == nil {
+		return 0
+	}
+	return p.TelegramUserID
 }
 
 // Store persists user profiles to a JSON file.
@@ -137,6 +186,14 @@ func (s *Store) Get(userID int64) (*Profile, bool) {
 }
 
 func (s *Store) GetOrCreate(userID int64, chatID, username, display string) (*Profile, error) {
+	return s.GetOrCreatePlatform(userID, PlatformTelegram, chatID, username, display)
+}
+
+// GetOrCreatePlatform is like GetOrCreate but records the chat platform.
+func (s *Store) GetOrCreatePlatform(userID int64, platform, chatID, username, display string) (*Profile, error) {
+	if platform == "" {
+		platform = PlatformTelegram
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if p, ok := s.byID[userID]; ok {
@@ -153,6 +210,12 @@ func (s *Store) GetOrCreate(userID int64, chatID, username, display string) (*Pr
 			p.DisplayName = display
 			changed = true
 		}
+		if p.Platform == "" {
+			p.Platform = platform
+			changed = true
+		} else if platform != "" && p.Platform != platform {
+			// keep existing platform; do not overwrite telegram with discord on id clash
+		}
 		if changed {
 			p.UpdatedAt = time.Now().UTC()
 			if err := s.persistLocked(); err != nil {
@@ -167,6 +230,7 @@ func (s *Store) GetOrCreate(userID int64, chatID, username, display string) (*Pr
 	now := time.Now().UTC()
 	p := &Profile{
 		TelegramUserID: userID,
+		Platform:       platform,
 		ChatID:         chatID,
 		Username:       username,
 		DisplayName:    display,

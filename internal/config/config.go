@@ -15,6 +15,8 @@ type Config struct {
 	// Telegram is the legacy top-level Telegram config (still supported).
 	// Prefer notify.telegram for new deployments; both are merged at runtime.
 	Telegram TelegramConfig `yaml:"telegram"`
+	// Discord is the Discord bot token + interactive panel settings.
+	Discord DiscordConfig `yaml:"discord"`
 	// Notify holds pluggable outbound channels (telegram / feishu / future).
 	Notify  NotifyConfig  `yaml:"notify"`
 	Poll    PollConfig    `yaml:"poll"`
@@ -55,6 +57,7 @@ type NotifyConfig struct {
 
 	Telegram NotifyTelegramConfig `yaml:"telegram"`
 	Feishu   FeishuConfig         `yaml:"feishu"`
+	Discord  NotifyDiscordConfig  `yaml:"discord"`
 	// future: Webhook, Email, Slack, ...
 }
 
@@ -85,6 +88,43 @@ type FeishuConfig struct {
 	AppSecret string `yaml:"app_secret"`
 	// DefaultReceiveIDs used when app messaging is implemented.
 	DefaultReceiveIDs []string `yaml:"default_receive_ids"`
+}
+
+// DiscordConfig is the top-level Discord bot configuration.
+type DiscordConfig struct {
+	// BotToken is the Discord bot token (Bot ...).
+	BotToken string `yaml:"bot_token"`
+	// DefaultChannelID receives global ops alerts when set (guild text channel snowflake).
+	DefaultChannelID string `yaml:"default_channel_id"`
+	// ExtraChannelIDs are additional default alert channels.
+	ExtraChannelIDs []string `yaml:"extra_channel_ids"`
+	// GuildID optional; when set, slash commands are registered to this guild (faster for dev).
+	GuildID string `yaml:"guild_id"`
+	// Intents note: bot needs Message Content Intent if using prefix commands; slash commands preferred.
+	SendStartupMessage bool `yaml:"send_startup_message"`
+	// Panel is the interactive Discord control panel (DM + slash commands).
+	Panel DiscordPanelConfig `yaml:"panel"`
+}
+
+// NotifyDiscordConfig is channel-scoped discord settings under notify.discord.
+type NotifyDiscordConfig struct {
+	Enabled          bool     `yaml:"enabled"`
+	BotToken         string   `yaml:"bot_token"`
+	DefaultChannelID string   `yaml:"default_channel_id"`
+	ExtraChannelIDs  []string `yaml:"extra_channel_ids"`
+}
+
+// DiscordPanelConfig mirrors PanelConfig for Discord users.
+type DiscordPanelConfig struct {
+	Enabled          bool    `yaml:"enabled"`
+	AdminUserIDs     []int64 `yaml:"admin_user_ids"`
+	AllowUserIDs     []int64 `yaml:"allow_user_ids"`
+	AllowAll         bool    `yaml:"allow_all"`
+	OpenRegistration bool    `yaml:"open_registration"`
+	// UsersPath defaults to telegram panel path when empty so both platforms share store.
+	UsersPath     string        `yaml:"users_path"`
+	CheckInterval time.Duration `yaml:"check_interval"`
+	Cooldown      time.Duration `yaml:"cooldown"`
 }
 
 // PanelConfig controls the Telegram user-facing configuration UI.
@@ -482,6 +522,27 @@ func (c *Config) Validate() error {
 		// If neither allow list nor allow_all/open_registration, default open_registration=true
 		if len(c.Telegram.Panel.AllowUserIDs) == 0 && !c.Telegram.Panel.AllowAll && !c.Telegram.Panel.OpenRegistration {
 			c.Telegram.Panel.OpenRegistration = true
+		}
+		if len(c.Discord.Panel.AllowUserIDs) == 0 && !c.Discord.Panel.AllowAll && !c.Discord.Panel.OpenRegistration {
+			c.Discord.Panel.OpenRegistration = true
+		}
+		if c.Discord.Panel.UsersPath == "" {
+			c.Discord.Panel.UsersPath = c.Telegram.Panel.UsersPath
+			if c.Discord.Panel.UsersPath == "" {
+				c.Discord.Panel.UsersPath = "./data/users.json"
+			}
+		}
+		if c.Discord.Panel.CheckInterval <= 0 {
+			c.Discord.Panel.CheckInterval = c.Telegram.Panel.CheckInterval
+			if c.Discord.Panel.CheckInterval <= 0 {
+				c.Discord.Panel.CheckInterval = 5 * time.Minute
+			}
+		}
+		if c.Discord.Panel.Cooldown <= 0 {
+			c.Discord.Panel.Cooldown = c.Telegram.Panel.Cooldown
+			if c.Discord.Panel.Cooldown <= 0 {
+				c.Discord.Panel.Cooldown = 2 * time.Hour
+			}
 		}
 	}
 

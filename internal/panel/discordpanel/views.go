@@ -1,0 +1,786 @@
+package discordpanel
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/boa/sub2api-monitor/internal/config"
+	"github.com/boa/sub2api-monitor/internal/discord"
+	"github.com/boa/sub2api-monitor/internal/sub2api"
+	"github.com/boa/sub2api-monitor/internal/userstore"
+)
+
+func helpText() string {
+	return `**Sub2API Discord 面板**
+
+• **普通用户**：连接 / 监控账号 / 阈值 / 立即检查
+• **管理员**：运维视图 + 账号管理（调度/清错/批量）
+• 配置按用户隔离，存于 users.json
+• 斜杠命令：` + "`/panel` `/status` `/check` `/setbase` `/setkey` `/addaccount` `/ops` `/manage`"
+}
+
+func (b *Bot) homeText(userID int64) string {
+	p, _ := b.users.Get(userID)
+	var bld strings.Builder
+	bld.WriteString("**Sub2API 监控面板 (Discord)**\n")
+	fmt.Fprintf(&bld, "实例: `%s` · 角色: `%s`\n", b.cfg.Instance, b.roleLabel(userID))
+	fmt.Fprintf(&bld, "检查间隔: `%s` · 冷却: `%s`\n\n",
+		b.panelCfg().CheckInterval.String(), b.panelCfg().Cooldown.String())
+	if p == nil {
+		bld.WriteString("尚未创建配置，点下方按钮开始。")
+		return bld.String()
+	}
+	mon := "关闭"
+	if p.Enabled {
+		mon = "开启"
+	}
+	fmt.Fprintf(&bld, "监控: `%s` · 数据源: `%s`\n", mon, p.EffectiveSource())
+	base := p.BaseURL
+	if base == "" {
+		base = "(未设置)"
+	}
+	fmt.Fprintf(&bld, "Base URL: `%s`\n", base)
+	fmt.Fprintf(&bld, "API Key: `%s`\n", userstore.MaskKey(p.AdminAPIKey))
+	enabledN := 0
+	for _, a := range p.Accounts {
+		if a.IsEnabled() {
+			enabledN++
+		}
+	}
+	fmt.Fprintf(&bld, "监控账号: `%d` 个（启用 `%d`）\n", len(p.Accounts), enabledN)
+	return bld.String()
+}
+
+func (b *Bot) homeComponents(userID int64) []discord.Component {
+	if b.isAdmin(userID) {
+		return []discord.Component{
+			discord.ActionRow(
+				discord.PrimaryButton("状态", "status"),
+				discord.Button("运维", "ops_menu", 2),
+				discord.Button("管理", "mgr_menu", 2),
+			),
+			discord.ActionRow(
+				discord.Button("监控账号", "cfg_acc", 2),
+				discord.Button("连接", "cfg_conn", 2),
+				discord.Button("阈值", "cfg_thr", 2),
+			),
+			discord.ActionRow(
+				discord.SuccessButton("立即检查", "check_now"),
+				discord.Button("开关监控", "toggle_mon", 2),
+				discord.Button("数据源", "toggle_src", 2),
+				discord.Button("帮助", "help", 2),
+			),
+		}
+	}
+	return []discord.Component{
+		discord.ActionRow(
+			discord.PrimaryButton("状态", "status"),
+			discord.Button("监控账号", "cfg_acc", 2),
+			discord.Button("连接", "cfg_conn", 2),
+		),
+		discord.ActionRow(
+			discord.Button("阈值", "cfg_thr", 2),
+			discord.SuccessButton("立即检查", "check_now"),
+			discord.Button("开关监控", "toggle_mon", 2),
+		),
+		discord.ActionRow(
+			discord.Button("数据源", "toggle_src", 2),
+			discord.Button("帮助", "help", 2),
+		),
+	}
+}
+
+func (b *Bot) connText(userID int64) string {
+	p, _ := b.users.Get(userID)
+	var bld strings.Builder
+	bld.WriteString("**连接配置**\n\n")
+	if p == nil {
+		bld.WriteString("未创建。")
+		return bld.String()
+	}
+	base := p.BaseURL
+	if base == "" {
+		base = "(未设置)"
+	}
+	fmt.Fprintf(&bld, "Base URL: `%s`\nAPI Key: `%s`\n", base, userstore.MaskKey(p.AdminAPIKey))
+	bld.WriteString("\n用 `/setbase` `/setkey` 设置，或点下方按钮查看说明。")
+	return bld.String()
+}
+
+func (b *Bot) connComponents(userID int64) []discord.Component {
+	rows := []discord.Component{
+		discord.ActionRow(
+			discord.Button("设置 Base", "set_base_prompt", 2),
+			discord.Button("设置 Key", "set_key_prompt", 2),
+			discord.Button("测试连接", "test_conn", 1),
+		),
+		discord.ActionRow(
+			discord.DangerButton("清除连接", "clear_conn"),
+		),
+	}
+	if b.isAdmin(userID) {
+		rows = append(rows, discord.ActionRow(discord.Button("导入全局配置", "seed_conn", 3)))
+	}
+	rows = append(rows, discord.ActionRow(discord.Button("« 主面板", "home", 2)))
+	return rows
+}
+
+func (b *Bot) accountsText(userID int64) string {
+	p, _ := b.users.Get(userID)
+	var bld strings.Builder
+	bld.WriteString("**监控账号**\n\n")
+	if p == nil || len(p.Accounts) == 0 {
+		bld.WriteString("暂无账号。使用 `/addaccount id:123` 添加。")
+		return bld.String()
+	}
+	for _, a := range p.Accounts {
+		en := "启用"
+		if !a.IsEnabled() {
+			en = "暂停"
+		}
+		name := a.Name
+		if name == "" {
+			name = fmt.Sprintf("#%d", a.ID)
+		}
+		fmt.Fprintf(&bld, "• `#%d` %s · `%s`\n", a.ID, name, en)
+	}
+	return bld.String()
+}
+
+func (b *Bot) accountsComponents(userID int64) []discord.Component {
+	rows := []discord.Component{
+		discord.ActionRow(discord.Button("添加账号", "add_acc_prompt", 1)),
+	}
+	if p, ok := b.users.Get(userID); ok {
+		n := 0
+		for _, a := range p.Accounts {
+			if n >= 4 {
+				break
+			}
+			label := fmt.Sprintf("删#%d", a.ID)
+			tog := fmt.Sprintf("切#%d", a.ID)
+			rows = append(rows, discord.ActionRow(
+				discord.DangerButton(label, fmt.Sprintf("del_acc:%d", a.ID)),
+				discord.Button(tog, fmt.Sprintf("tog_acc:%d", a.ID), 2),
+			))
+			n++
+		}
+	}
+	rows = append(rows, discord.ActionRow(discord.Button("« 主面板", "home", 2)))
+	return rows
+}
+
+func (b *Bot) thresholdsText(userID int64) string {
+	p, _ := b.users.Get(userID)
+	var bld strings.Builder
+	bld.WriteString("**用量阈值**\n\n")
+	var ths []config.UsageThreshold
+	src := "系统默认"
+	if p != nil && len(p.Thresholds) > 0 {
+		ths = p.Thresholds
+		src = "自定义"
+	} else {
+		ths = b.defaults
+	}
+	fmt.Fprintf(&bld, "当前: **%s**\n", src)
+	for _, t := range ths {
+		sev := t.Severity
+		if sev == "" {
+			sev = "P2"
+		}
+		fmt.Fprintf(&bld, "• `%s` ≥ `%.0f%%` · `%s`\n", t.Window, t.UtilizationGTE, sev)
+	}
+	return bld.String()
+}
+
+func thrComponents() []discord.Component {
+	return []discord.Component{
+		discord.ActionRow(
+			discord.Button("添加/改阈值", "thr_add", 1),
+			discord.Button("重置默认", "thr_reset", 2),
+		),
+		discord.ActionRow(
+			discord.DangerButton("删 5h", "thr_del:five_hour"),
+			discord.DangerButton("删 7d", "thr_del:seven_day"),
+		),
+		discord.ActionRow(discord.Button("« 主面板", "home", 2)),
+	}
+}
+
+func thrWindowComponents() []discord.Component {
+	return []discord.Component{
+		discord.ActionRow(
+			discord.Button("5h≥80%", "thr_set:five_hour:80", 2),
+			discord.Button("5h≥90%", "thr_set:five_hour:90", 2),
+		),
+		discord.ActionRow(
+			discord.Button("7d≥80%", "thr_set:seven_day:80", 2),
+			discord.Button("7d≥90%", "thr_set:seven_day:90", 2),
+		),
+		discord.ActionRow(discord.Button("« 阈值", "cfg_thr", 2)),
+	}
+}
+
+func opsMenuText() string {
+	return "**运维视图**\n\n只读查询你连接的 Sub2API 实例状态。"
+}
+
+func opsComponents() []discord.Component {
+	return []discord.Component{
+		discord.ActionRow(
+			discord.Button("看板", "ops_dash", 1),
+			discord.Button("可用性", "ops_avail", 2),
+			discord.Button("告警", "ops_alerts", 2),
+		),
+		discord.ActionRow(
+			discord.Button("错误", "ops_errors", 2),
+			discord.Button("异常账号", "ops_badacc", 2),
+		),
+		discord.ActionRow(discord.Button("« 主面板", "home", 2)),
+	}
+}
+
+func manageMenuText() string {
+	return "**账号管理**\n\n浏览账号、切换调度、清错、批量处理（Admin API）。"
+}
+
+func manageComponents() []discord.Component {
+	return []discord.Component{
+		discord.ActionRow(
+			discord.Button("浏览全部", "mgr_browse:all:0", 1),
+			discord.Button("error", "mgr_browse:error:0", 2),
+			discord.Button("active", "mgr_browse:active:0", 2),
+		),
+		discord.ActionRow(
+			discord.DangerButton("批量清错", "mgr_bulk_clear"),
+		),
+		discord.ActionRow(discord.Button("« 主面板", "home", 2)),
+	}
+}
+
+func confirmComponents(action string, accountID int64) []discord.Component {
+	switch action {
+	case "confirm_unsched":
+		return []discord.Component{
+			discord.ActionRow(
+				discord.DangerButton("确认停调度", fmt.Sprintf("mgr_act:unsched:%d", accountID)),
+				discord.Button("取消", fmt.Sprintf("mgr_acc:%d", accountID), 2),
+			),
+		}
+	case "confirm_disable":
+		return []discord.Component{
+			discord.ActionRow(
+				discord.DangerButton("确认禁用", fmt.Sprintf("mgr_act:disable:%d", accountID)),
+				discord.Button("取消", fmt.Sprintf("mgr_acc:%d", accountID), 2),
+			),
+		}
+	default:
+		return manageComponents()
+	}
+}
+
+func (b *Bot) setBaseURL(userID int64, raw string) string {
+	u := strings.TrimSpace(raw)
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return "URL 需以 http:// 或 https:// 开头"
+	}
+	u = strings.TrimRight(u, "/")
+	if _, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		p.BaseURL = u
+		return nil
+	}); err != nil {
+		return "保存失败: " + err.Error()
+	}
+	return "✅ Base URL 已保存: `" + u + "`"
+}
+
+func (b *Bot) setAPIKey(userID int64, raw string) string {
+	key := strings.TrimSpace(raw)
+	if key == "" {
+		return "密钥不能为空"
+	}
+	if _, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		p.AdminAPIKey = key
+		return nil
+	}); err != nil {
+		return "保存失败: " + err.Error()
+	}
+	return "✅ API Key 已保存: `" + userstore.MaskKey(key) + "`"
+}
+
+func (b *Bot) addAccount(ctx context.Context, userID int64, raw string) string {
+	id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || id <= 0 {
+		return "账号 ID 无效"
+	}
+	name := ""
+	if cli, _, err := b.userClient(userID, 10*time.Second); err == nil {
+		if acc, err := cli.GetAccount(ctx, id); err == nil && acc != nil {
+			name = acc.Name
+		}
+	}
+	en := true
+	if _, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		for _, a := range p.Accounts {
+			if a.ID == id {
+				return fmt.Errorf("已在监控列表")
+			}
+		}
+		p.Accounts = append(p.Accounts, userstore.AccountWatch{ID: id, Name: name, Enabled: &en})
+		return nil
+	}); err != nil {
+		return "添加失败: " + err.Error()
+	}
+	label := name
+	if label == "" {
+		label = fmt.Sprintf("#%d", id)
+	}
+	return "✅ 已添加 " + label
+}
+
+func (b *Bot) delAccount(userID int64, raw string) string {
+	id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return "ID 无效"
+	}
+	if _, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		out := p.Accounts[:0]
+		found := false
+		for _, a := range p.Accounts {
+			if a.ID == id {
+				found = true
+				continue
+			}
+			out = append(out, a)
+		}
+		if !found {
+			return fmt.Errorf("未找到")
+		}
+		p.Accounts = out
+		return nil
+	}); err != nil {
+		return "删除失败: " + err.Error()
+	}
+	return fmt.Sprintf("✅ 已移除 #%d", id)
+}
+
+func (b *Bot) setThreshold(userID int64, window string, pct float64, severity string) error {
+	window = normalizeWindow(window)
+	if pct <= 0 || pct > 100 {
+		return fmt.Errorf("invalid pct")
+	}
+	if severity == "" {
+		severity = "P2"
+	}
+	_, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		ths := p.Thresholds
+		if len(ths) == 0 {
+			ths = append([]config.UsageThreshold(nil), b.defaults...)
+		}
+		found := false
+		for i := range ths {
+			if ths[i].Window == window {
+				ths[i].UtilizationGTE = pct
+				ths[i].Severity = severity
+				found = true
+			}
+		}
+		if !found {
+			ths = append(ths, config.UsageThreshold{Window: window, UtilizationGTE: pct, Severity: severity})
+		}
+		p.Thresholds = ths
+		return nil
+	})
+	return err
+}
+
+func (b *Bot) deleteThreshold(userID int64, window string) error {
+	window = normalizeWindow(window)
+	_, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		if len(p.Thresholds) == 0 {
+			p.Thresholds = append([]config.UsageThreshold(nil), b.defaults...)
+		}
+		out := p.Thresholds[:0]
+		for _, t := range p.Thresholds {
+			if t.Window == window {
+				continue
+			}
+			out = append(out, t)
+		}
+		p.Thresholds = out
+		return nil
+	})
+	return err
+}
+
+func normalizeWindow(w string) string {
+	w = strings.TrimSpace(strings.ToLower(w))
+	switch w {
+	case "5h", "5_hour", "5hour", "five-hour":
+		return "five_hour"
+	case "7d", "7_day", "7day", "seven-day":
+		return "seven_day"
+	default:
+		return w
+	}
+}
+
+func (b *Bot) testConnection(ctx context.Context, userID int64) string {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return "❌ " + err.Error()
+	}
+	if err := cli.Health(ctx); err != nil {
+		return "❌ /health 失败: " + err.Error()
+	}
+	if _, err := cli.GetDashboardStats(ctx); err != nil {
+		return "⚠️ health 正常，但 Admin API 失败: " + err.Error()
+	}
+	return "✅ 连接正常（health + dashboard）"
+}
+
+func (b *Bot) seedConnection(userID int64) string {
+	base := strings.TrimSpace(b.cfg.Sub2API.BaseURL)
+	key := strings.TrimSpace(b.cfg.Sub2API.AdminAPIKey)
+	jwt := strings.TrimSpace(b.cfg.Sub2API.JWT)
+	if base == "" || (key == "" && jwt == "") {
+		return "❌ 全局 sub2api 未配置完整"
+	}
+	if _, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		p.BaseURL = strings.TrimRight(base, "/")
+		p.AdminAPIKey = key
+		p.JWT = jwt
+		return nil
+	}); err != nil {
+		return "写入失败: " + err.Error()
+	}
+	return "✅ 已导入全局连接\n\n" + b.connText(userID) + "\n\n⚠️ 共享 Admin Key 请仅给可信管理员。"
+}
+
+func (b *Bot) forceCheck(ctx context.Context, userID int64) string {
+	cli, p, err := b.userClient(userID, 25*time.Second)
+	if err != nil {
+		return "❌ " + err.Error()
+	}
+	if p == nil || len(p.Accounts) == 0 {
+		return "请先添加监控账号"
+	}
+	src := p.EffectiveSource()
+	var bld strings.Builder
+	bld.WriteString("**立即检查** · `" + src + "`\n\n")
+	for _, a := range p.Accounts {
+		if !a.IsEnabled() {
+			fmt.Fprintf(&bld, "• #%d 已暂停\n", a.ID)
+			continue
+		}
+		usage, err := cli.GetAccountUsage(ctx, a.ID, src, false)
+		if err != nil {
+			fmt.Fprintf(&bld, "• #%d 失败: %s\n", a.ID, truncate(err.Error(), 60))
+			continue
+		}
+		name := a.Name
+		if name == "" {
+			name = fmt.Sprintf("#%d", a.ID)
+		}
+		fmt.Fprintf(&bld, "**#%d %s**\n", a.ID, name)
+		for _, w := range usage.Windows() {
+			fmt.Fprintf(&bld, "  `%s` %.1f%%", w.Window, w.Utilization)
+			if w.ResetsAt != nil {
+				fmt.Fprintf(&bld, " · 重置 %s", w.ResetsAt.Local().Format("01-02 15:04"))
+			}
+			bld.WriteString("\n")
+		}
+		if today, err := cli.GetAccountTodayStats(ctx, a.ID); err == nil && today != nil {
+			fmt.Fprintf(&bld, "  today: req=%d token=%d cost=%.2f\n", today.Requests, today.Tokens, today.Cost)
+		}
+	}
+	return bld.String()
+}
+
+func (b *Bot) showDashboard(ctx context.Context, userID int64) string {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return "❌ " + err.Error()
+	}
+	st, err := cli.GetDashboardStats(ctx)
+	if err != nil {
+		return "看板失败: " + err.Error()
+	}
+	var bld strings.Builder
+	bld.WriteString("**Dashboard**\n\n")
+	// best-effort fields via fmt
+	fmt.Fprintf(&bld, "```\n%v\n```\n", truncate(fmt.Sprintf("%+v", st), 900))
+	return bld.String()
+}
+
+func (b *Bot) showAvailability(ctx context.Context, userID int64) string {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return "❌ " + err.Error()
+	}
+	av, err := cli.GetAccountAvailability(ctx)
+	if err != nil {
+		return "可用性失败: " + err.Error()
+	}
+	return "**可用性**\n```\n" + truncate(fmt.Sprintf("%+v", av), 900) + "\n```"
+}
+
+func (b *Bot) showAlerts(ctx context.Context, userID int64) string {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return "❌ " + err.Error()
+	}
+	ev, err := cli.ListAlertEvents(ctx, 1, 20)
+	if err != nil {
+		return "告警失败: " + err.Error()
+	}
+	var bld strings.Builder
+	bld.WriteString("**内置告警**\n\n")
+	if len(ev) == 0 {
+		bld.WriteString("无事件。")
+		return bld.String()
+	}
+	for i, e := range ev {
+		if i >= 10 {
+			break
+		}
+		fmt.Fprintf(&bld, "• %s\n", truncate(fmt.Sprintf("%+v", e), 120))
+	}
+	return bld.String()
+}
+
+func (b *Bot) showErrors(ctx context.Context, userID int64) string {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return "❌ " + err.Error()
+	}
+	reqPage, _ := cli.ListRequestErrors(ctx, 1, 10)
+	upPage, _ := cli.ListUpstreamErrors(ctx, 1, 10)
+	reqN, upN := 0, 0
+	if reqPage != nil {
+		reqN = len(reqPage.Items)
+	}
+	if upPage != nil {
+		upN = len(upPage.Items)
+	}
+	var bld strings.Builder
+	bld.WriteString("**错误**\n\n")
+	fmt.Fprintf(&bld, "request: %d 条样例\n", reqN)
+	fmt.Fprintf(&bld, "upstream: %d 条样例\n", upN)
+	return bld.String()
+}
+
+func (b *Bot) showBadAccounts(ctx context.Context, userID int64) string {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return "❌ " + err.Error()
+	}
+	items, total, err := cli.ListAccountsEx(ctx, 1, 15, sub2api.AccountListFilter{Status: "error"})
+	if err != nil {
+		return "列表失败: " + err.Error()
+	}
+	var bld strings.Builder
+	fmt.Fprintf(&bld, "**异常账号** · 约 %d\n\n", total)
+	for _, a := range items {
+		fmt.Fprintf(&bld, "• #%d %s [%s] %s\n", a.ID, truncate(a.Name, 16), a.Status, truncate(a.ErrorMessage, 40))
+	}
+	if len(items) == 0 {
+		bld.WriteString("无 error 账号。")
+	}
+	return bld.String()
+}
+
+func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, page int) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 15*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), manageComponents()
+	}
+	if page < 0 {
+		page = 0
+	}
+	filter := status
+	if filter == "all" {
+		filter = ""
+	}
+	items, total, err := cli.ListAccountsEx(ctx, page+1, 8, sub2api.AccountListFilter{Status: filter})
+	if err != nil {
+		return "列表失败: " + err.Error(), manageComponents()
+	}
+	var bld strings.Builder
+	title := status
+	if title == "" {
+		title = "all"
+	}
+	fmt.Fprintf(&bld, "**账号浏览** · `%s` · 第 %d 页 · 约 %d\n\n", title, page+1, total)
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button("全部", "mgr_browse:all:0", 2),
+			discord.Button("active", "mgr_browse:active:0", 2),
+			discord.Button("error", "mgr_browse:error:0", 2),
+		),
+	}
+	// account buttons (max ~4 rows of 1 due to limits)
+	for i, a := range items {
+		if i >= 8 {
+			break
+		}
+		fmt.Fprintf(&bld, "• #%d %s [%s/%s]\n", a.ID, truncate(a.Name, 16), a.Platform, a.Status)
+		label := fmt.Sprintf("#%d %s", a.ID, truncate(a.Name, 10))
+		comps = append(comps, discord.ActionRow(discord.Button(label, fmt.Sprintf("mgr_acc:%d", a.ID), 2)))
+	}
+	nav := []discord.Component{}
+	if page > 0 {
+		nav = append(nav, discord.Button("« 上页", fmt.Sprintf("mgr_browse:%s:%d", statusOrAll(status), page-1), 2))
+	}
+	if int64((page+1)*8) < total {
+		nav = append(nav, discord.Button("下页 »", fmt.Sprintf("mgr_browse:%s:%d", statusOrAll(status), page+1), 2))
+	}
+	if len(nav) > 0 {
+		comps = append(comps, discord.ActionRow(nav...))
+	}
+	comps = append(comps, discord.ActionRow(discord.Button("« 管理菜单", "mgr_menu", 2)))
+	return bld.String(), comps
+}
+
+func statusOrAll(s string) string {
+	if s == "" {
+		return "all"
+	}
+	return s
+}
+
+func (b *Bot) manageAccount(ctx context.Context, userID, accountID int64, notice string) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 15*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), manageComponents()
+	}
+	acc, err := cli.GetAccount(ctx, accountID)
+	if err != nil {
+		return "读取失败: " + err.Error(), manageComponents()
+	}
+	var bld strings.Builder
+	if notice != "" {
+		bld.WriteString(notice + "\n\n")
+	}
+	fmt.Fprintf(&bld, "**管理账号 #%d**\n\n", accountID)
+	fmt.Fprintf(&bld, "名称: `%s`\n平台: `%s`\n状态: `%s`\n可调度: `%v`\n", acc.Name, acc.Platform, acc.Status, acc.Schedulable)
+	if acc.ErrorMessage != "" {
+		fmt.Fprintf(&bld, "错误: %s\n", truncate(acc.ErrorMessage, 120))
+	}
+	schedBtn := "停调度"
+	schedData := fmt.Sprintf("mgr_act:confirm_unsched:%d", accountID)
+	if !acc.Schedulable {
+		schedBtn = "开调度"
+		schedData = fmt.Sprintf("mgr_act:sched:%d", accountID)
+	}
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button(schedBtn, schedData, 1),
+			discord.Button("清错误", fmt.Sprintf("mgr_act:clear_err:%d", accountID), 2),
+			discord.Button("清限速", fmt.Sprintf("mgr_act:clear_rl:%d", accountID), 2),
+		),
+		discord.ActionRow(
+			discord.Button("恢复", fmt.Sprintf("mgr_act:recover:%d", accountID), 2),
+			discord.Button("刷新", fmt.Sprintf("mgr_act:refresh:%d", accountID), 2),
+			discord.Button("测试", fmt.Sprintf("mgr_act:test:%d", accountID), 2),
+		),
+		discord.ActionRow(
+			discord.Button("启用", fmt.Sprintf("mgr_act:enable:%d", accountID), 3),
+			discord.DangerButton("禁用", fmt.Sprintf("mgr_act:confirm_disable:%d", accountID)),
+		),
+		discord.ActionRow(
+			discord.Button("« 浏览", "mgr_browse", 2),
+			discord.Button("« 管理", "mgr_menu", 2),
+		),
+	}
+	return bld.String(), comps
+}
+
+func (b *Bot) doManageAction(ctx context.Context, userID int64, action string, accountID int64) string {
+	if action == "confirm_unsched" {
+		return fmt.Sprintf("确认停止账号 #%d 的调度？", accountID)
+	}
+	if action == "confirm_disable" {
+		return fmt.Sprintf("确认禁用账号 #%d？", accountID)
+	}
+	cli, _, err := b.userClient(userID, 25*time.Second)
+	if err != nil {
+		return "❌ " + err.Error()
+	}
+	switch action {
+	case "sched":
+		if _, err := cli.SetSchedulable(ctx, accountID, true); err != nil {
+			return "❌ 开启调度失败: " + err.Error()
+		}
+		return "✅ 已开启调度"
+	case "unsched":
+		if _, err := cli.SetSchedulable(ctx, accountID, false); err != nil {
+			return "❌ 停止调度失败: " + err.Error()
+		}
+		return "✅ 已停止调度"
+	case "enable":
+		if _, err := cli.SetAccountStatus(ctx, accountID, "active"); err != nil {
+			return "❌ 启用失败: " + err.Error()
+		}
+		return "✅ 已启用"
+	case "disable":
+		if _, err := cli.SetAccountStatus(ctx, accountID, "disabled"); err != nil {
+			return "❌ 禁用失败: " + err.Error()
+		}
+		return "✅ 已禁用"
+	case "test":
+		raw, err := cli.TestAccount(ctx, accountID)
+		if err != nil {
+			return "❌ 测试失败: " + err.Error()
+		}
+		return "✅ 测试: " + truncate(string(raw), 150)
+	case "clear_err":
+		if _, err := cli.ClearAccountError(ctx, accountID); err != nil {
+			return "❌ 清错误失败: " + err.Error()
+		}
+		return "✅ 已清错误"
+	case "clear_rl":
+		if _, err := cli.ClearAccountRateLimit(ctx, accountID); err != nil {
+			return "❌ 清限速失败: " + err.Error()
+		}
+		return "✅ 已清限速"
+	case "recover":
+		if _, err := cli.RecoverAccountState(ctx, accountID); err != nil {
+			return "❌ 恢复失败: " + err.Error()
+		}
+		return "✅ 已请求恢复"
+	case "refresh":
+		if _, err := cli.RefreshAccount(ctx, accountID); err != nil {
+			return "❌ 刷新失败: " + err.Error()
+		}
+		return "✅ 已刷新"
+	default:
+		return "未知操作"
+	}
+}
+
+func (b *Bot) bulkClearErrors(ctx context.Context, userID int64) string {
+	cli, _, err := b.userClient(userID, 30*time.Second)
+	if err != nil {
+		return "❌ " + err.Error()
+	}
+	items, total, err := cli.ListAccountsEx(ctx, 1, 20, sub2api.AccountListFilter{Status: "error"})
+	if err != nil {
+		return "拉取失败: " + err.Error()
+	}
+	if len(items) == 0 {
+		return "✅ 当前无 error 账号"
+	}
+	okN, failN := 0, 0
+	for _, a := range items {
+		if _, err := cli.ClearAccountError(ctx, a.ID); err != nil {
+			failN++
+		} else {
+			okN++
+		}
+	}
+	return fmt.Sprintf("**批量清错**\nerror 约 %d · 成功 %d · 失败 %d", total, okN, failN)
+}

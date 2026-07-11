@@ -17,6 +17,7 @@ import (
 	"github.com/boa/sub2api-monitor/internal/notify"
 	"github.com/boa/sub2api-monitor/internal/notify/factory"
 	"github.com/boa/sub2api-monitor/internal/panel"
+	"github.com/boa/sub2api-monitor/internal/panel/discordpanel"
 	"github.com/boa/sub2api-monitor/internal/state"
 	"github.com/boa/sub2api-monitor/internal/sub2api"
 	"github.com/boa/sub2api-monitor/internal/userstore"
@@ -51,7 +52,8 @@ func main() {
 		"version", version,
 		"instance", cfg.Instance,
 		"base_url", cfg.Sub2API.BaseURL,
-		"panel", cfg.Telegram.Panel.Enabled,
+		"telegram_panel", cfg.Telegram.Panel.Enabled,
+		"discord_panel", cfg.Discord.Panel.Enabled,
 	)
 
 	// Pluggable notification channels (telegram / feishu / ...)
@@ -97,11 +99,11 @@ func main() {
 		_ = nb.Multi.Send(ctx, notify.Message{
 			Title: "sub2api-monitor started",
 			Text: fmt.Sprintf("🟢 sub2api-monitor started\n实例: %s\n版本: %s\n面板: %v\n通道: %s",
-				cfg.Instance, version, cfg.Telegram.Panel.Enabled, strings.Join(nb.Multi.EnabledNames(), ",")),
+				cfg.Instance, version, cfg.Telegram.Panel.Enabled || cfg.Discord.Panel.Enabled, strings.Join(nb.Multi.EnabledNames(), ",")),
 			HTML: fmt.Sprintf("🟢 <b>sub2api-monitor started</b>\n实例: <code>%s</code>\n版本: <code>%s</code>\n面板: <code>%v</code>\n通道: <code>%s</code>",
 				notify.EscapeHTML(cfg.Instance), notify.EscapeHTML(version), cfg.Telegram.Panel.Enabled, notify.EscapeHTML(strings.Join(nb.Multi.EnabledNames(), ","))),
 			Markdown: fmt.Sprintf("🟢 **sub2api-monitor started**\n实例: `%s`\n版本: `%s`\n面板: `%v`\n通道: `%s`",
-				cfg.Instance, version, cfg.Telegram.Panel.Enabled, strings.Join(nb.Multi.EnabledNames(), ",")),
+				cfg.Instance, version, cfg.Telegram.Panel.Enabled || cfg.Discord.Panel.Enabled, strings.Join(nb.Multi.EnabledNames(), ",")),
 		})
 	}
 
@@ -118,29 +120,51 @@ func main() {
 		}()
 	}
 
-	// User panel requires Telegram client
-	if cfg.Telegram.Panel.Enabled {
-		if nb.Telegram == nil {
-			logger.Error("panel enabled but telegram channel not available")
-			os.Exit(1)
+	// User panels (Telegram and/or Discord) share userstore when paths match.
+	panelEnabled := cfg.Telegram.Panel.Enabled || cfg.Discord.Panel.Enabled
+	if panelEnabled {
+		usersPath := cfg.Telegram.Panel.UsersPath
+		if usersPath == "" {
+			usersPath = cfg.Discord.Panel.UsersPath
 		}
-		users, err := userstore.Open(cfg.Telegram.Panel.UsersPath)
+		if usersPath == "" {
+			usersPath = "./data/users.json"
+		}
+		users, err := userstore.Open(usersPath)
 		if err != nil {
 			logger.Error("open user store", "err", err)
 			os.Exit(1)
 		}
 		defer users.Close()
 
-		bot := panel.New(nb.Telegram, users, cfg, logger)
-		go func() {
-			errCh <- bot.Run(ctx)
-		}()
+		if cfg.Telegram.Panel.Enabled {
+			if nb.Telegram == nil {
+				logger.Error("telegram panel enabled but telegram channel not available")
+				os.Exit(1)
+			}
+			bot := panel.New(nb.Telegram, users, cfg, logger)
+			go func() {
+				errCh <- bot.Run(ctx)
+			}()
+			logger.Info("telegram panel enabled", "users_path", usersPath, "check_interval", cfg.Telegram.Panel.CheckInterval)
+		}
+
+		if cfg.Discord.Panel.Enabled {
+			if nb.Discord == nil {
+				logger.Error("discord panel enabled but discord client not available (set discord.bot_token)")
+				os.Exit(1)
+			}
+			dbot := discordpanel.New(nb.Discord, users, cfg, logger)
+			go func() {
+				errCh <- dbot.Run(ctx)
+			}()
+			logger.Info("discord panel enabled", "users_path", usersPath, "check_interval", cfg.Discord.Panel.CheckInterval)
+		}
 
 		uuc := collector.NewUserUsageCollector(cfg, users, engine, logger)
 		go func() {
 			errCh <- uuc.RunLoop(ctx)
 		}()
-		logger.Info("panel enabled", "users_path", cfg.Telegram.Panel.UsersPath, "check_interval", cfg.Telegram.Panel.CheckInterval)
 	}
 
 	select {

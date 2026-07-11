@@ -42,6 +42,27 @@ telegram:
     check_interval: 5m # 用户监控账号的检查间隔
     cooldown: 2h # 用户用量告警冷却
 
+# ---------- Discord Bot（通知 + 交互面板） ----------
+# 在 Discord Developer Portal 创建 Application → Bot，复制 token。
+# 开启 Privileged Gateway Intent 一般不必（本面板用 slash + components）。
+# OAuth2 URL Generator 勾选 bot + applications.commands，邀请进服务器。
+discord:
+  bot_token: ""
+  default_channel_id: "" # 全局运维告警默认频道 snowflake（可选）
+  # extra_channel_ids: []
+  # guild_id: ""                  # 开发时填服务器 ID 可加速 slash 命令同步
+  # send_startup_message: false
+  panel:
+    enabled: false # true 开启 Discord 斜杠命令面板 + 与 Telegram 共享 users_path
+    # admin_user_ids:             # Discord 用户 snowflake（管理员）
+    #   - 123456789012345678
+    # allow_user_ids: []
+    allow_all: false
+    open_registration: true
+    # users_path: "./data/users.json"  # 默认复用 telegram.panel.users_path
+    check_interval: 5m
+    cooldown: 2h
+
 # ---------- 可插拔通知通道（推荐） ----------
 # 与顶层 telegram: 并存；未写 notify: 时仍兼容仅配置 telegram.bot_token 的旧写法。
 # 新增通道：实现 notify.Channel，并在 internal/notify/factory 注册。
@@ -51,6 +72,10 @@ notify:
   #   bot_token: ""
   #   chat_id: ""
   #   extra_chat_ids: []
+  # discord:
+  #   enabled: true
+  #   bot_token: ""                 # 可覆盖顶层 discord.bot_token
+  #   default_channel_id: ""
   feishu:
     enabled: false
     # 群自定义机器人 Webhook（运维告警推荐）
