@@ -113,3 +113,27 @@ func TestFmtID(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+func TestBulkScopeCompatible(t *testing.T) {
+	if !bulkScopeCompatible("clear_err", "error") {
+		t.Fatal("error clear")
+	}
+	if bulkScopeCompatible("clear_err", "active") {
+		t.Fatal("active should not scope clear_err")
+	}
+	if !bulkScopeCompatible("clear_rl", "rate_limited") {
+		t.Fatal("rl")
+	}
+	if bulkScopeCompatible("clear_rl", "error") {
+		t.Fatal("error should not scope clear_rl")
+	}
+	if !bulkScopeCompatible("heal", "search:foo") {
+		t.Fatal("search scopes heal")
+	}
+	if !bulkScopeCompatible("heal", "plat:openai") {
+		t.Fatal("plat scopes heal")
+	}
+	if bulkScopeCompatible("sched_on", "all") {
+		t.Fatal("all not scoped")
+	}
+}

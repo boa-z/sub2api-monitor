@@ -204,11 +204,36 @@ func Title(status string) string {
 	}
 }
 
-// LoadBulkTargets selects accounts for bulk manage actions.
+// LoadBulkTargets selects accounts for bulk manage actions (global defaults).
 func LoadBulkTargets(ctx context.Context, cli *sub2api.Client, action string, maxOps int) ([]sub2api.Account, int64, string, error) {
+	return LoadBulkTargetsScoped(ctx, cli, action, maxOps, "")
+}
+
+// LoadBulkTargetsScoped selects bulk targets, preferring the current browser filter
+// (status/platform/search/unsched/...) when provided and non-empty.
+func LoadBulkTargetsScoped(ctx context.Context, cli *sub2api.Client, action string, maxOps int, browseStatus string) ([]sub2api.Account, int64, string, error) {
 	if maxOps <= 0 {
 		maxOps = 20
 	}
+	browseStatus = strings.TrimSpace(browseStatus)
+	if browseStatus == "all" {
+		browseStatus = ""
+	}
+
+	// Prefer the operator's current browser filter when it is a useful scope.
+	if browseStatus != "" && bulkScopeCompatible(action, browseStatus) {
+		items, total, err := ListAccounts(ctx, cli, browseStatus, 0, maxOps)
+		if err == nil {
+			label := "浏览筛选: " + Title(browseStatus)
+			if len(items) == 0 {
+				// still report scoped empty so UI can say "current filter has none"
+				return items, total, label, nil
+			}
+			return items, total, label, nil
+		}
+		// fall through to action defaults on list error
+	}
+
 	switch action {
 	case "clear_rl":
 		items, total, err := ListAccounts(ctx, cli, "rate_limited", 0, maxOps)
@@ -223,6 +248,37 @@ func LoadBulkTargets(ctx context.Context, cli *sub2api.Client, action string, ma
 	default:
 		items, total, err := ListAccounts(ctx, cli, "error", 0, maxOps)
 		return items, total, "status=error 账号", err
+	}
+}
+
+// bulkScopeCompatible reports whether a browser filter should override the
+// action's default account set. Incompatible scopes fall back to defaults so
+// e.g. bulk clear-RL from an "active" list still targets rate-limited accounts.
+func bulkScopeCompatible(action, status string) bool {
+	status = strings.TrimSpace(status)
+	if status == "" || status == "all" {
+		return false
+	}
+	// search / platform filters always scope (operator is looking at a subset)
+	if strings.HasPrefix(status, "search:") || strings.HasPrefix(status, "plat:") {
+		return true
+	}
+	switch action {
+	case "clear_rl":
+		return status == "rate_limited" || status == "overload"
+	case "sched_on":
+		return status == "unsched" || status == "error"
+	case "clear_err", "recover", "heal":
+		// error tab or other problem tabs; also allow overload/rate_limited for heal
+		switch status {
+		case "error", "rate_limited", "overload", "unsched":
+			return true
+		default:
+			// active/disabled etc. are not safe defaults for destructive bulk
+			return false
+		}
+	default:
+		return status == "error" || status == "rate_limited" || status == "overload" || status == "unsched"
 	}
 }
 

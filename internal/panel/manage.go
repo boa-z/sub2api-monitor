@@ -788,7 +788,7 @@ func (b *Bot) bulkAccountActionPrompt(ctx context.Context, chatID, msgID, userID
 	}
 	actionKey := inferBulkActionKey(confirmData)
 	const maxOps = 20
-	items, total, scopeLabel, err := b.loadBulkTargets(ctx, cli, actionKey, maxOps)
+	items, total, scopeLabel, err := b.loadBulkTargets(ctx, cli, userID, actionKey, maxOps)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "拉取账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 	}
@@ -804,12 +804,19 @@ func (b *Bot) bulkAccountActionPrompt(ctx context.Context, chatID, msgID, userID
 		a := items[i]
 		fmt.Fprintf(&sample, "• #%d %s\n", a.ID, telegram.EscapeHTML(truncateRunes(a.Name, 16)))
 	}
-	kb := &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn(fmt.Sprintf("✅ 确认处理 %d 个", n), confirmData)},
-			{telegram.Btn("取消", "mgr_menu")},
-		},
+	cancelRows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn(fmt.Sprintf("✅ 确认处理 %d 个", n), confirmData)},
 	}
+	if st, pg := b.getBrowseView(userID); st != "" {
+		tok := browseToken(st)
+		cancelRows = append(cancelRows, []telegram.InlineKeyboardButton{
+			telegram.Btn("« 返回浏览", fmt.Sprintf("mgr_browse:%s:%d", tok, pg)),
+		})
+	}
+	cancelRows = append(cancelRows, []telegram.InlineKeyboardButton{
+		telegram.Btn("取消", "mgr_menu"),
+	})
+	kb := &telegram.InlineKeyboardMarkup{InlineKeyboard: cancelRows}
 	msg := fmt.Sprintf("%s\n\n范围: %s\n将对约 %s 个中的前 %s 个执行「%s」：\n%s",
 		telegram.Bold(title),
 		telegram.EscapeHTML(scopeLabel),
@@ -852,7 +859,7 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
 	}
 	const maxOps = 20
-	items, total, scopeLabel, err := b.loadBulkTargets(ctx, cli, action, maxOps)
+	items, total, scopeLabel, err := b.loadBulkTargets(ctx, cli, userID, action, maxOps)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "拉取账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 	}
@@ -942,10 +949,14 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 		}
 		rows = append(rows, failRow)
 	}
+	browseBtn := telegram.Btn("📚 账号浏览", "mgr_browse")
+	if st, pg := b.getBrowseView(userID); st != "" {
+		browseBtn = telegram.Btn("📚 返回浏览", fmt.Sprintf("mgr_browse:%s:%d", browseToken(st), pg))
+	}
 	rows = append(rows,
 		[]telegram.InlineKeyboardButton{
 			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
-			telegram.Btn("📚 账号浏览", "mgr_browse"),
+			browseBtn,
 		},
 		[]telegram.InlineKeyboardButton{
 			telegram.Btn("« 管理菜单", "mgr_menu"),
@@ -957,9 +968,10 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
 }
 
-// loadBulkTargets picks accounts for bulk actions.
-func (b *Bot) loadBulkTargets(ctx context.Context, cli *sub2api.Client, action string, maxOps int) ([]sub2api.Account, int64, string, error) {
-	return browse.LoadBulkTargets(ctx, cli, action, maxOps)
+// loadBulkTargets picks accounts for bulk actions, scoped to the operator's last browser filter when compatible.
+func (b *Bot) loadBulkTargets(ctx context.Context, cli *sub2api.Client, userID int64, action string, maxOps int) ([]sub2api.Account, int64, string, error) {
+	status, _ := b.getBrowseView(userID)
+	return browse.LoadBulkTargetsScoped(ctx, cli, action, maxOps, status)
 }
 
 func (b *Bot) healAccount(ctx context.Context, cli *sub2api.Client, accountID int64) string {
@@ -1307,19 +1319,27 @@ func (b *Bot) showGroupDetail(ctx context.Context, chatID, msgID, userID, groupI
 	}
 	bld.WriteString("\n只读详情。")
 	back := groupsCallback(0, b.getGroupSearch(userID))
-	kb := &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn("🔄 刷新", fmt.Sprintf("mgr_group:%d", g.ID))},
-			{
-				telegram.Btn("« 分组列表", back),
-				telegram.Btn("👥 实例用户", "mgr_users"),
-			},
-			{
-				telegram.Btn("📚 账号浏览", "mgr_browse"),
-				telegram.Btn("« 管理菜单", "mgr_menu"),
-			},
-		},
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("🔄 刷新", fmt.Sprintf("mgr_group:%d", g.ID))},
 	}
+	plat := strings.ToLower(strings.TrimSpace(g.Platform))
+	if plat != "" {
+		tok := browseToken("plat:" + plat)
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("📚 浏览 "+truncateRunes(plat, 12)+" 账号", fmt.Sprintf("mgr_browse:%s:0", tok)),
+		})
+	}
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("« 分组列表", back),
+			telegram.Btn("👥 实例用户", "mgr_users"),
+		},
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("📚 全部账号", "mgr_browse"),
+			telegram.Btn("« 管理菜单", "mgr_menu"),
+		},
+	)
+	kb := &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
 }
 

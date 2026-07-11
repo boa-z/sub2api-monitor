@@ -3609,9 +3609,10 @@ func (b *Bot) handleLiveAction(ctx context.Context, userID int64, action string,
 	return b.showAccountLive(ctx, userID, accountID, notice)
 }
 
-// loadDiscordBulkTargets selects accounts for bulk ops.
-func loadDiscordBulkTargets(ctx context.Context, cli *sub2api.Client, action string, maxOps int) ([]sub2api.Account, int64, string, error) {
-	return browse.LoadBulkTargets(ctx, cli, action, maxOps)
+// loadDiscordBulkTargets selects accounts for bulk ops (scoped to browser filter when compatible).
+func (b *Bot) loadDiscordBulkTargets(ctx context.Context, cli *sub2api.Client, userID int64, action string, maxOps int) ([]sub2api.Account, int64, string, error) {
+	status, _ := b.getBrowseView(userID)
+	return browse.LoadBulkTargetsScoped(ctx, cli, action, maxOps, status)
 }
 
 func (b *Bot) bulkActionPrompt(ctx context.Context, userID int64, action, title, confirmID string) (string, []discord.Component) {
@@ -3620,7 +3621,7 @@ func (b *Bot) bulkActionPrompt(ctx context.Context, userID int64, action, title,
 		return "❌ " + err.Error(), manageComponents()
 	}
 	const maxOps = 20
-	items, total, scope, err := loadDiscordBulkTargets(ctx, cli, action, maxOps)
+	items, total, scope, err := b.loadDiscordBulkTargets(ctx, cli, userID, action, maxOps)
 	if err != nil {
 		return "拉取账号失败: " + err.Error(), manageComponents()
 	}
@@ -3637,12 +3638,18 @@ func (b *Bot) bulkActionPrompt(ctx context.Context, userID int64, action, title,
 		a := items[i]
 		fmt.Fprintf(&bld, "• #%d %s\n", a.ID, truncate(a.Name, 16))
 	}
-	comps := []discord.Component{
-		discord.ActionRow(
-			discord.DangerButton(fmt.Sprintf("确认处理 %d 个", n), confirmID),
-			discord.Button("取消", "mgr_menu", 2),
-		),
+	row := []discord.Component{
+		discord.DangerButton(fmt.Sprintf("确认处理 %d 个", n), confirmID),
+		discord.Button("取消", "mgr_menu", 2),
 	}
+	if st, pg := b.getBrowseView(userID); st != "" {
+		tok := browse.Token(st)
+		row = append(row, discord.Button("« 浏览", fmt.Sprintf("mgr_browse:%s:%d", tok, pg), 2))
+	}
+	if len(row) > 5 {
+		row = row[:5]
+	}
+	comps := []discord.Component{discord.ActionRow(row...)}
 	return bld.String(), comps
 }
 
@@ -3652,7 +3659,7 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 		return "❌ " + err.Error(), manageComponents()
 	}
 	const maxOps = 20
-	items, total, scope, err := loadDiscordBulkTargets(ctx, cli, action, maxOps)
+	items, total, scope, err := b.loadDiscordBulkTargets(ctx, cli, userID, action, maxOps)
 	if err != nil {
 		return "拉取失败: " + err.Error(), manageComponents()
 	}
@@ -3724,10 +3731,14 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 		}
 		comps = append(comps, discord.ActionRow(row...))
 	}
+	browseBtn := discord.Button("浏览", "mgr_browse:error:0", 2)
+	if st, pg := b.getBrowseView(userID); st != "" {
+		browseBtn = discord.Button("« 浏览", fmt.Sprintf("mgr_browse:%s:%d", browse.Token(st), pg), 2)
+	}
 	comps = append(comps,
 		discord.ActionRow(
 			discord.Button("异常账号", "ops_badacc:error:0", 2),
-			discord.Button("浏览", "mgr_browse:error:0", 2),
+			browseBtn,
 			discord.Button("« 管理", "mgr_menu", 2),
 		),
 		discord.ActionRow(
@@ -4041,18 +4052,32 @@ func (b *Bot) showGroupDetailView(ctx context.Context, userID, groupID int64) (s
 	}
 	bld.WriteString("\n只读详情。")
 	back := groupsCallback(0, b.getGroupSearch(userID))
-	comps := []discord.Component{
+	rows := []discord.Component{
 		discord.ActionRow(
 			discord.Button("🔄 刷新", fmt.Sprintf("mgr_group:%d", g.ID), 2),
 			discord.Button("« 分组列表", back, 2),
 		),
-		discord.ActionRow(
-			discord.Button("实例用户", "mgr_users", 2),
-			discord.Button("浏览账号", "mgr_browse:all:0", 2),
-			discord.Button("« 管理", "mgr_menu", 2),
-		),
 	}
-	return bld.String(), comps
+	plat := strings.ToLower(strings.TrimSpace(g.Platform))
+	if plat != "" {
+		tok := browse.Token("plat:" + plat)
+		rows = append(rows, discord.ActionRow(
+			discord.Button("浏览 "+truncate(plat, 10)+" 账号", fmt.Sprintf("mgr_browse:%s:0", tok), 2),
+			discord.Button("全部账号", "mgr_browse:all:0", 2),
+		))
+	} else {
+		rows = append(rows, discord.ActionRow(
+			discord.Button("浏览账号", "mgr_browse:all:0", 2),
+		))
+	}
+	rows = append(rows, discord.ActionRow(
+		discord.Button("实例用户", "mgr_users", 2),
+		discord.Button("« 管理", "mgr_menu", 2),
+	))
+	if len(rows) > 5 {
+		rows = rows[:5]
+	}
+	return bld.String(), rows
 }
 
 func (b *Bot) showPanelUsers(userID int64, page int, notice string) (string, []discord.Component) {
