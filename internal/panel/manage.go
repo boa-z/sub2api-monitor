@@ -216,14 +216,20 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 	if b.canOpsWrite(userID) {
 		switch status {
 		case "error":
-			kbRows = append(kbRows, []telegram.InlineKeyboardButton{
-				telegram.Btn("🧹 批量清错", "mgr_bulk_clear"),
-				telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
-				telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
-			})
-		case "rate_limited":
+			kbRows = append(kbRows,
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("🧹 批量清错", "mgr_bulk_clear"),
+					telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
+					telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+				},
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("➕ 一键监控 error", "ops_watch_errors"),
+				},
+			)
+		case "rate_limited", "overload":
 			kbRows = append(kbRows, []telegram.InlineKeyboardButton{
 				telegram.Btn("⏱ 批量清限速", "mgr_bulk_clear_rl"),
+				telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
 			})
 		case "unsched":
 			kbRows = append(kbRows, []telegram.InlineKeyboardButton{

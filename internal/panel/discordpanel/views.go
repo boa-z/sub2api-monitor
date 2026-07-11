@@ -1485,17 +1485,14 @@ func (b *Bot) forceCheckView(ctx context.Context, userID int64) (string, []disco
 			thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
 		}
 		if usage := snap.Usage; usage != nil {
-			for _, w := range usage.Windows() {
-				mark := ""
-				if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
-					mark = " ⚠"
-					hitThr = true
-				}
-				fmt.Fprintf(&bld, "  `%s` %.1f%%%s", w.Window, w.Utilization, mark)
-				if w.ResetsAt != nil {
-					fmt.Fprintf(&bld, " · 重置 %s", w.ResetsAt.Local().Format("01-02 15:04"))
-				}
-				bld.WriteString("\n")
+			sum, hit := usage.CompactUsageSummary(thMap, 4)
+			if hit {
+				hitThr = true
+			}
+			if sum == "" {
+				bld.WriteString("  用量: (无窗口数据)\n")
+			} else {
+				fmt.Fprintf(&bld, "  用量: %s\n", sum)
 			}
 		}
 		if today := snap.Today; today != nil {

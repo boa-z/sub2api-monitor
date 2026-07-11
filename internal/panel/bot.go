@@ -1247,10 +1247,6 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 			fmt.Fprintf(&bld, "  用量: %s\n", telegram.EscapeHTML(snap.UsageErr.Error()))
 			accBad = true
 		} else if usage := snap.Usage; usage != nil {
-			windows := usage.Windows()
-			if len(windows) == 0 {
-				bld.WriteString("  用量: (无窗口数据)\n")
-			}
 			ths := thByID[snap.ID]
 			if len(ths) == 0 {
 				ths = thsDefault
@@ -1259,22 +1255,14 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 			for _, th := range ths {
 				thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
 			}
-			for _, w := range windows {
-				mark := ""
-				if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
-					mark = " ⚠️"
-					hitThr = true
-				}
-				reset := ""
-				if w.ResetsAt != nil {
-					reset = " · 重置 " + w.ResetsAt.Local().Format("01-02 15:04")
-				}
-				fmt.Fprintf(&bld, "  - %s: %s%s%s\n",
-					telegram.EscapeHTML(w.Window),
-					telegram.Code(fmt.Sprintf("%.1f%%", w.Utilization)),
-					telegram.EscapeHTML(reset),
-					mark,
-				)
+			sum, hit := usage.CompactUsageSummary(thMap, 4)
+			if hit {
+				hitThr = true
+			}
+			if sum == "" {
+				bld.WriteString("  用量: (无窗口数据)\n")
+			} else {
+				fmt.Fprintf(&bld, "  用量: %s\n", telegram.EscapeHTML(sum))
 			}
 			if usage.Error != "" {
 				fmt.Fprintf(&bld, "  提示: %s\n", telegram.EscapeHTML(usage.Error))
