@@ -637,3 +637,28 @@ func TestBadAccountsComponentsContainWatchForAdminShape(t *testing.T) {
 		t.Fatalf("dup msg: %s", msg)
 	}
 }
+
+func TestNormalizeTrafficWindowDiscord(t *testing.T) {
+	if normalizeTrafficWindow("") != "5min" || normalizeTrafficWindow("1m") != "1min" {
+		t.Fatal("normalize")
+	}
+}
+
+func TestTrafficComponents(t *testing.T) {
+	comps := trafficComponents("5min")
+	if len(comps) > 5 {
+		t.Fatalf("rows=%d", len(comps))
+	}
+	if !containsCustomID(comps, "ops_traf:1min") || !containsCustomID(comps, "ops_traf:5min") {
+		t.Fatalf("%+v", comps)
+	}
+	if !containsCustomID(comps, "ops_dash") {
+		t.Fatal("missing dash jump")
+	}
+}
+
+func TestOpsComponentsIncludeTraffic(t *testing.T) {
+	if !containsCustomID(opsComponents(), "ops_traf") {
+		t.Fatal("ops hub missing traffic")
+	}
+}

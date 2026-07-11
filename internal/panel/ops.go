@@ -59,7 +59,8 @@ func opsKeyboardFor(stats *sub2api.DashboardStats, canWrite bool) *telegram.Inli
 	rows := [][]telegram.InlineKeyboardButton{
 		{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn("✅ 可用性", "ops_avail")},
 		{telegram.Btn("🚨 告警", "ops_alerts"), telegram.Btn(errLabel, "ops_errors:all:0")},
-		{telegram.Btn("⚙️ 并发", "ops_conc"), telegram.Btn("📡 渠道探测", "ops_channels")},
+		{telegram.Btn("⚙️ 并发", "ops_conc"), telegram.Btn("📉 流量", "ops_traf")},
+		{telegram.Btn("📡 渠道探测", "ops_channels")},
 	}
 	// health-aware second action row
 	if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
@@ -96,7 +97,8 @@ func opsViewKeyboard(refreshData string) *telegram.InlineKeyboardMarkup {
 			{telegram.Btn("🔄 刷新", refreshData), telegram.Btn("« 运维菜单", "ops_menu")},
 			{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn("✅ 可用性", "ops_avail")},
 			{telegram.Btn("🚨 告警", "ops_alerts"), telegram.Btn("❌ 错误", "ops_errors:all:0")},
-			{telegram.Btn("⚙️ 并发", "ops_conc"), telegram.Btn("📋 异常账号", "ops_badacc:error:0")},
+			{telegram.Btn("⚙️ 并发", "ops_conc"), telegram.Btn("📉 流量", "ops_traf")},
+			{telegram.Btn("📋 异常账号", "ops_badacc:error:0"), telegram.Btn("📡 渠道", "ops_channels")},
 			{telegram.Btn("« 主面板", "home")},
 		},
 	}
@@ -159,6 +161,13 @@ func (b *Bot) opsMenuText(ctx context.Context, userID int64) string {
 					telegram.Code(itoa(rt.ActiveRequests)),
 					telegram.Code(fmt.Sprintf("%.2f", rt.ErrorRate)))
 			}
+			if traf, err := cli.GetRealtimeTraffic(ctx, "5min"); err == nil && traf != nil && traf.Enabled {
+				fmt.Fprintf(&bld, "流量(5min): QPS %s", telegram.Code(fmt.Sprintf("%.3f", traf.CurrentQPS())))
+				if traf.CurrentTPS() > 0 {
+					fmt.Fprintf(&bld, " · TPS %s", telegram.Code(fmt.Sprintf("%.3f", traf.CurrentTPS())))
+				}
+				bld.WriteString("\n")
+			}
 			bld.WriteString("\n")
 		}
 	}
@@ -168,7 +177,7 @@ func (b *Bot) opsMenuText(ctx context.Context, userID int64) string {
 • 可用性 — 平台/分组可用率
 • 告警 — 内置 alert-events
 • 错误 — 请求/上游（分页·解决·修复·实时）
-• 并发 / 渠道探测
+• 并发 / 流量 / 渠道探测
 • 异常账号 — error/限速/停调度/汇总（分页·管理/实时/修复）
 
 点下方按钮查看；数据实时拉取。`)
@@ -949,6 +958,89 @@ func (b *Bot) showConcurrency(ctx context.Context, chatID, msgID, userID int64) 
 		},
 	)
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (b *Bot) showTraffic(ctx context.Context, chatID, msgID, userID int64, window string) error {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	window = normalizeTrafficWindow(window)
+	traf, err := cli.GetRealtimeTraffic(ctx, window)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "流量查询失败: "+telegram.EscapeHTML(err.Error()), opsKeyboard())
+	}
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold("实时流量") + "\n")
+	fmt.Fprintf(&bld, "更新: %s\n", telegram.Code(time.Now().Local().Format("15:04:05")))
+	if traf == nil {
+		bld.WriteString("无流量数据。")
+		return b.editOrSend(ctx, chatID, msgID, bld.String(), trafficKeyboard(window))
+	}
+	if !traf.Enabled {
+		bld.WriteString("服务端实时监控未启用（ops realtime-traffic disabled）。\n")
+		return b.editOrSend(ctx, chatID, msgID, bld.String(), trafficKeyboard(window))
+	}
+	winLabel := traf.WindowLabel()
+	if winLabel == "" {
+		winLabel = window
+	}
+	qps, tps, peak := traf.CurrentQPS(), traf.CurrentTPS(), traf.PeakQPS()
+	fmt.Fprintf(&bld, "窗口: %s\n", telegram.Code(winLabel))
+	fmt.Fprintf(&bld, "当前 QPS: %s\n", telegram.Code(fmt.Sprintf("%.3f", qps)))
+	if tps > 0 {
+		fmt.Fprintf(&bld, "当前 TPS: %s\n", telegram.Code(fmt.Sprintf("%.3f", tps)))
+	}
+	if peak > 0 {
+		fmt.Fprintf(&bld, "峰值 QPS: %s\n", telegram.Code(fmt.Sprintf("%.3f", peak)))
+	}
+	if !traf.Timestamp.IsZero() {
+		fmt.Fprintf(&bld, "采样时间: %s\n", telegram.Code(traf.Timestamp.Local().Format("01-02 15:04:05")))
+	}
+	bld.WriteString("\n切换下方窗口可对比不同时间尺度；QPS 骤降可结合看板/异常账号排查。")
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), trafficKeyboard(window))
+}
+
+func trafficWindows() []string {
+	return []string{"1min", "5min", "15min", "1h"}
+}
+
+func normalizeTrafficWindow(w string) string {
+	w = strings.TrimSpace(strings.ToLower(w))
+	switch w {
+	case "", "default", "traf", "ops_traf":
+		return "5min"
+	case "1m", "1min", "60s":
+		return "1min"
+	case "5m", "5min":
+		return "5min"
+	case "15m", "15min":
+		return "15min"
+	case "1h", "60m", "60min":
+		return "1h"
+	default:
+		return w
+	}
+}
+
+func trafficKeyboard(window string) *telegram.InlineKeyboardMarkup {
+	window = normalizeTrafficWindow(window)
+	var winRow []telegram.InlineKeyboardButton
+	for _, w := range trafficWindows() {
+		label := w
+		if w == window {
+			label = "· " + w
+		}
+		winRow = append(winRow, telegram.Btn(label, "ops_traf:"+w))
+	}
+	return &telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			winRow,
+			{telegram.Btn("🔄 刷新", "ops_traf:"+window), telegram.Btn("« 运维菜单", "ops_menu")},
+			{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn("⚙️ 并发", "ops_conc"), telegram.Btn("📋 异常账号", "ops_badacc:error:0")},
+			{telegram.Btn("« 主面板", "home")},
+		},
+	}
 }
 
 func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64) error {

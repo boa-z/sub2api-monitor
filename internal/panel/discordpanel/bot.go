@@ -236,6 +236,7 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 	case data == "cfg_conn":
 		return b.update(ctx, it, b.connText(uid), b.connComponents(uid))
 	case data == "cfg_acc":
+		b.syncWatchAccountNames(ctx, uid)
 		return b.update(ctx, it, b.accountsText(uid), b.accountsComponents(uid))
 	case data == "cfg_thr":
 		return b.update(ctx, it, b.thresholdsText(uid), b.thrComponents(uid))
@@ -364,6 +365,16 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		text, comps := b.showChannelsView(ctx, uid)
+		return b.update(ctx, it, text, comps)
+	case data == "ops_traf" || strings.HasPrefix(data, "ops_traf:"):
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
+		}
+		win := "5min"
+		if strings.HasPrefix(data, "ops_traf:") {
+			win = strings.TrimPrefix(data, "ops_traf:")
+		}
+		text, comps := b.showTrafficView(ctx, uid, win)
 		return b.update(ctx, it, text, comps)
 	case data == "ops_errors" || strings.HasPrefix(data, "ops_errors:"):
 		if !b.canOpsRead(uid) {
@@ -941,6 +952,8 @@ func (b *Bot) manageBackLabel(userID int64) (label, data string) {
 		label = "« 告警"
 	case data == "ops_channels":
 		label = "« 渠道"
+	case data == "ops_traf" || strings.HasPrefix(data, "ops_traf:"):
+		label = "« 流量"
 	case strings.HasPrefix(data, "ops_badacc"):
 		label = "« 异常账号"
 	case strings.HasPrefix(data, "mgr_browse"):

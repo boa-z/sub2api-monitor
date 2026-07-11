@@ -1079,3 +1079,72 @@ func TestSetAccountThreshold(t *testing.T) {
 		t.Fatal("empty keyboard")
 	}
 }
+
+func TestNormalizeTrafficWindow(t *testing.T) {
+	if normalizeTrafficWindow("") != "5min" {
+		t.Fatal(normalizeTrafficWindow(""))
+	}
+	if normalizeTrafficWindow("1m") != "1min" {
+		t.Fatal(normalizeTrafficWindow("1m"))
+	}
+	if normalizeTrafficWindow("15MIN") != "15min" {
+		t.Fatal(normalizeTrafficWindow("15MIN"))
+	}
+	if normalizeTrafficWindow("60min") != "1h" {
+		t.Fatal(normalizeTrafficWindow("60min"))
+	}
+}
+
+func TestTrafficKeyboard(t *testing.T) {
+	kb := trafficKeyboard("5min")
+	joined := ""
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.Text + "|" + btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined, "ops_traf:1min") || !strings.Contains(joined, "ops_traf:5min") {
+		t.Fatalf("%s", joined)
+	}
+	if !strings.Contains(joined, "· 5min") {
+		t.Fatalf("selected mark missing: %s", joined)
+	}
+	if !strings.Contains(joined, "ops_dash") || !strings.Contains(joined, "ops_conc") {
+		t.Fatalf("nav missing: %s", joined)
+	}
+}
+
+func TestOpsKeyboardIncludesTraffic(t *testing.T) {
+	kb := opsKeyboardFor(nil, true)
+	joined := ""
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined, "ops_traf") {
+		t.Fatalf("missing ops_traf: %s", joined)
+	}
+	if !strings.Contains(joined, "ops_channels") {
+		t.Fatalf("missing channels: %s", joined)
+	}
+}
+
+func TestSyncWatchAccountNamesNoop(t *testing.T) {
+	b, store := testBot(t)
+	if _, err := store.GetOrCreate(42, "42", "u", "U"); err != nil {
+		t.Fatal(err)
+	}
+	en := true
+	if _, err := store.Update(42, func(p *userstore.Profile) error {
+		p.Accounts = []userstore.AccountWatch{{ID: 1, Name: "already", Enabled: &en}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	b.syncWatchAccountNames(context.Background(), 42)
+	p, _ := store.Get(42)
+	if p.Accounts[0].Name != "already" {
+		t.Fatal(p.Accounts[0].Name)
+	}
+}

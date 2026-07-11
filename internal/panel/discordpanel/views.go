@@ -446,6 +446,39 @@ func (b *Bot) connComponents(userID int64) []discord.Component {
 	return rows
 }
 
+// syncWatchAccountNames best-effort fills empty AccountWatch.Name from Sub2API.
+func (b *Bot) syncWatchAccountNames(ctx context.Context, userID int64) {
+	p, ok := b.users.Get(userID)
+	if !ok || !p.HasConnection() || len(p.Accounts) == 0 {
+		return
+	}
+	need := false
+	for _, a := range p.Accounts {
+		if strings.TrimSpace(a.Name) == "" {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return
+	}
+	cli, _, err := b.userClient(userID, 8*time.Second)
+	if err != nil || cli == nil {
+		return
+	}
+	_, _ = b.users.Update(userID, func(p *userstore.Profile) error {
+		for i := range p.Accounts {
+			if strings.TrimSpace(p.Accounts[i].Name) != "" {
+				continue
+			}
+			if acc, err := cli.GetAccount(ctx, p.Accounts[i].ID); err == nil && acc != nil && acc.Name != "" {
+				p.Accounts[i].Name = acc.Name
+			}
+		}
+		return nil
+	})
+}
+
 func (b *Bot) accountsText(userID int64) string {
 	p, _ := b.users.Get(userID)
 	var bld strings.Builder
@@ -851,10 +884,17 @@ func (b *Bot) opsMenuText(ctx context.Context, userID int64) string {
 			if rt, err := cli.GetRealtimeDashboard(ctx); err == nil && rt != nil {
 				fmt.Fprintf(&bld, "实时: 活跃 `%v` · 错误率 `%.2f%%`\n", rt.ActiveRequests, rt.ErrorRate)
 			}
+			if traf, err := cli.GetRealtimeTraffic(ctx, "5min"); err == nil && traf != nil && traf.Enabled {
+				line := fmt.Sprintf("流量(5min): QPS `%.3f`", traf.CurrentQPS())
+				if traf.CurrentTPS() > 0 {
+					line += fmt.Sprintf(" · TPS `%.3f`", traf.CurrentTPS())
+				}
+				bld.WriteString(line + "\n")
+			}
 			bld.WriteString("\n")
 		}
 	}
-	bld.WriteString("基于当前连接的 Admin API：\n• 看板 / 可用性 / 告警 / 并发 / 渠道\n• 错误（分标签分页，解决后保留页码 · 修复/实时）\n• 异常账号（error/限速/停调度/汇总分标签分页 + 管理/实时/修复）")
+	bld.WriteString("基于当前连接的 Admin API：\n• 看板 / 可用性 / 告警 / 并发 / 流量 / 渠道\n• 错误（分标签分页，解决后保留页码 · 修复/实时）\n• 异常账号（error/限速/停调度/汇总分标签分页 + 管理/实时/修复）")
 	return bld.String()
 }
 
@@ -873,6 +913,7 @@ func opsComponents() []discord.Component {
 		discord.ActionRow(
 			discord.Button("错误", "ops_errors:all:0", 2),
 			discord.Button("并发", "ops_conc", 2),
+			discord.Button("流量", "ops_traf", 2),
 			discord.Button("渠道", "ops_channels", 2),
 		),
 		discord.ActionRow(
@@ -1618,7 +1659,7 @@ func dashboardComponents(st *sub2api.DashboardStats) []discord.Component {
 		discord.ActionRow(jump...),
 		discord.ActionRow(
 			discord.Button("可用性", "ops_avail", 2),
-			discord.Button("告警", "ops_alerts", 2),
+			discord.Button("流量", "ops_traf", 2),
 			discord.Button("并发", "ops_conc", 2),
 		),
 	}
@@ -1949,6 +1990,91 @@ func (b *Bot) showConcurrencyView(ctx context.Context, userID int64) (string, []
 func (b *Bot) showChannels(ctx context.Context, userID int64) string {
 	text, _ := b.showChannelsView(ctx, userID)
 	return text
+}
+
+func (b *Bot) showTrafficView(ctx context.Context, userID int64, window string) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), opsComponents()
+	}
+	window = normalizeTrafficWindow(window)
+	traf, err := cli.GetRealtimeTraffic(ctx, window)
+	if err != nil {
+		return "流量查询失败: " + err.Error(), opsComponents()
+	}
+	var bld strings.Builder
+	bld.WriteString("**实时流量**\n")
+	fmt.Fprintf(&bld, "更新: `%s`\n", time.Now().Local().Format("15:04:05"))
+	if traf == nil {
+		return bld.String() + "无流量数据。", trafficComponents(window)
+	}
+	if !traf.Enabled {
+		bld.WriteString("服务端实时监控未启用（ops realtime-traffic disabled）。\n")
+		return bld.String(), trafficComponents(window)
+	}
+	winLabel := traf.WindowLabel()
+	if winLabel == "" {
+		winLabel = window
+	}
+	qps, tps, peak := traf.CurrentQPS(), traf.CurrentTPS(), traf.PeakQPS()
+	fmt.Fprintf(&bld, "窗口: `%s`\n", winLabel)
+	fmt.Fprintf(&bld, "当前 QPS: `%.3f`\n", qps)
+	if tps > 0 {
+		fmt.Fprintf(&bld, "当前 TPS: `%.3f`\n", tps)
+	}
+	if peak > 0 {
+		fmt.Fprintf(&bld, "峰值 QPS: `%.3f`\n", peak)
+	}
+	if !traf.Timestamp.IsZero() {
+		fmt.Fprintf(&bld, "采样时间: `%s`\n", traf.Timestamp.Local().Format("01-02 15:04:05"))
+	}
+	bld.WriteString("\n切换下方窗口可对比不同时间尺度；QPS 骤降可结合看板/异常账号排查。")
+	return bld.String(), trafficComponents(window)
+}
+
+func normalizeTrafficWindow(w string) string {
+	w = strings.TrimSpace(strings.ToLower(w))
+	switch w {
+	case "", "default", "traf", "ops_traf":
+		return "5min"
+	case "1m", "1min", "60s":
+		return "1min"
+	case "5m", "5min":
+		return "5min"
+	case "15m", "15min":
+		return "15min"
+	case "1h", "60m", "60min":
+		return "1h"
+	default:
+		return w
+	}
+}
+
+func trafficComponents(window string) []discord.Component {
+	window = normalizeTrafficWindow(window)
+	wins := []string{"1min", "5min", "15min", "1h"}
+	var row []discord.Component
+	for _, w := range wins {
+		label := w
+		if w == window {
+			label = "· " + w
+		}
+		row = append(row, discord.Button(label, "ops_traf:"+w, 2))
+	}
+	comps := []discord.Component{
+		discord.ActionRow(row...),
+		discord.ActionRow(
+			discord.Button("刷新", "ops_traf:"+window, 2),
+			discord.Button("« 运维", "ops_menu", 2),
+			discord.Button("« 主面板", "home", 2),
+		),
+		discord.ActionRow(
+			discord.Button("看板", "ops_dash", 2),
+			discord.Button("并发", "ops_conc", 2),
+			discord.Button("异常账号", "ops_badacc:error:0", 2),
+		),
+	}
+	return comps
 }
 
 func (b *Bot) showChannelsView(ctx context.Context, userID int64) (string, []discord.Component) {

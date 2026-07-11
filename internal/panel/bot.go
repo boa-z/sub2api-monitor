@@ -289,6 +289,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 	case data == "cfg_conn":
 		return b.editOrSend(ctx, chatID, msgID, b.connText(cq.From.ID), connKeyboardFor(b.isAdmin(cq.From.ID)))
 	case data == "cfg_acc":
+		b.syncWatchAccountNames(ctx, cq.From.ID)
 		return b.editOrSend(ctx, chatID, msgID, b.accountsText(cq.From.ID), b.accountsKeyboard(cq.From.ID))
 	case data == "cfg_thr":
 		return b.editOrSend(ctx, chatID, msgID, b.thresholdsText(cq.From.ID), thresholdsKeyboard(cq.From.ID, b))
@@ -338,6 +339,15 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return nil
 		}
 		return b.showChannels(ctx, chatID, msgID, cq.From.ID)
+	case data == "ops_traf" || strings.HasPrefix(data, "ops_traf:"):
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		win := "5min"
+		if strings.HasPrefix(data, "ops_traf:") {
+			win = strings.TrimPrefix(data, "ops_traf:")
+		}
+		return b.showTraffic(ctx, chatID, msgID, cq.From.ID, win)
 	case data == "ops_badacc" || strings.HasPrefix(data, "ops_badacc:"):
 		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
@@ -1800,6 +1810,41 @@ func (b *Bot) connText(userID int64) string {
 	return bld.String()
 }
 
+// syncWatchAccountNames best-effort fills empty AccountWatch.Name from Sub2API.
+func (b *Bot) syncWatchAccountNames(ctx context.Context, userID int64) {
+	p, ok := b.users.Get(userID)
+	if !ok || !p.HasConnection() || len(p.Accounts) == 0 {
+		return
+	}
+	need := false
+	for _, a := range p.Accounts {
+		if strings.TrimSpace(a.Name) == "" {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return
+	}
+	cli, err := sub2api.NewClient(config.Sub2APIConfig{
+		BaseURL: p.BaseURL, AdminAPIKey: p.AdminAPIKey, JWT: p.JWT, Timeout: 8 * time.Second,
+	})
+	if err != nil {
+		return
+	}
+	_, _ = b.users.Update(userID, func(p *userstore.Profile) error {
+		for i := range p.Accounts {
+			if strings.TrimSpace(p.Accounts[i].Name) != "" {
+				continue
+			}
+			if acc, err := cli.GetAccount(ctx, p.Accounts[i].ID); err == nil && acc != nil && acc.Name != "" {
+				p.Accounts[i].Name = acc.Name
+			}
+		}
+		return nil
+	})
+}
+
 func (b *Bot) accountsText(userID int64) string {
 	p, _ := b.users.Get(userID)
 	var bld strings.Builder
@@ -2565,6 +2610,8 @@ func (b *Bot) manageBackButton(userID int64) telegram.InlineKeyboardButton {
 		label = "« 告警"
 	case data == "ops_channels":
 		label = "« 渠道"
+	case data == "ops_traf" || strings.HasPrefix(data, "ops_traf:"):
+		label = "« 流量"
 	case strings.HasPrefix(data, "ops_badacc"):
 		label = "« 异常账号"
 	case strings.HasPrefix(data, "mgr_browse"):
