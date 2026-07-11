@@ -2673,19 +2673,26 @@ func (b *Bot) manageAccount(ctx context.Context, userID, accountID int64, notice
 			thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
 		}
 	}
-	if usage, err := cli.GetAccountUsage(ctx, accountID, "passive", false); err == nil && usage != nil {
-		bld.WriteString("\n**用量快照**\n")
-		for _, w := range usage.Windows() {
-			mark := ""
-			if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
-				mark = " ⚠"
-			}
-			line := fmt.Sprintf("• `%s` `%.1f%%`%s", w.Window, w.Utilization, mark)
-			if w.ResetsAt != nil {
-				line += " · 重置 `" + w.ResetsAt.Local().Format("01-02 15:04") + "`"
-			}
-			bld.WriteString(line + "\n")
+	src := "passive"
+	force := false
+	if p, ok := b.users.Get(userID); ok {
+		src = p.EffectiveSource()
+		force = strings.EqualFold(src, "active")
+	}
+	if usage, err := cli.GetAccountUsage(ctx, accountID, src, force); err == nil && usage != nil {
+		sum, hit := usage.CompactUsageSummary(thMap, 5)
+		if sum == "" {
+			sum = "(无窗口)"
 		}
+		mark := ""
+		if hit {
+			mark = " ⚠"
+		}
+		forceLabel := "缓存"
+		if force {
+			forceLabel = "强制"
+		}
+		fmt.Fprintf(&bld, "\n**用量** (`%s`/`%s`): `%s`%s\n", src, forceLabel, sum, mark)
 		if today, err := cli.GetAccountTodayStats(ctx, accountID); err == nil && today != nil {
 			fmt.Fprintf(&bld, "今日: req `%d` · token `%d` · cost `%.2f`\n", today.Requests, today.Tokens, today.Cost)
 		}
@@ -2961,21 +2968,15 @@ func (b *Bot) showAccountLive(ctx context.Context, userID, accountID int64, noti
 	if usage, err := cli.GetAccountUsage(ctx, accountID, src, force); err != nil {
 		fmt.Fprintf(&bld, "用量: %s\n", err.Error())
 	} else {
-		wins := usage.Windows()
-		if len(wins) == 0 {
-			bld.WriteString("用量窗口: (无数据)\n")
+		sum, hit := usage.CompactUsageSummary(thMap, 5)
+		if sum == "" {
+			sum = "(无数据)"
 		}
-		for _, w := range wins {
-			mark := ""
-			if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
-				mark = " ⚠"
-			}
-			reset := ""
-			if w.ResetsAt != nil {
-				reset = " · " + w.ResetsAt.Local().Format("01-02 15:04")
-			}
-			fmt.Fprintf(&bld, "• %s: `%.1f%%`%s%s\n", w.Window, w.Utilization, reset, mark)
+		mark := ""
+		if hit {
+			mark = " ⚠"
 		}
+		fmt.Fprintf(&bld, "用量: `%s`%s\n", sum, mark)
 		if usage.Error != "" {
 			fmt.Fprintf(&bld, "提示: %s\n", truncate(usage.Error, 80))
 		}

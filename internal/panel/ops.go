@@ -1427,26 +1427,15 @@ func (b *Bot) showAccountLiveWithNotice(ctx context.Context, chatID, msgID, user
 	if usage, err := cli.GetAccountUsage(ctx, accountID, src, force); err != nil {
 		fmt.Fprintf(&bld, "用量: %s\n", telegram.EscapeHTML(err.Error()))
 	} else {
-		wins := usage.Windows()
-		if len(wins) == 0 {
-			bld.WriteString("用量窗口: (无数据)\n")
+		sum, hit := usage.CompactUsageSummary(thMap, 5)
+		if sum == "" {
+			sum = "(无数据)"
 		}
-		for _, w := range wins {
-			mark := ""
-			if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
-				mark = " ⚠️"
-			}
-			reset := ""
-			if w.ResetsAt != nil {
-				reset = " · " + w.ResetsAt.Local().Format("01-02 15:04")
-			}
-			fmt.Fprintf(&bld, "• %s: %s%s%s\n",
-				telegram.EscapeHTML(w.Window),
-				telegram.Code(fmt.Sprintf("%.1f%%", w.Utilization)),
-				telegram.EscapeHTML(reset),
-				mark,
-			)
+		mark := ""
+		if hit {
+			mark = " ⚠️"
 		}
+		fmt.Fprintf(&bld, "用量: %s%s\n", telegram.EscapeHTML(sum), mark)
 		if usage.Error != "" {
 			fmt.Fprintf(&bld, "提示: %s\n", telegram.EscapeHTML(usage.Error))
 		}

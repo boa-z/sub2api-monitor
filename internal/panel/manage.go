@@ -395,19 +395,32 @@ func (b *Bot) showManageAccount(ctx context.Context, chatID, msgID, userID, acco
 			thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
 		}
 	}
-	if usage, err := cli.GetAccountUsage(ctx, accountID, "passive", false); err == nil && usage != nil {
-		bld.WriteString("\n" + telegram.Bold("用量快照") + "\n")
-		for _, w := range usage.Windows() {
-			mark := ""
-			if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
-				mark = " ⚠️"
-			}
-			line := fmt.Sprintf("• %s %s%%%s", telegram.Code(w.Window), telegram.Code(fmt.Sprintf("%.1f", w.Utilization)), mark)
-			if w.ResetsAt != nil {
-				line += " · 重置 " + telegram.Code(w.ResetsAt.Local().Format("01-02 15:04"))
-			}
-			bld.WriteString(line + "\n")
+	src := "passive"
+	force := false
+	if p, ok := b.users.Get(userID); ok {
+		src = p.EffectiveSource()
+		force = strings.EqualFold(src, "active")
+	}
+	if usage, err := cli.GetAccountUsage(ctx, accountID, src, force); err == nil && usage != nil {
+		sum, hit := usage.CompactUsageSummary(thMap, 5)
+		if sum == "" {
+			sum = "(无窗口)"
 		}
+		mark := ""
+		if hit {
+			mark = " ⚠️"
+		}
+		forceLabel := "缓存"
+		if force {
+			forceLabel = "强制"
+		}
+		fmt.Fprintf(&bld, "\n%s (%s/%s): %s%s\n",
+			telegram.Bold("用量"),
+			telegram.Code(src),
+			telegram.Code(forceLabel),
+			telegram.EscapeHTML(sum),
+			mark,
+		)
 		if today, err := cli.GetAccountTodayStats(ctx, accountID); err == nil && today != nil {
 			fmt.Fprintf(&bld, "今日: req %s · token %s · cost %s\n",
 				telegram.Code(itoa(today.Requests)),
