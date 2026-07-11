@@ -132,6 +132,7 @@ func dashboardKeyboard(stats *sub2api.DashboardStats) *telegram.InlineKeyboardMa
 		},
 		[]telegram.InlineKeyboardButton{
 			telegram.Btn("✅ 可用性", "ops_avail"),
+			telegram.Btn("📉 流量", "ops_traf"),
 			telegram.Btn("🚨 告警", "ops_alerts"),
 		},
 		[]telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")},
@@ -1267,8 +1268,20 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 				},
 			)
 		}
+		// contextual one-tap watch for current triage tab
+		watchLabel, watchData := "➕ 一键监控 error", "ops_watch:error"
+		switch kind {
+		case "rl":
+			watchLabel, watchData = "➕ 一键监控限速", "ops_watch:rl"
+		case "ol":
+			watchLabel, watchData = "➕ 一键监控过载", "ops_watch:ol"
+		case "unsched":
+			watchLabel, watchData = "➕ 一键监控停调度", "ops_watch:unsched"
+		case "all":
+			watchLabel, watchData = "➕ 一键监控本页异常", "ops_watch:all"
+		}
 		rows = append(rows, []telegram.InlineKeyboardButton{
-			telegram.Btn("➕ 一键监控 error", "ops_watch_errors"),
+			telegram.Btn(watchLabel, watchData),
 		})
 	}
 	rows = append(rows,
@@ -1284,16 +1297,23 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 }
 
 func (b *Bot) watchErrorAccounts(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.watchAccountsByScope(ctx, chatID, msgID, userID, "error")
+}
+
+// watchAccountsByScope bulk-adds accounts from a bad-account scope into the watch list.
+// scope: error|rl|ol|unsched|all (same tokens as ops_badacc).
+func (b *Bot) watchAccountsByScope(ctx context.Context, chatID, msgID, userID int64, scope string) error {
 	cli, _, err := b.userClient(userID, 20*time.Second)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
 	}
-	items, _, err := cli.ListAccounts(ctx, 1, 50, "error")
+	scope = browse.NormalizeBadKind(scope)
+	// pull first pages of matching accounts
+	items, total, title, _, err := browse.LoadBadAccountsPage(ctx, cli, scope, 0, 50)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "拉取失败: "+telegram.EscapeHTML(err.Error()), opsKeyboard())
 	}
-	added := 0
-	skipped := 0
+	added, skipped := 0, 0
 	for _, a := range items {
 		_, err := b.addAccountMutate(ctx, chatID, userID, strconv.FormatInt(a.ID, 10))
 		if err != nil {
@@ -1308,10 +1328,9 @@ func (b *Bot) watchErrorAccounts(ctx context.Context, chatID, msgID, userID int6
 	if p, ok := b.users.Get(userID); ok {
 		watchN = len(p.Accounts)
 	}
-	notice := fmt.Sprintf("✅ 已添加 %d 个异常账号到监控（跳过已存在 %d）\n当前监控列表共 %d 个账号",
-		added, skipped, watchN)
-	// Return to abnormal-account triage so bulk heal remains one tap away.
-	return b.showBadAccountsView(ctx, chatID, msgID, userID, "error", 0, notice)
+	notice := fmt.Sprintf("✅ %s：已添加 %d 个到监控（跳过已存在 %d · 本页/扫描 %d · 共约 %s）\n当前监控列表共 %d 个账号",
+		title, added, skipped, len(items), itoa(total), watchN)
+	return b.showBadAccountsView(ctx, chatID, msgID, userID, scope, 0, notice)
 }
 
 // adminHealthLine returns a short instance health summary for admins (best-effort).

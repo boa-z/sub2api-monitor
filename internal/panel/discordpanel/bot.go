@@ -408,8 +408,16 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.canOpsWrite(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		_ = b.respondUpdate(ctx, it, "⏳ 正在添加 error 账号到监控…", nil)
-		text, comps := b.watchErrorAccounts(ctx, uid)
+		_ = b.respondUpdate(ctx, it, "⏳ 正在添加账号到监控…", nil)
+		text, comps := b.watchAccountsByScope(ctx, uid, "error")
+		return b.followupEdit(ctx, it, text, comps)
+	case strings.HasPrefix(data, "ops_watch:"):
+		if !b.canOpsWrite(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		scope := strings.TrimPrefix(data, "ops_watch:")
+		_ = b.respondUpdate(ctx, it, "⏳ 正在添加账号到监控…", nil)
+		text, comps := b.watchAccountsByScope(ctx, uid, scope)
 		return b.followupEdit(ctx, it, text, comps)
 	case data == "oe:resolve_all:u":
 		if !b.isAdmin(uid) {

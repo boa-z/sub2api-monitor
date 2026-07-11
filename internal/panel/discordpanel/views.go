@@ -2500,7 +2500,18 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 		discord.Button(errorTabLabel("汇总", kind, "all"), "ops_badacc:all:0", 2),
 	}
 	if canWrite {
-		tabB = append(tabB, discord.SuccessButton("一键监控 error", "ops_watch_errors"))
+		watchLabel, watchData := "监控 error", "ops_watch:error"
+		switch kind {
+		case "rl":
+			watchLabel, watchData = "监控限速", "ops_watch:rl"
+		case "ol":
+			watchLabel, watchData = "监控过载", "ops_watch:ol"
+		case "unsched":
+			watchLabel, watchData = "监控停调度", "ops_watch:unsched"
+		case "all":
+			watchLabel, watchData = "监控本页", "ops_watch:all"
+		}
+		tabB = append(tabB, discord.SuccessButton(watchLabel, watchData))
 	}
 	comps = append(comps, discord.ActionRow(tabB...))
 
@@ -2569,13 +2580,19 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 	return bld.String(), comps
 }
 
-// watchErrorAccounts adds status=error accounts into the caller's watch list (self-service).
+// watchErrorAccounts is a convenience wrapper for status=error bulk watch.
 func (b *Bot) watchErrorAccounts(ctx context.Context, userID int64) (string, []discord.Component) {
+	return b.watchAccountsByScope(ctx, userID, "error")
+}
+
+// watchAccountsByScope bulk-adds accounts from a bad-account scope into the watch list.
+func (b *Bot) watchAccountsByScope(ctx context.Context, userID int64, scope string) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 20*time.Second)
 	if err != nil {
 		return "❌ " + err.Error(), opsComponents()
 	}
-	items, _, err := cli.ListAccounts(ctx, 1, 50, "error")
+	scope = browse.NormalizeBadKind(scope)
+	items, total, title, _, err := browse.LoadBadAccountsPage(ctx, cli, scope, 0, 50)
 	if err != nil {
 		return "拉取失败: " + err.Error(), opsComponents()
 	}
@@ -2590,17 +2607,15 @@ func (b *Bot) watchErrorAccounts(ctx context.Context, userID int64) (string, []d
 			added++
 			continue
 		}
-		// other failures: skip silently for bulk UX
 	}
 	p, _ := b.users.Get(userID)
 	watchN := 0
 	if p != nil {
 		watchN = len(p.Accounts)
 	}
-	notice := fmt.Sprintf("✅ 已添加 %d 个异常账号到监控（跳过已存在 %d）\n当前监控列表共 %d 个账号", added, skipped, watchN)
-	// Stay on bad-accounts error tab with notice.
-	text, comps := b.showBadAccountsView(ctx, userID, "error", 0, notice)
-	return text, comps
+	notice := fmt.Sprintf("✅ %s：已添加 %d 个到监控（跳过已存在 %d · 本页/扫描 %d · 共约 %d）\n当前监控列表共 %d 个账号",
+		title, added, skipped, len(items), total, watchN)
+	return b.showBadAccountsView(ctx, userID, scope, 0, notice)
 }
 
 func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, page int) (string, []discord.Component) {

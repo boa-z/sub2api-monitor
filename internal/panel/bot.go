@@ -362,7 +362,13 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
-		return b.watchErrorAccounts(ctx, chatID, msgID, cq.From.ID)
+		return b.watchAccountsByScope(ctx, chatID, msgID, cq.From.ID, "error")
+	case strings.HasPrefix(data, "ops_watch:"):
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		scope := strings.TrimPrefix(data, "ops_watch:")
+		return b.watchAccountsByScope(ctx, chatID, msgID, cq.From.ID, scope)
 	case data == "mgr_menu":
 		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil

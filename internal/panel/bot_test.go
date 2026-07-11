@@ -1148,3 +1148,13 @@ func TestSyncWatchAccountNamesNoop(t *testing.T) {
 		t.Fatal(p.Accounts[0].Name)
 	}
 }
+
+func TestWatchScopeCallbackAlias(t *testing.T) {
+	// legacy callback remains valid token for error scope
+	if browse.NormalizeBadKind("error") != "error" {
+		t.Fatal(browse.NormalizeBadKind("error"))
+	}
+	if browse.NormalizeBadKind("rl") != "rl" {
+		t.Fatal(browse.NormalizeBadKind("rl"))
+	}
+}
