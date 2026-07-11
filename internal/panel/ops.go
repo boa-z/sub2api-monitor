@@ -34,15 +34,20 @@ func (b *Bot) userClient(userID int64, timeout time.Duration) (*sub2api.Client, 
 }
 
 func opsKeyboard() *telegram.InlineKeyboardMarkup {
-	return opsKeyboardFor(nil)
+	return opsKeyboardFor(nil, true)
 }
 
 // opsKeyboardFor builds the ops hub keyboard. When stats are present, labels
 // include live error/rate-limit counts for faster triage.
-func opsKeyboardFor(stats *sub2api.DashboardStats) *telegram.InlineKeyboardMarkup {
+// canWrite controls bulk heal / write entry visibility for viewers.
+func opsKeyboardFor(stats *sub2api.DashboardStats, canWrite bool) *telegram.InlineKeyboardMarkup {
 	badLabel := "📋 异常账号"
 	rlLabel := "⏱ 限速"
 	errLabel := "❌ 错误"
+	mgrLabel := "🧰 账号管理"
+	if !canWrite {
+		mgrLabel = "🧰 账号浏览"
+	}
 	if stats != nil {
 		if stats.ErrorAccounts > 0 {
 			badLabel = fmt.Sprintf("📋 异常 %v", stats.ErrorAccounts)
@@ -62,14 +67,20 @@ func opsKeyboardFor(stats *sub2api.DashboardStats) *telegram.InlineKeyboardMarku
 			telegram.Btn(badLabel, "ops_badacc:error:0"),
 			telegram.Btn(rlLabel, "ops_badacc:rl:0"),
 		})
-		rows = append(rows, []telegram.InlineKeyboardButton{
-			telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
-			telegram.Btn("🧰 账号管理", "mgr_menu"),
-		})
+		if canWrite {
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
+				telegram.Btn(mgrLabel, "mgr_menu"),
+			})
+		} else {
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn(mgrLabel, "mgr_menu"),
+			})
+		}
 	} else {
 		rows = append(rows, []telegram.InlineKeyboardButton{
 			telegram.Btn(badLabel, "ops_badacc:error:0"),
-			telegram.Btn("🧰 账号管理", "mgr_menu"),
+			telegram.Btn(mgrLabel, "mgr_menu"),
 		})
 	}
 	rows = append(rows, []telegram.InlineKeyboardButton{
@@ -171,7 +182,7 @@ func (b *Bot) showOpsMenu(ctx context.Context, chatID, msgID, userID int64) erro
 			stats = st
 		}
 	}
-	return b.editOrSend(ctx, chatID, msgID, b.opsMenuText(ctx, userID), opsKeyboardFor(stats))
+	return b.editOrSend(ctx, chatID, msgID, b.opsMenuText(ctx, userID), opsKeyboardFor(stats, b.canOpsWrite(userID)))
 }
 
 func (b *Bot) showDashboard(ctx context.Context, chatID, msgID, userID int64) error {
@@ -526,6 +537,7 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
 	}
+	canWrite := b.canOpsWrite(userID)
 	if page < 0 {
 		page = 0
 	}
@@ -556,7 +568,7 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 		if err1 != nil {
 			fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err1.Error()))
 		} else {
-			writeErrorItems(&bld, pageData, "u", 8, &rows)
+			writeErrorItems(&bld, pageData, "u", 8, canWrite, &rows)
 			rows = append(rows, errorPageNav("u", page, pageData)...)
 		}
 	case "r":
@@ -565,7 +577,7 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 		if err2 != nil {
 			fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err2.Error()))
 		} else {
-			writeErrorItems(&bld, pageData, "r", 8, &rows)
+			writeErrorItems(&bld, pageData, "r", 8, canWrite, &rows)
 			rows = append(rows, errorPageNav("r", page, pageData)...)
 		}
 	default:
@@ -579,21 +591,23 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 		if err1 != nil {
 			fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err1.Error()))
 		} else {
-			writeErrorItems(&bld, up, "u", 5, &rows)
+			writeErrorItems(&bld, up, "u", 5, canWrite, &rows)
 		}
 		bld.WriteString("\n" + telegram.Bold("请求错误") + "\n")
 		if err2 != nil {
 			fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err2.Error()))
 		} else {
-			writeErrorItems(&bld, req, "r", 3, &rows)
+			writeErrorItems(&bld, req, "r", 3, canWrite, &rows)
 		}
 	}
 
-	rows = append(rows,
-		[]telegram.InlineKeyboardButton{
+	if canWrite {
+		rows = append(rows, []telegram.InlineKeyboardButton{
 			telegram.Btn("✅ 解决上游", "oe:resolve_all:u"),
 			telegram.Btn("✅ 解决请求", "oe:resolve_all:r"),
-		},
+		})
+	}
+	rows = append(rows,
 		[]telegram.InlineKeyboardButton{
 			telegram.Btn("🔄 刷新", fmt.Sprintf("ops_errors:%s:%d", kind, page)),
 			telegram.Btn("« 运维菜单", "ops_menu"),
@@ -642,7 +656,7 @@ func errorPageNav(kind string, page int, pageData *sub2api.OpsErrorPage) [][]tel
 
 // writeErrorItems renders error lines and appends resolve/manage/live/heal buttons.
 // kind is "u" (upstream) or "r" (request) for compact callback_data.
-func writeErrorItems(bld *strings.Builder, page *sub2api.OpsErrorPage, kind string, maxShow int, rows *[][]telegram.InlineKeyboardButton) {
+func writeErrorItems(bld *strings.Builder, page *sub2api.OpsErrorPage, kind string, maxShow int, canWrite bool, rows *[][]telegram.InlineKeyboardButton) {
 	if page == nil || len(page.Items) == 0 {
 		bld.WriteString("无\n")
 		return
@@ -690,15 +704,21 @@ func writeErrorItems(bld *strings.Builder, page *sub2api.OpsErrorPage, kind stri
 		}
 		bld.WriteString("\n")
 		fmt.Fprintf(bld, "  %s\n", telegram.EscapeHTML(truncateRunes(e.Message, 70)))
-		btnRow := []telegram.InlineKeyboardButton{
-			telegram.Btn(fmt.Sprintf("✅ #%d", e.ID), fmt.Sprintf("oe:r:%s:%d", kind, e.ID)),
+		btnRow := []telegram.InlineKeyboardButton{}
+		if canWrite {
+			btnRow = append(btnRow, telegram.Btn(fmt.Sprintf("✅ #%d", e.ID), fmt.Sprintf("oe:r:%s:%d", kind, e.ID)))
 		}
 		if e.AccountID > 0 {
+			if canWrite {
+				btnRow = append(btnRow, telegram.Btn("修复", fmt.Sprintf("live_act:heal:%d", e.AccountID)))
+			}
 			btnRow = append(btnRow,
-				telegram.Btn("修复", fmt.Sprintf("live_act:heal:%d", e.AccountID)),
 				telegram.Btn("实时", fmt.Sprintf("acc_live:%d", e.AccountID)),
-				telegram.Btn("管理", fmt.Sprintf("mgr_acc:%d", e.AccountID)),
+				telegram.Btn("查看", fmt.Sprintf("mgr_acc:%d", e.AccountID)),
 			)
+		}
+		if len(btnRow) == 0 {
+			continue
 		}
 		*rows = append(*rows, btnRow)
 		shown++
@@ -1053,6 +1073,7 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
 	}
+	canWrite := b.canOpsWrite(userID)
 	if page < 0 {
 		page = 0
 	}
@@ -1102,20 +1123,23 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 		},
 	}
 	for _, a := range items {
-		quick := "修复"
-		quickData := fmt.Sprintf("live_act:heal:%d", a.ID)
-		if kind == "rl" || kind == "ol" {
-			quick = "清限速"
-			quickData = fmt.Sprintf("live_act:clear_rl:%d", a.ID)
-		} else if kind == "unsched" {
-			quick = "开调度"
-			quickData = fmt.Sprintf("live_act:sched:%d", a.ID)
-		}
-		rows = append(rows, []telegram.InlineKeyboardButton{
-			telegram.Btn(fmt.Sprintf("管理 #%d %s", a.ID, truncateRunes(a.Name, 8)), fmt.Sprintf("mgr_acc:%d", a.ID)),
+		row := []telegram.InlineKeyboardButton{
+			telegram.Btn(fmt.Sprintf("查看 #%d %s", a.ID, truncateRunes(a.Name, 8)), fmt.Sprintf("mgr_acc:%d", a.ID)),
 			telegram.Btn("实时", fmt.Sprintf("acc_live:%d", a.ID)),
-			telegram.Btn(quick, quickData),
-		})
+		}
+		if canWrite {
+			quick := "修复"
+			quickData := fmt.Sprintf("live_act:heal:%d", a.ID)
+			if kind == "rl" || kind == "ol" {
+				quick = "清限速"
+				quickData = fmt.Sprintf("live_act:clear_rl:%d", a.ID)
+			} else if kind == "unsched" {
+				quick = "开调度"
+				quickData = fmt.Sprintf("live_act:sched:%d", a.ID)
+			}
+			row = append(row, telegram.Btn(quick, quickData))
+		}
+		rows = append(rows, row)
 	}
 	// pagination
 	nav := []telegram.InlineKeyboardButton{}
@@ -1128,32 +1152,34 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 	if len(nav) > 0 {
 		rows = append(rows, nav)
 	}
-	switch kind {
-	case "rl", "ol":
-		rows = append(rows, []telegram.InlineKeyboardButton{
-			telegram.Btn("⏱ 批量清限速", "mgr_bulk_clear_rl"),
-			telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
-		})
-	case "unsched":
-		rows = append(rows, []telegram.InlineKeyboardButton{
-			telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
-		})
-	default:
-		rows = append(rows,
-			[]telegram.InlineKeyboardButton{
-				telegram.Btn("🧹 批量清错", "mgr_bulk_clear"),
-				telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
-			},
-			[]telegram.InlineKeyboardButton{
+	if canWrite {
+		switch kind {
+		case "rl", "ol":
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn("⏱ 批量清限速", "mgr_bulk_clear_rl"),
 				telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
+			})
+		case "unsched":
+			rows = append(rows, []telegram.InlineKeyboardButton{
 				telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
-			},
-		)
+			})
+		default:
+			rows = append(rows,
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("🧹 批量清错", "mgr_bulk_clear"),
+					telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+				},
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
+					telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+				},
+			)
+		}
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("➕ 一键监控 error", "ops_watch_errors"),
+		})
 	}
 	rows = append(rows,
-		[]telegram.InlineKeyboardButton{
-			telegram.Btn("➕ 一键监控 error", "ops_watch_errors"),
-		},
 		[]telegram.InlineKeyboardButton{
 			telegram.Btn("🔄 刷新", fmt.Sprintf("ops_badacc:%s:%d", kind, page)),
 			telegram.Btn("« 运维菜单", "ops_menu"),
@@ -1424,7 +1450,7 @@ func (b *Bot) showAccountLiveWithNotice(ctx context.Context, chatID, msgID, user
 	rows := [][]telegram.InlineKeyboardButton{
 		{telegram.Btn("🔄 刷新", fmt.Sprintf("acc_live:%d", accountID))},
 	}
-	if b.isAdmin(userID) {
+	if b.canOpsWrite(userID) {
 		rows = append(rows,
 			[]telegram.InlineKeyboardButton{
 				telegram.Btn("🛠 一键修复", fmt.Sprintf("live_act:heal:%d", accountID)),
@@ -1442,6 +1468,10 @@ func (b *Bot) showAccountLiveWithNotice(ctx context.Context, chatID, msgID, user
 				telegram.Btn("🧰 完整管理", fmt.Sprintf("mgr_acc:%d", accountID)),
 			},
 		)
+	} else if b.canOpsRead(userID) {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("👁 账号详情", fmt.Sprintf("mgr_acc:%d", accountID)),
+		})
 	}
 	rows = append(rows,
 		[]telegram.InlineKeyboardButton{

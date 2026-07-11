@@ -54,7 +54,6 @@ func TestPersistAndListEnabled(t *testing.T) {
 	}
 }
 
-
 func TestPlatformNotifyRecipients(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "users.json")
 	s, err := Open(path)
@@ -83,5 +82,20 @@ func TestPlatformNotifyRecipients(t *testing.T) {
 	rs2 := p2.NotifyRecipients()
 	if len(rs2) != 1 || rs2[0] != "66" {
 		t.Fatalf("tg recipients %v", rs2)
+	}
+}
+
+func TestEffectiveRoleViewer(t *testing.T) {
+	p := &Profile{Role: RoleViewer}
+	if p.EffectiveRole() != RoleViewer {
+		t.Fatalf("got %s", p.EffectiveRole())
+	}
+	p.Role = "VIEWER"
+	if p.EffectiveRole() != RoleViewer {
+		t.Fatalf("case: %s", p.EffectiveRole())
+	}
+	p.Role = ""
+	if p.EffectiveRole() != "" {
+		t.Fatalf("empty should inherit, got %q", p.EffectiveRole())
 	}
 }

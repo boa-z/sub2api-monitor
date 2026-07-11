@@ -537,7 +537,7 @@ func TestWriteErrorItemsLiveHealButtons(t *testing.T) {
 	}}
 	var bld strings.Builder
 	var rows [][]telegram.InlineKeyboardButton
-	writeErrorItems(&bld, page, "u", 8, &rows)
+	writeErrorItems(&bld, page, "u", 8, true, &rows)
 	if len(rows) != 1 {
 		t.Fatalf("rows %d", len(rows))
 	}
@@ -550,7 +550,25 @@ func TestWriteErrorItemsLiveHealButtons(t *testing.T) {
 			t.Fatalf("missing %s in %+v", want, ids)
 		}
 	}
+	// readonly: no resolve/heal write buttons
+	bld.Reset()
+	rows = nil
+	writeErrorItems(&bld, page, "u", 8, false, &rows)
+	if len(rows) != 1 {
+		t.Fatalf("readonly rows %d", len(rows))
+	}
+	ids = map[string]bool{}
+	for _, btn := range rows[0] {
+		ids[btn.CallbackData] = true
+	}
+	if ids["oe:r:u:9"] || ids["live_act:heal:42"] {
+		t.Fatalf("readonly should hide write: %+v", ids)
+	}
+	if !ids["acc_live:42"] || !ids["mgr_acc:42"] {
+		t.Fatalf("readonly should keep view: %+v", ids)
+	}
 }
+
 
 func TestOpsMenuTextContainsHints(t *testing.T) {
 	b, _ := testBot(t)
@@ -747,7 +765,7 @@ func TestChannelIsBad(t *testing.T) {
 }
 
 func TestOpsKeyboardForHealth(t *testing.T) {
-	kb := opsKeyboardFor(&sub2api.DashboardStats{ErrorAccounts: 3, RatelimitAccounts: 2})
+	kb := opsKeyboardFor(&sub2api.DashboardStats{ErrorAccounts: 3, RatelimitAccounts: 2}, true)
 	joined := ""
 	for _, row := range kb.InlineKeyboard {
 		for _, btn := range row {
@@ -764,7 +782,7 @@ func TestOpsKeyboardForHealth(t *testing.T) {
 		// label may include count
 		t.Logf("joined=%s", joined)
 	}
-	kb2 := opsKeyboardFor(nil)
+	kb2 := opsKeyboardFor(nil, true)
 	joined2 := ""
 	for _, row := range kb2.InlineKeyboard {
 		for _, btn := range row {
@@ -800,7 +818,7 @@ func TestCheckResultKeyboard(t *testing.T) {
 }
 
 func TestManageKeyboardForHealth(t *testing.T) {
-	kb := manageKeyboardFor(&sub2api.DashboardStats{ErrorAccounts: 4, RatelimitAccounts: 1})
+	kb := manageKeyboardFor(&sub2api.DashboardStats{ErrorAccounts: 4, RatelimitAccounts: 1}, true)
 	joined := ""
 	for _, row := range kb.InlineKeyboard {
 		for _, btn := range row {
@@ -890,5 +908,102 @@ func TestStatusKeyboardIssueJumps(t *testing.T) {
 	}
 	if !strings.Contains(joined2, "acc_live:9") || strings.Contains(joined2, "mgr_acc:") {
 		t.Fatalf("%s", joined2)
+	}
+}
+
+func TestViewerRolePermissions(t *testing.T) {
+	b, store := testBot(t)
+	b.cfg.Telegram.Panel.OpenRegistration = true
+	b.cfg.Telegram.Panel.AdminUserIDs = []int64{1}
+	if _, err := store.GetOrCreate(50, "50", "v", "Viewer"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(50, func(p *userstore.Profile) error {
+		p.Role = userstore.RoleViewer
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if b.isAdmin(50) {
+		t.Fatal("viewer must not be admin")
+	}
+	if !b.isViewer(50) {
+		t.Fatal("expected viewer")
+	}
+	if !b.canOpsRead(50) {
+		t.Fatal("viewer should read ops")
+	}
+	if b.canOpsWrite(50) {
+		t.Fatal("viewer must not write ops")
+	}
+	if b.roleLabel(50) != "只读运维" {
+		t.Fatalf("label=%s", b.roleLabel(50))
+	}
+	// demote config admin via viewer role
+	if _, err := store.GetOrCreate(1, "1", "a", "A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(1, func(p *userstore.Profile) error {
+		p.Role = userstore.RoleViewer
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if b.isAdmin(1) || !b.isViewer(1) {
+		t.Fatal("profile viewer should demote admin_user_ids")
+	}
+}
+
+func TestHomeKeyboardViewer(t *testing.T) {
+	b, store := testBot(t)
+	b.cfg.Telegram.Panel.AdminUserIDs = []int64{7}
+	if _, err := store.GetOrCreate(9, "9", "v", "V"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(9, func(p *userstore.Profile) error {
+		p.Role = userstore.RoleViewer
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	viewerKB := b.homeKeyboardFor(9)
+	joined := ""
+	for _, row := range viewerKB.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined, "ops_menu") || !strings.Contains(joined, "ops_dash") {
+		t.Fatalf("viewer keyboard missing ops: %s", joined)
+	}
+	if strings.Contains(joined, "mgr_menu") {
+		// home viewer intentionally hides write manage hub; browse still via ops
+		// OK if absent
+	}
+	userKB := b.homeKeyboardFor(8)
+	userJoined := ""
+	for _, row := range userKB.InlineKeyboard {
+		for _, btn := range row {
+			userJoined += btn.CallbackData + ","
+		}
+	}
+	if strings.Contains(userJoined, "ops_menu") {
+		t.Fatalf("user should hide ops: %s", userJoined)
+	}
+}
+
+func TestManageKeyboardViewerHidesBulk(t *testing.T) {
+	kb := manageKeyboardFor(&sub2api.DashboardStats{ErrorAccounts: 4, RatelimitAccounts: 1}, false)
+	joined := ""
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.CallbackData + ","
+		}
+	}
+	if strings.Contains(joined, "mgr_bulk_") || strings.Contains(joined, "pnl_users") {
+		t.Fatalf("viewer manage should hide write: %s", joined)
+	}
+	if !strings.Contains(joined, "mgr_browse") {
+		t.Fatalf("viewer manage should keep browse: %s", joined)
 	}
 }

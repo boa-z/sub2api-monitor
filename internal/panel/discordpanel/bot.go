@@ -180,13 +180,13 @@ func (b *Bot) handleCommand(ctx context.Context, it *discord.Interaction, uid in
 		msg, comps := b.forceCheckView(ctx, uid)
 		return b.followupEdit(ctx, it, msg, comps)
 	case "ops":
-		if !b.isAdmin(uid) {
-			return b.respond(ctx, it, "⛔ 运维视图仅管理员可用。", b.homeComponents(uid), true)
+		if !b.canOpsRead(uid) {
+			return b.respond(ctx, it, "⛔ 运维视图仅管理员或只读运维可用。", b.homeComponents(uid), true)
 		}
-		return b.respond(ctx, it, b.opsMenuText(ctx, uid), opsComponents(), false)
+		return b.respond(ctx, it, b.opsMenuText(ctx, uid), b.opsComponents(uid), false)
 	case "manage":
-		if !b.isAdmin(uid) {
-			return b.respond(ctx, it, "⛔ 账号管理仅管理员可用。", b.homeComponents(uid), true)
+		if !b.canOpsRead(uid) {
+			return b.respond(ctx, it, "⛔ 账号管理/浏览仅管理员或只读运维可用。", b.homeComponents(uid), true)
 		}
 		text, comps := b.manageMenuView(ctx, uid)
 		return b.respond(ctx, it, text, comps, false)
@@ -203,8 +203,8 @@ func (b *Bot) handleCommand(ctx context.Context, it *discord.Interaction, uid in
 		msg := b.addAccount(ctx, uid, strconv.FormatInt(id, 10))
 		return b.respond(ctx, it, msg, b.accountsComponents(uid), false)
 	case "search":
-		if !b.isAdmin(uid) {
-			return b.respond(ctx, it, "⛔ 搜索账号仅管理员可用。", b.homeComponents(uid), true)
+		if !b.canOpsRead(uid) {
+			return b.respond(ctx, it, "⛔ 搜索账号仅管理员或只读运维可用。", b.homeComponents(uid), true)
 		}
 		q := strings.TrimSpace(optionString(it, "q"))
 		if q == "" {
@@ -302,43 +302,43 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		})
 		return b.update(ctx, it, b.accountsText(uid), b.accountsComponents(uid))
 	case data == "ops_menu":
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		return b.update(ctx, it, b.opsMenuText(ctx, uid), opsComponents())
 	case data == "ops_dash":
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		text, comps := b.showDashboardView(ctx, uid)
 		return b.update(ctx, it, text, comps)
 	case data == "ops_avail":
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		text, comps := b.showAvailabilityView(ctx, uid)
 		return b.update(ctx, it, text, comps)
 	case data == "ops_alerts":
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		text, comps := b.showAlertsView(ctx, uid)
 		return b.update(ctx, it, text, comps)
 	case data == "ops_conc":
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		text, comps := b.showConcurrencyView(ctx, uid)
 		return b.update(ctx, it, text, comps)
 	case data == "ops_channels":
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		text, comps := b.showChannelsView(ctx, uid)
 		return b.update(ctx, it, text, comps)
 	case data == "ops_errors" || strings.HasPrefix(data, "ops_errors:"):
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		kind, page := "all", 0
 		if strings.HasPrefix(data, "ops_errors:") {
@@ -354,8 +354,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		text, comps := b.showErrorsView(ctx, uid, kind, page, "")
 		return b.update(ctx, it, text, comps)
 	case data == "ops_badacc" || strings.HasPrefix(data, "ops_badacc:"):
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		rest := ""
 		if strings.HasPrefix(data, "ops_badacc:") {
@@ -390,14 +390,14 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		text, comps := b.resolveOpsError(ctx, uid, kind, eid)
 		return b.update(ctx, it, text, comps)
 	case data == "mgr_menu":
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		text, comps := b.manageMenuView(ctx, uid)
 		return b.update(ctx, it, text, comps)
 	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:"):
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		page := 0
 		if strings.HasPrefix(data, "mgr_users:") {
@@ -406,8 +406,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		text, comps := b.showUsersView(ctx, uid, page)
 		return b.update(ctx, it, text, comps)
 	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:"):
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		page := 0
 		if strings.HasPrefix(data, "mgr_groups:") {
@@ -416,8 +416,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		text, comps := b.showGroupsView(ctx, uid, page)
 		return b.update(ctx, it, text, comps)
 	case data == "mgr_browse" || strings.HasPrefix(data, "mgr_browse:"):
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		status, page := "all", 0
 		if strings.HasPrefix(data, "mgr_browse:") {
@@ -428,8 +428,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		text, comps := b.accountBrowser(ctx, uid, status, page)
 		return b.update(ctx, it, text, comps)
 	case strings.HasPrefix(data, "mgr_acc:"):
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "mgr_acc:"), 10, 64)
 		text, comps := b.manageAccount(ctx, uid, id, "")
@@ -539,8 +539,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		text, comps := b.bulkAccountActionExecute(ctx, uid, "heal")
 		return b.followupEdit(ctx, it, text, comps)
 	case data == "mgr_search":
-		if !b.isAdmin(uid) {
-			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		return b.update(ctx, it, "请使用 `/search q:<关键词>` 搜索账号（名称片段）。", manageComponents())
 	case data == "pnl_users" || strings.HasPrefix(data, "pnl_users:"):
@@ -697,7 +697,7 @@ func (b *Bot) isAdmin(userID int64) bool {
 		switch p.EffectiveRole() {
 		case userstore.RoleAdmin:
 			return true
-		case userstore.RoleUser:
+		case userstore.RoleViewer, userstore.RoleUser:
 			return false
 		}
 	}
@@ -711,9 +711,31 @@ func (b *Bot) isAdmin(userID int64) bool {
 	return false
 }
 
+// isViewer reports explicit profile.role=viewer (not admin).
+func (b *Bot) isViewer(userID int64) bool {
+	if b.isAdmin(userID) {
+		return false
+	}
+	if p, ok := b.users.Get(userID); ok {
+		return p.EffectiveRole() == userstore.RoleViewer
+	}
+	return false
+}
+
+func (b *Bot) canOpsRead(userID int64) bool {
+	return b.isAdmin(userID) || b.isViewer(userID)
+}
+
+func (b *Bot) canOpsWrite(userID int64) bool {
+	return b.isAdmin(userID)
+}
+
 func (b *Bot) roleLabel(userID int64) string {
 	if b.isAdmin(userID) {
 		return "管理员"
+	}
+	if b.isViewer(userID) {
+		return "只读运维"
 	}
 	return "用户"
 }

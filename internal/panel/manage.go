@@ -15,11 +15,12 @@ import (
 )
 
 func manageKeyboard() *telegram.InlineKeyboardMarkup {
-	return manageKeyboardFor(nil)
+	return manageKeyboardFor(nil, true)
 }
 
 // manageKeyboardFor builds manage hub buttons. With stats, prioritizes triage actions.
-func manageKeyboardFor(stats *sub2api.DashboardStats) *telegram.InlineKeyboardMarkup {
+// canWrite=false hides bulk mutations and panel-user admin tools (viewer mode).
+func manageKeyboardFor(stats *sub2api.DashboardStats, canWrite bool) *telegram.InlineKeyboardMarkup {
 	badLabel := "📋 异常账号"
 	healLabel := "🛠 批量一键修复"
 	clearLabel := "🧹 批量清错"
@@ -35,48 +36,55 @@ func manageKeyboardFor(stats *sub2api.DashboardStats) *telegram.InlineKeyboardMa
 	}
 	rows := [][]telegram.InlineKeyboardButton{
 		{telegram.Btn("📚 账号浏览", "mgr_browse"), telegram.Btn("🔎 搜索账号", "mgr_search")},
+		{telegram.Btn(badLabel, "ops_badacc:error:0"), telegram.Btn("📈 看板", "ops_dash")},
 	}
-	if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
-		rows = append(rows,
-			[]telegram.InlineKeyboardButton{
-				telegram.Btn(badLabel, "ops_badacc:error:0"),
-				telegram.Btn(healLabel, "mgr_bulk_heal"),
-			},
-			[]telegram.InlineKeyboardButton{
-				telegram.Btn(clearLabel, "mgr_bulk_clear"),
-				telegram.Btn(rlLabel, "mgr_bulk_clear_rl"),
-			},
-			[]telegram.InlineKeyboardButton{
-				telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
-				telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
-			},
-		)
-	} else {
-		rows = append(rows,
-			[]telegram.InlineKeyboardButton{
-				telegram.Btn(clearLabel, "mgr_bulk_clear"),
-				telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
-			},
-			[]telegram.InlineKeyboardButton{
-				telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
-				telegram.Btn(rlLabel, "mgr_bulk_clear_rl"),
-			},
-			[]telegram.InlineKeyboardButton{
-				telegram.Btn(badLabel, "ops_badacc:error:0"),
-				telegram.Btn(healLabel, "mgr_bulk_heal"),
-			},
-		)
+	if canWrite {
+		if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
+			rows = append(rows,
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn(healLabel, "mgr_bulk_heal"),
+					telegram.Btn(clearLabel, "mgr_bulk_clear"),
+				},
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn(rlLabel, "mgr_bulk_clear_rl"),
+					telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+				},
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+				},
+			)
+		} else {
+			rows = append(rows,
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn(clearLabel, "mgr_bulk_clear"),
+					telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+				},
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+					telegram.Btn(rlLabel, "mgr_bulk_clear_rl"),
+				},
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn(healLabel, "mgr_bulk_heal"),
+				},
+			)
+		}
 	}
 	rows = append(rows,
 		[]telegram.InlineKeyboardButton{
 			telegram.Btn("👥 实例用户", "mgr_users"),
 			telegram.Btn("🏷 分组", "mgr_groups"),
 		},
-		[]telegram.InlineKeyboardButton{
+	)
+	if canWrite {
+		rows = append(rows, []telegram.InlineKeyboardButton{
 			telegram.Btn("👤 面板用户", "pnl_users"),
 			telegram.Btn("« 返回主面板", "home"),
-		},
-	)
+		})
+	} else {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("« 返回主面板", "home"),
+		})
+	}
 	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
@@ -97,7 +105,7 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 • 账号浏览 — 状态/平台筛选、搜索、分页
 • 批量清错 / 恢复 / 开调度 / 清限速 / 一键修复 — 批量处理（需确认）
 • 实例用户 / 分组 — Sub2API 只读列表
-• 面板用户 — 本 Bot 多用户与角色（admin/user）
+• 面板用户 — 本 Bot 多用户与角色（admin/viewer/user，仅管理员可改）
 • 异常账号 — error/限速/停调度/汇总分标签分页，管理/实时/修复 / 一键监控
 
 进入账号后可执行：
@@ -114,7 +122,7 @@ func (b *Bot) showManageMenu(ctx context.Context, chatID, msgID, userID int64) e
 			stats = st
 		}
 	}
-	return b.editOrSend(ctx, chatID, msgID, b.manageMenuText(ctx, userID), manageKeyboardFor(stats))
+	return b.editOrSend(ctx, chatID, msgID, b.manageMenuText(ctx, userID), manageKeyboardFor(stats, b.canOpsWrite(userID)))
 }
 
 func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int64, status string, page int) error {
@@ -204,22 +212,24 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 	if len(nav) > 0 {
 		kbRows = append(kbRows, nav)
 	}
-	// context actions for common problem filters
-	switch status {
-	case "error":
-		kbRows = append(kbRows, []telegram.InlineKeyboardButton{
-			telegram.Btn("🧹 批量清错", "mgr_bulk_clear"),
-			telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
-			telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
-		})
-	case "rate_limited":
-		kbRows = append(kbRows, []telegram.InlineKeyboardButton{
-			telegram.Btn("⏱ 批量清限速", "mgr_bulk_clear_rl"),
-		})
-	case "unsched":
-		kbRows = append(kbRows, []telegram.InlineKeyboardButton{
-			telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
-		})
+	// context actions for common problem filters (write only)
+	if b.canOpsWrite(userID) {
+		switch status {
+		case "error":
+			kbRows = append(kbRows, []telegram.InlineKeyboardButton{
+				telegram.Btn("🧹 批量清错", "mgr_bulk_clear"),
+				telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
+				telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+			})
+		case "rate_limited":
+			kbRows = append(kbRows, []telegram.InlineKeyboardButton{
+				telegram.Btn("⏱ 批量清限速", "mgr_bulk_clear_rl"),
+			})
+		case "unsched":
+			kbRows = append(kbRows, []telegram.InlineKeyboardButton{
+				telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+			})
+		}
 	}
 	kbRows = append(kbRows, []telegram.InlineKeyboardButton{
 		telegram.Btn("« 管理菜单", "mgr_menu"),
@@ -381,35 +391,44 @@ func (b *Bot) showManageAccount(ctx context.Context, chatID, msgID, userID, acco
 		}
 	}
 
-	kb := &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn(schedBtn, schedData), telegram.Btn(watchBtn, watchData)},
-			{
+	rows := [][]telegram.InlineKeyboardButton{}
+	if b.canOpsWrite(userID) {
+		rows = append(rows,
+			[]telegram.InlineKeyboardButton{telegram.Btn(schedBtn, schedData), telegram.Btn(watchBtn, watchData)},
+			[]telegram.InlineKeyboardButton{
 				telegram.Btn(statusBtn, statusData),
 				telegram.Btn("🧪 测试连通", fmt.Sprintf("mgr_act:test:%d", accountID)),
 			},
-			{
+			[]telegram.InlineKeyboardButton{
 				telegram.Btn("🧹 清错误", fmt.Sprintf("mgr_act:clear_err:%d", accountID)),
 				telegram.Btn("⏱ 清限速", fmt.Sprintf("mgr_act:clear_rl:%d", accountID)),
 			},
-			{
+			[]telegram.InlineKeyboardButton{
 				telegram.Btn("🛠 一键修复", fmt.Sprintf("mgr_act:heal:%d", accountID)),
 				telegram.Btn("♻️ 恢复状态", fmt.Sprintf("mgr_act:recover:%d", accountID)),
 			},
-			{
+			[]telegram.InlineKeyboardButton{
 				telegram.Btn("🔄 刷新凭据", fmt.Sprintf("mgr_act:refresh:%d", accountID)),
 			},
-			{
+			[]telegram.InlineKeyboardButton{
 				telegram.Btn("⏳ 临时停调度", fmt.Sprintf("mgr_act:temp_menu:%d", accountID)),
 				telegram.Btn("🚫 清临时停", fmt.Sprintf("mgr_act:clear_temp:%d", accountID)),
 			},
-			{
+			[]telegram.InlineKeyboardButton{
 				telegram.Btn("📊 重置额度", fmt.Sprintf("mgr_act:confirm_reset_quota:%d", accountID)),
 				telegram.Btn("📡 实时用量", fmt.Sprintf("acc_live:%d", accountID)),
 			},
-			{b.manageBackButton(userID), telegram.Btn("« 管理菜单", "mgr_menu")},
-		},
+		)
+	} else {
+		// viewer/read-only: detail + live (no instance write actions)
+		rows = append(rows,
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("📡 实时用量", fmt.Sprintf("acc_live:%d", accountID)),
+			},
+		)
 	}
+	rows = append(rows, []telegram.InlineKeyboardButton{b.manageBackButton(userID), telegram.Btn("« 管理菜单", "mgr_menu")})
+	kb := &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
 }
 
@@ -1041,6 +1060,8 @@ func (b *Bot) showPanelUsers(ctx context.Context, chatID, msgID, adminID int64, 
 		if role == "" {
 			if b.isAdmin(p.UserID()) {
 				role = "admin*"
+			} else if b.isViewer(p.UserID()) {
+				role = "viewer*"
 			} else {
 				role = "user*"
 			}
@@ -1143,9 +1164,10 @@ func (b *Bot) showPanelUserDetail(ctx context.Context, chatID, msgID, adminID, t
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{
 				telegram.Btn("设为管理员", fmt.Sprintf("pnl_role:admin:%d", targetID)),
-				telegram.Btn("设为用户", fmt.Sprintf("pnl_role:user:%d", targetID)),
+				telegram.Btn("设为只读运维", fmt.Sprintf("pnl_role:viewer:%d", targetID)),
 			},
 			{
+				telegram.Btn("设为用户", fmt.Sprintf("pnl_role:user:%d", targetID)),
 				telegram.Btn("清除角色覆盖", fmt.Sprintf("pnl_role:clear:%d", targetID)),
 			},
 			{
@@ -1170,6 +1192,8 @@ func (b *Bot) setPanelUserRole(ctx context.Context, chatID, msgID, adminID, targ
 	switch role {
 	case "admin":
 		storeRole = userstore.RoleAdmin
+	case "viewer", "readonly", "ro":
+		storeRole = userstore.RoleViewer
 	case "user":
 		storeRole = userstore.RoleUser
 	case "clear", "inherit", "default", "":

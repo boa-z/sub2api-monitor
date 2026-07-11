@@ -29,9 +29,11 @@ func (a AccountWatch) IsEnabled() bool {
 }
 
 // Role constants for panel privileges.
+// Roles: admin (full write) | viewer (ops read-only) | user (self-service) | empty (inherit config).
 const (
-	RoleUser  = "user"
-	RoleAdmin = "admin"
+	RoleUser   = "user"
+	RoleViewer = "viewer"
+	RoleAdmin  = "admin"
 )
 
 // Platform identifiers for multi-channel panels.
@@ -50,7 +52,7 @@ type Profile struct {
 	ChatID      string `json:"chat_id"`
 	Username    string `json:"username,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
-	// Role is an optional per-profile override: "admin" | "user" | empty (derive from config).
+	// Role is an optional per-profile override: "admin" | "viewer" | "user" | empty (derive from config).
 	Role string `json:"role,omitempty"`
 
 	// Sub2API connection (per-user)
@@ -68,7 +70,8 @@ type Profile struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// EffectiveRole returns admin|user for this profile given explicit Role.
+// EffectiveRole returns admin|viewer|user for this profile given explicit Role.
+// Empty means inherit from config (admin_user_ids / chat_id fallback).
 func (p *Profile) EffectiveRole() string {
 	if p == nil {
 		return RoleUser
@@ -76,6 +79,8 @@ func (p *Profile) EffectiveRole() string {
 	switch strings.ToLower(strings.TrimSpace(p.Role)) {
 	case RoleAdmin:
 		return RoleAdmin
+	case RoleViewer:
+		return RoleViewer
 	case RoleUser:
 		return RoleUser
 	default:

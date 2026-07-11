@@ -20,8 +20,9 @@ func helpText() string {
 	return `**Sub2API Discord 面板**
 
 • **普通用户**：连接 / 监控账号 / 阈值 / 立即检查
-• **管理员**：运维视图 + 账号管理（调度/清错/恢复/批量/错误分页/异常账号分页/一键修复/临时停调度/搜索/面板用户）
-• 管理员由 admin_user_ids 或 profile.role=admin 控制
+• **只读运维**：运维视图 / 看板 / 异常账号等只读（不可修复/调度/改角色）
+• **管理员**：运维写操作 + 账号管理（调度/清错/恢复/批量/一键修复/临时停调度/搜索/面板用户）
+• 角色由 admin_user_ids 或 profile.role=admin|viewer|user 控制
 • 配置按用户隔离，存于 users.json（可与 Telegram 共享）
 • 斜杠命令：` + "`/panel` `/status` `/check` `/setbase` `/setkey` `/addaccount` `/ops` `/manage`"
 }
@@ -33,7 +34,7 @@ func (b *Bot) homeText(userID int64) string {
 	fmt.Fprintf(&bld, "实例: `%s` · 角色: `%s`\n", b.cfg.Instance, b.roleLabel(userID))
 	fmt.Fprintf(&bld, "检查间隔: `%s` · 冷却: `%s`\n\n",
 		b.panelCfg().CheckInterval.String(), b.panelCfg().Cooldown.String())
-	if b.isAdmin(userID) {
+	if b.canOpsRead(userID) {
 		if cli, _, err := b.userClient(userID, 5*time.Second); err == nil && cli != nil {
 			if st, err := cli.GetDashboardStats(context.Background()); err == nil && st != nil {
 				bld.WriteString("**运维快照**\n")
@@ -97,6 +98,30 @@ func (b *Bot) homeComponents(userID int64) []discord.Component {
 			),
 		}
 	}
+	if b.isViewer(userID) {
+		return []discord.Component{
+			discord.ActionRow(
+				discord.PrimaryButton("状态", "status"),
+				discord.Button("运维", "ops_menu", 2),
+				discord.Button("看板", "ops_dash", 2),
+			),
+			discord.ActionRow(
+				discord.Button("异常账号", "ops_badacc:error:0", 2),
+				discord.Button("账号浏览", "mgr_menu", 2),
+				discord.Button("监控账号", "cfg_acc", 2),
+			),
+			discord.ActionRow(
+				discord.Button("连接", "cfg_conn", 2),
+				discord.Button("阈值", "cfg_thr", 2),
+				discord.SuccessButton("立即检查", "check_now"),
+			),
+			discord.ActionRow(
+				discord.Button("开关监控", "toggle_mon", 2),
+				discord.Button("数据源", "toggle_src", 2),
+				discord.Button("帮助", "help", 2),
+			),
+		}
+	}
 	return []discord.Component{
 		discord.ActionRow(
 			discord.PrimaryButton("状态", "status"),
@@ -130,7 +155,7 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 		b.panelCfg().CheckInterval.String(), b.panelCfg().Cooldown.String())
 	fmt.Fprintf(&bld, "时间: `%s`\n\n", time.Now().Local().Format("01-02 15:04:05"))
 
-	if b.isAdmin(userID) {
+	if b.canOpsRead(userID) {
 		if cli, _, err := b.userClient(userID, 5*time.Second); err == nil && cli != nil {
 			if st, err := cli.GetDashboardStats(ctx); err == nil && st != nil {
 				bld.WriteString("**实例健康**\n")
@@ -272,8 +297,8 @@ func (b *Bot) statusComponents(userID int64, issueIDs ...[]int64) []discord.Comp
 			if i >= 4 {
 				break
 			}
-			if b.isAdmin(userID) {
-				row = append(row, discord.Button(fmt.Sprintf("管理 #%d", id), fmt.Sprintf("mgr_acc:%d", id), 1))
+			if b.canOpsRead(userID) {
+				row = append(row, discord.Button(fmt.Sprintf("查看 #%d", id), fmt.Sprintf("mgr_acc:%d", id), 1))
 			} else {
 				row = append(row, discord.Button(fmt.Sprintf("实时 #%d", id), fmt.Sprintf("acc_live:%d", id), 2))
 			}
@@ -286,7 +311,11 @@ func (b *Bot) statusComponents(userID int64, issueIDs ...[]int64) []discord.Comp
 			comps = append(comps, discord.ActionRow(row...))
 		}
 	}
-	if b.isAdmin(userID) {
+	if b.canOpsRead(userID) {
+		mgrLabel := "账号管理"
+		if b.isViewer(userID) {
+			mgrLabel = "账号浏览"
+		}
 		comps = append(comps,
 			discord.ActionRow(
 				discord.Button("运维", "ops_menu", 2),
@@ -294,7 +323,7 @@ func (b *Bot) statusComponents(userID int64, issueIDs ...[]int64) []discord.Comp
 				discord.Button("看板", "ops_dash", 2),
 			),
 			discord.ActionRow(
-				discord.Button("账号管理", "mgr_menu", 2),
+				discord.Button(mgrLabel, "mgr_menu", 2),
 				discord.Button("连接", "cfg_conn", 2),
 				discord.Button("« 主面板", "home", 2),
 			),
@@ -469,6 +498,11 @@ func (b *Bot) opsMenuText(ctx context.Context, userID int64) string {
 	return bld.String()
 }
 
+func (b *Bot) opsComponents(userID int64) []discord.Component {
+	_ = userID
+	return opsComponents()
+}
+
 func opsComponents() []discord.Component {
 	return []discord.Component{
 		discord.ActionRow(
@@ -517,10 +551,10 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 }
 
 func manageComponents() []discord.Component {
-	return manageComponentsFor(nil)
+	return manageComponentsFor(nil, true)
 }
 
-func manageComponentsFor(stats *sub2api.DashboardStats) []discord.Component {
+func manageComponentsFor(stats *sub2api.DashboardStats, canWrite bool) []discord.Component {
 	badLabel := "异常账号"
 	clearLabel := "批量清错"
 	rlLabel := "批量清限速"
@@ -545,39 +579,55 @@ func manageComponentsFor(stats *sub2api.DashboardStats) []discord.Component {
 			discord.Button(badLabel, "ops_badacc:error:0", 2),
 		),
 	}
-	if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
-		comps = append(comps,
-			discord.ActionRow(
-				discord.Button("一键修复", "mgr_bulk_heal", 1),
-				discord.DangerButton(clearLabel, "mgr_bulk_clear"),
-				discord.Button(rlLabel, "mgr_bulk_clear_rl", 2),
-			),
-			discord.ActionRow(
-				discord.Button("批量恢复", "mgr_bulk_recover", 2),
-				discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
-				discord.Button("搜索", "mgr_search", 2),
-			),
-		)
+	if canWrite {
+		if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
+			comps = append(comps,
+				discord.ActionRow(
+					discord.Button("一键修复", "mgr_bulk_heal", 1),
+					discord.DangerButton(clearLabel, "mgr_bulk_clear"),
+					discord.Button(rlLabel, "mgr_bulk_clear_rl", 2),
+				),
+				discord.ActionRow(
+					discord.Button("批量恢复", "mgr_bulk_recover", 2),
+					discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+					discord.Button("搜索", "mgr_search", 2),
+				),
+			)
+		} else {
+			comps = append(comps,
+				discord.ActionRow(
+					discord.DangerButton(clearLabel, "mgr_bulk_clear"),
+					discord.Button("批量恢复", "mgr_bulk_recover", 2),
+					discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+				),
+				discord.ActionRow(
+					discord.Button(rlLabel, "mgr_bulk_clear_rl", 2),
+					discord.Button("一键修复", "mgr_bulk_heal", 1),
+					discord.Button("搜索", "mgr_search", 2),
+				),
+			)
+		}
+		comps = append(comps, discord.ActionRow(
+			discord.Button("实例用户", "mgr_users", 2),
+			discord.Button("分组", "mgr_groups", 2),
+			discord.Button("面板用户", "pnl_users", 2),
+			discord.Button("« 主面板", "home", 2),
+		))
 	} else {
 		comps = append(comps,
 			discord.ActionRow(
-				discord.DangerButton(clearLabel, "mgr_bulk_clear"),
-				discord.Button("批量恢复", "mgr_bulk_recover", 2),
-				discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+				discord.Button("搜索", "mgr_search", 2),
+				discord.Button("实例用户", "mgr_users", 2),
+				discord.Button("分组", "mgr_groups", 2),
 			),
 			discord.ActionRow(
-				discord.Button(rlLabel, "mgr_bulk_clear_rl", 2),
-				discord.Button("一键修复", "mgr_bulk_heal", 1),
-				discord.Button("搜索", "mgr_search", 2),
+				discord.Button("« 主面板", "home", 2),
 			),
 		)
 	}
-	comps = append(comps, discord.ActionRow(
-		discord.Button("实例用户", "mgr_users", 2),
-		discord.Button("分组", "mgr_groups", 2),
-		discord.Button("面板用户", "pnl_users", 2),
-		discord.Button("« 主面板", "home", 2),
-	))
+	if len(comps) > 5 {
+		comps = comps[:5]
+	}
 	return comps
 }
 
@@ -588,7 +638,7 @@ func (b *Bot) manageMenuView(ctx context.Context, userID int64) (string, []disco
 			stats = st
 		}
 	}
-	return b.manageMenuText(ctx, userID), manageComponentsFor(stats)
+	return b.manageMenuText(ctx, userID), manageComponentsFor(stats, b.canOpsWrite(userID))
 }
 
 func confirmComponents(action string, accountID int64) []discord.Component {
@@ -899,8 +949,8 @@ func (b *Bot) forceCheckView(ctx context.Context, userID int64) (string, []disco
 	if len(issueIDs) > 0 {
 		row := []discord.Component{}
 		for _, id := range issueIDs {
-			if b.isAdmin(userID) {
-				row = append(row, discord.Button(fmt.Sprintf("管理 #%d", id), fmt.Sprintf("mgr_acc:%d", id), 1))
+			if b.canOpsRead(userID) {
+				row = append(row, discord.Button(fmt.Sprintf("查看 #%d", id), fmt.Sprintf("mgr_acc:%d", id), 1))
 			} else {
 				row = append(row, discord.Button(fmt.Sprintf("实时 #%d", id), fmt.Sprintf("acc_live:%d", id), 2))
 			}
@@ -913,7 +963,7 @@ func (b *Bot) forceCheckView(ctx context.Context, userID int64) (string, []disco
 			comps = append(comps, discord.ActionRow(row...))
 		}
 	}
-	if b.isAdmin(userID) {
+	if b.canOpsRead(userID) {
 		comps = append(comps, discord.ActionRow(
 			discord.Button("异常账号", "ops_badacc:error:0", 2),
 			discord.Button("运维", "ops_menu", 2),
@@ -1438,6 +1488,7 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 	if err != nil {
 		return "❌ " + err.Error(), opsComponents()
 	}
+	canWrite := b.canOpsWrite(userID)
 	if page < 0 {
 		page = 0
 	}
@@ -1540,17 +1591,22 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 		if i >= 2 {
 			break
 		}
-		row := []discord.Component{
-			discord.SuccessButton(fmt.Sprintf("✅ #%d", r.id), fmt.Sprintf("oe:r:%s:%d", r.kind, r.id)),
+		row := []discord.Component{}
+		if canWrite {
+			row = append(row, discord.SuccessButton(fmt.Sprintf("✅ #%d", r.id), fmt.Sprintf("oe:r:%s:%d", r.kind, r.id)))
 		}
 		if r.accountID > 0 {
+			if canWrite {
+				row = append(row, discord.Button("修复", fmt.Sprintf("live_act:heal:%d", r.accountID), 1))
+			}
 			row = append(row,
-				discord.Button("修复", fmt.Sprintf("live_act:heal:%d", r.accountID), 1),
 				discord.Button("实时", fmt.Sprintf("acc_live:%d", r.accountID), 2),
-				discord.Button("管理", fmt.Sprintf("mgr_acc:%d", r.accountID), 2),
+				discord.Button("查看", fmt.Sprintf("mgr_acc:%d", r.accountID), 2),
 			)
 		}
-		comps = append(comps, discord.ActionRow(row...))
+		if len(row) > 0 {
+			comps = append(comps, discord.ActionRow(row...))
+		}
 	}
 	// If there is a nav row already, drop it when we need room for resolve-all+footer.
 	// Rebuild comps to keep: tabs (first), error rows, optional nav, then footer actions.
@@ -1560,13 +1616,13 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 		discord.Button("« 运维", "ops_menu", 2),
 		discord.Button("« 主面板", "home", 2),
 	}
-	comps = append(comps,
-		discord.ActionRow(
+	if canWrite {
+		comps = append(comps, discord.ActionRow(
 			discord.SuccessButton("全解上游", "oe:resolve_all:u"),
 			discord.SuccessButton("全解请求", "oe:resolve_all:r"),
-		),
-		discord.ActionRow(footer...),
-	)
+		))
+	}
+	comps = append(comps, discord.ActionRow(footer...))
 	// Trim to 5 action rows if pagination was inserted earlier.
 	if len(comps) > 5 {
 		// Keep first (tabs), next 2 error rows if any, then last 2 (resolve-all + footer).
@@ -1701,6 +1757,7 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 	if err != nil {
 		return "❌ " + err.Error(), opsComponents()
 	}
+	canWrite := b.canOpsWrite(userID)
 	if page < 0 {
 		page = 0
 	}
@@ -1747,17 +1804,20 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 		if i >= 5 {
 			break
 		}
-		quick, quickData := "修复", fmt.Sprintf("live_act:heal:%d", a.ID)
-		if kind == "rl" || kind == "ol" {
-			quick, quickData = "清限速", fmt.Sprintf("live_act:clear_rl:%d", a.ID)
-		} else if kind == "unsched" {
-			quick, quickData = "开调度", fmt.Sprintf("live_act:sched:%d", a.ID)
-		}
-		comps = append(comps, discord.ActionRow(
-			discord.Button(fmt.Sprintf("管理 #%d", a.ID), fmt.Sprintf("mgr_acc:%d", a.ID), 1),
+		row := []discord.Component{
+			discord.Button(fmt.Sprintf("查看 #%d", a.ID), fmt.Sprintf("mgr_acc:%d", a.ID), 1),
 			discord.Button("实时", fmt.Sprintf("acc_live:%d", a.ID), 2),
-			discord.Button(quick, quickData, 1),
-		))
+		}
+		if canWrite {
+			quick, quickData := "修复", fmt.Sprintf("live_act:heal:%d", a.ID)
+			if kind == "rl" || kind == "ol" {
+				quick, quickData = "清限速", fmt.Sprintf("live_act:clear_rl:%d", a.ID)
+			} else if kind == "unsched" {
+				quick, quickData = "开调度", fmt.Sprintf("live_act:sched:%d", a.ID)
+			}
+			row = append(row, discord.Button(quick, quickData, 1))
+		}
+		comps = append(comps, discord.ActionRow(row...))
 	}
 	nav := []discord.Component{}
 	if page > 0 {
@@ -1769,22 +1829,24 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 	if len(nav) > 0 {
 		comps = append(comps, discord.ActionRow(nav...))
 	}
-	switch kind {
-	case "rl", "ol":
-		comps = append(comps, discord.ActionRow(
-			discord.Button("批量清限速", "mgr_bulk_clear_rl", 2),
-			discord.Button("一键修复", "mgr_bulk_heal", 1),
-		))
-	case "unsched":
-		comps = append(comps, discord.ActionRow(
-			discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
-		))
-	default:
-		comps = append(comps, discord.ActionRow(
-			discord.DangerButton("批量清错", "mgr_bulk_clear"),
-			discord.Button("批量恢复", "mgr_bulk_recover", 2),
-			discord.Button("一键修复", "mgr_bulk_heal", 1),
-		))
+	if canWrite {
+		switch kind {
+		case "rl", "ol":
+			comps = append(comps, discord.ActionRow(
+				discord.Button("批量清限速", "mgr_bulk_clear_rl", 2),
+				discord.Button("一键修复", "mgr_bulk_heal", 1),
+			))
+		case "unsched":
+			comps = append(comps, discord.ActionRow(
+				discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+			))
+		default:
+			comps = append(comps, discord.ActionRow(
+				discord.DangerButton("批量清错", "mgr_bulk_clear"),
+				discord.Button("批量恢复", "mgr_bulk_recover", 2),
+				discord.Button("一键修复", "mgr_bulk_heal", 1),
+			))
+		}
 	}
 	comps = append(comps,
 		discord.ActionRow(
@@ -1866,17 +1928,19 @@ func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, p
 	if len(nav) > 0 {
 		comps = append(comps, discord.ActionRow(nav...))
 	}
-	switch status {
-	case "error":
-		comps = append(comps, discord.ActionRow(
-			discord.DangerButton("批量清错", "mgr_bulk_clear"),
-			discord.Button("一键修复", "mgr_bulk_heal", 1),
-			discord.Button("批量恢复", "mgr_bulk_recover", 2),
-		))
-	case "rate_limited":
-		comps = append(comps, discord.ActionRow(discord.Button("批量清限速", "mgr_bulk_clear_rl", 2)))
-	case "unsched":
-		comps = append(comps, discord.ActionRow(discord.Button("批量开调度", "mgr_bulk_sched_on", 2)))
+	if b.canOpsWrite(userID) {
+		switch status {
+		case "error":
+			comps = append(comps, discord.ActionRow(
+				discord.DangerButton("批量清错", "mgr_bulk_clear"),
+				discord.Button("一键修复", "mgr_bulk_heal", 1),
+				discord.Button("批量恢复", "mgr_bulk_recover", 2),
+			))
+		case "rate_limited":
+			comps = append(comps, discord.ActionRow(discord.Button("批量清限速", "mgr_bulk_clear_rl", 2)))
+		case "unsched":
+			comps = append(comps, discord.ActionRow(discord.Button("批量开调度", "mgr_bulk_sched_on", 2)))
+		}
 	}
 	comps = append(comps, discord.ActionRow(
 		discord.Button("« 管理菜单", "mgr_menu", 2),
@@ -1994,32 +2058,43 @@ func (b *Bot) manageAccount(ctx context.Context, userID, accountID int64, notice
 		statusData = fmt.Sprintf("mgr_act:enable:%d", accountID)
 	}
 	backLabel, backData := b.manageBackLabel(userID)
-	comps := []discord.Component{
-		discord.ActionRow(
-			discord.Button(schedBtn, schedData, 1),
-			discord.Button(watchBtn, watchData, 2),
-			discord.Button(statusBtn, statusData, 2),
-		),
-		discord.ActionRow(
-			discord.Button("一键修复", fmt.Sprintf("mgr_act:heal:%d", accountID), 1),
-			discord.Button("清错误", fmt.Sprintf("mgr_act:clear_err:%d", accountID), 2),
-			discord.Button("清限速", fmt.Sprintf("mgr_act:clear_rl:%d", accountID), 2),
-		),
-		discord.ActionRow(
-			discord.Button("恢复", fmt.Sprintf("mgr_act:recover:%d", accountID), 2),
-			discord.Button("刷新", fmt.Sprintf("mgr_act:refresh:%d", accountID), 2),
-			discord.Button("测试", fmt.Sprintf("mgr_act:test:%d", accountID), 2),
-		),
-		discord.ActionRow(
-			discord.Button("临时停调度", fmt.Sprintf("mgr_act:temp_menu:%d", accountID), 2),
-			discord.Button("清临时停", fmt.Sprintf("mgr_act:clear_temp:%d", accountID), 2),
-			discord.Button("重置额度", fmt.Sprintf("mgr_act:confirm_reset_quota:%d", accountID), 4),
-		),
-		discord.ActionRow(
-			discord.Button("实时用量", fmt.Sprintf("acc_live:%d", accountID), 1),
-			discord.Button(backLabel, backData, 2),
-			discord.Button("« 管理", "mgr_menu", 2),
-		),
+	var comps []discord.Component
+	if b.canOpsWrite(userID) {
+		comps = []discord.Component{
+			discord.ActionRow(
+				discord.Button(schedBtn, schedData, 1),
+				discord.Button(watchBtn, watchData, 2),
+				discord.Button(statusBtn, statusData, 2),
+			),
+			discord.ActionRow(
+				discord.Button("一键修复", fmt.Sprintf("mgr_act:heal:%d", accountID), 1),
+				discord.Button("清错误", fmt.Sprintf("mgr_act:clear_err:%d", accountID), 2),
+				discord.Button("清限速", fmt.Sprintf("mgr_act:clear_rl:%d", accountID), 2),
+			),
+			discord.ActionRow(
+				discord.Button("恢复", fmt.Sprintf("mgr_act:recover:%d", accountID), 2),
+				discord.Button("刷新", fmt.Sprintf("mgr_act:refresh:%d", accountID), 2),
+				discord.Button("测试", fmt.Sprintf("mgr_act:test:%d", accountID), 2),
+			),
+			discord.ActionRow(
+				discord.Button("临时停调度", fmt.Sprintf("mgr_act:temp_menu:%d", accountID), 2),
+				discord.Button("清临时停", fmt.Sprintf("mgr_act:clear_temp:%d", accountID), 2),
+				discord.Button("重置额度", fmt.Sprintf("mgr_act:confirm_reset_quota:%d", accountID), 4),
+			),
+			discord.ActionRow(
+				discord.Button("实时用量", fmt.Sprintf("acc_live:%d", accountID), 1),
+				discord.Button(backLabel, backData, 2),
+				discord.Button("« 管理", "mgr_menu", 2),
+			),
+		}
+	} else {
+		comps = []discord.Component{
+			discord.ActionRow(
+				discord.Button("实时用量", fmt.Sprintf("acc_live:%d", accountID), 1),
+				discord.Button(backLabel, backData, 2),
+				discord.Button("« 浏览", "mgr_menu", 2),
+			),
+		}
 	}
 	return bld.String(), comps
 }
@@ -2246,7 +2321,7 @@ func (b *Bot) showAccountLive(ctx context.Context, userID, accountID int64, noti
 	comps := []discord.Component{
 		discord.ActionRow(discord.Button("刷新", fmt.Sprintf("acc_live:%d", accountID), 2)),
 	}
-	if b.isAdmin(userID) {
+	if b.canOpsWrite(userID) {
 		comps = append(comps,
 			discord.ActionRow(
 				discord.Button("一键修复", fmt.Sprintf("live_act:heal:%d", accountID), 1),
@@ -2262,6 +2337,10 @@ func (b *Bot) showAccountLive(ctx context.Context, userID, accountID int64, noti
 				discord.Button("完整管理", fmt.Sprintf("mgr_acc:%d", accountID), 2),
 			),
 		)
+	} else if b.canOpsRead(userID) {
+		comps = append(comps, discord.ActionRow(
+			discord.Button("账号详情", fmt.Sprintf("mgr_acc:%d", accountID), 2),
+		))
 	}
 	backLabel, backData := b.manageBackLabel(userID)
 	comps = append(comps, discord.ActionRow(
@@ -2611,6 +2690,8 @@ func (b *Bot) showPanelUsers(userID int64, page int, notice string) (string, []d
 		if role == "" {
 			if b.isAdmin(p.UserID()) {
 				role = "admin*"
+			} else if b.isViewer(p.UserID()) {
+				role = "viewer*"
 			} else {
 				role = "user*"
 			}
@@ -2708,9 +2789,10 @@ func (b *Bot) showPanelUserDetail(adminID, targetID int64, notice string) (strin
 	comps := []discord.Component{
 		discord.ActionRow(
 			discord.Button("设为管理员", fmt.Sprintf("pnl_role:admin:%d", targetID), 1),
-			discord.Button("设为用户", fmt.Sprintf("pnl_role:user:%d", targetID), 2),
+			discord.Button("设为只读运维", fmt.Sprintf("pnl_role:viewer:%d", targetID), 2),
 		),
 		discord.ActionRow(
+			discord.Button("设为用户", fmt.Sprintf("pnl_role:user:%d", targetID), 2),
 			discord.Button("清除角色覆盖", fmt.Sprintf("pnl_role:clear:%d", targetID), 2),
 		),
 		discord.ActionRow(
@@ -2731,6 +2813,8 @@ func (b *Bot) setPanelUserRole(adminID, targetID int64, role string) (string, []
 	switch role {
 	case "admin":
 		storeRole = userstore.RoleAdmin
+	case "viewer", "readonly", "ro":
+		storeRole = userstore.RoleViewer
 	case "user":
 		storeRole = userstore.RoleUser
 	case "clear", "inherit", "default", "":

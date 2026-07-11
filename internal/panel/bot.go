@@ -218,8 +218,8 @@ func (b *Bot) handleMessage(ctx context.Context, m *telegram.InMessage) error {
 	case cmd == "/thresholds" || cmd == "/threshold" || cmd == "阈值":
 		return b.tg.SendChat(ctx, m.Chat.ID, b.thresholdsText(m.From.ID), thresholdsKeyboard(m.From.ID, b))
 	case cmd == "/ops" || cmd == "/dashboard" || cmd == "运维":
-		if !b.isAdmin(m.From.ID) {
-			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 运维视图仅管理员可用。", b.homeKeyboardFor(m.From.ID))
+		if !b.canOpsRead(m.From.ID) {
+			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 运维视图仅管理员或只读运维可用。", b.homeKeyboardFor(m.From.ID))
 		}
 		var stats *sub2api.DashboardStats
 		if cli, _, err := b.userClient(m.From.ID, 6*time.Second); err == nil && cli != nil {
@@ -227,10 +227,10 @@ func (b *Bot) handleMessage(ctx context.Context, m *telegram.InMessage) error {
 				stats = st
 			}
 		}
-		return b.tg.SendChat(ctx, m.Chat.ID, b.opsMenuText(ctx, m.From.ID), opsKeyboardFor(stats))
+		return b.tg.SendChat(ctx, m.Chat.ID, b.opsMenuText(ctx, m.From.ID), opsKeyboardFor(stats, b.canOpsWrite(m.From.ID)))
 	case cmd == "/manage" || cmd == "/mgr" || cmd == "管理":
-		if !b.isAdmin(m.From.ID) {
-			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 账号管理仅管理员可用。", b.homeKeyboardFor(m.From.ID))
+		if !b.canOpsRead(m.From.ID) {
+			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 账号管理/浏览仅管理员或只读运维可用。", b.homeKeyboardFor(m.From.ID))
 		}
 		var stats *sub2api.DashboardStats
 		if cli, _, err := b.userClient(m.From.ID, 6*time.Second); err == nil && cli != nil {
@@ -238,10 +238,10 @@ func (b *Bot) handleMessage(ctx context.Context, m *telegram.InMessage) error {
 				stats = st
 			}
 		}
-		return b.tg.SendChat(ctx, m.Chat.ID, b.manageMenuText(ctx, m.From.ID), manageKeyboardFor(stats))
+		return b.tg.SendChat(ctx, m.Chat.ID, b.manageMenuText(ctx, m.From.ID), manageKeyboardFor(stats, b.canOpsWrite(m.From.ID)))
 	case cmd == "/search" || strings.HasPrefix(cmd, "/search"):
-		if !b.isAdmin(m.From.ID) {
-			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 搜索账号仅管理员可用。", b.homeKeyboardFor(m.From.ID))
+		if !b.canOpsRead(m.From.ID) {
+			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 搜索账号仅管理员或只读运维可用。", b.homeKeyboardFor(m.From.ID))
 		}
 		if arg != "" {
 			return b.showAccountBrowser(ctx, m.Chat.ID, 0, m.From.ID, "search:"+arg, 0)
@@ -293,27 +293,27 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 	case data == "cfg_thr":
 		return b.editOrSend(ctx, chatID, msgID, b.thresholdsText(cq.From.ID), thresholdsKeyboard(cq.From.ID, b))
 	case data == "ops_menu":
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		return b.showOpsMenu(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_dash":
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		return b.showDashboard(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_avail":
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		return b.showAvailability(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_alerts":
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		return b.showAlerts(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_errors" || strings.HasPrefix(data, "ops_errors:"):
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		kind, page := "all", 0
@@ -329,17 +329,17 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		}
 		return b.showErrorsView(ctx, chatID, msgID, cq.From.ID, kind, page, "")
 	case data == "ops_conc":
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		return b.showConcurrency(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_channels":
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		return b.showChannels(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_badacc" || strings.HasPrefix(data, "ops_badacc:"):
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		rest := ""
@@ -354,12 +354,12 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		}
 		return b.watchErrorAccounts(ctx, chatID, msgID, cq.From.ID)
 	case data == "mgr_menu":
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		return b.showManageMenu(ctx, chatID, msgID, cq.From.ID)
 	case data == "mgr_search":
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		b.setAwait(cq.From.ID, awaitSearch, 0, "")
@@ -442,7 +442,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		}
 		return b.seedConnectionFromGlobal(ctx, chatID, msgID, cq.From.ID)
 	case data == "mgr_browse" || strings.HasPrefix(data, "mgr_browse:"):
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		status, page := "all", 0
@@ -453,8 +453,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		}
 		return b.showAccountBrowser(ctx, chatID, msgID, cq.From.ID, status, page)
 	case strings.HasPrefix(data, "mgr_acc:"):
-
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "mgr_acc:"), 10, 64)
@@ -479,8 +478,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		}
 		return b.handleManageAction(ctx, chatID, msgID, cq.From.ID, action, id)
 	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:"):
-
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		page := 0
@@ -489,8 +487,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		}
 		return b.showUsers(ctx, chatID, msgID, cq.From.ID, page)
 	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:"):
-
-		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
 		page := 0
@@ -517,7 +514,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
-		// pnl_role:<admin|user|clear>:<targetUserID>
+		// pnl_role:<admin|viewer|user|clear>:<targetUserID>
 		rest := strings.TrimPrefix(data, "pnl_role:")
 		role, idStr, ok := strings.Cut(rest, ":")
 		if !ok {
@@ -1107,7 +1104,7 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 	} else {
 		bld.WriteString("\n✅ 监控账号用量与状态正常。\n")
 	}
-	return b.tg.SendChat(ctx, chatID, bld.String(), checkResultKeyboard(b.isAdmin(userID), issueIDs, issueLabels))
+	return b.tg.SendChat(ctx, chatID, bld.String(), checkResultKeyboard(b.canOpsWrite(userID), issueIDs, issueLabels))
 }
 
 // checkResultKeyboard offers per-account live/manage jumps after force check.
@@ -1248,13 +1245,13 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 	)
 	fmt.Fprintf(&bld, "时间: %s\n\n", telegram.Code(time.Now().Local().Format("01-02 15:04:05")))
 
-	if b.isAdmin(userID) {
+	if b.canOpsRead(userID) {
 		if cli, _, err := b.userClient(userID, 5*time.Second); err == nil && cli != nil {
 			if line, issues := adminHealthSnapshot(ctx, cli); line != "" {
 				bld.WriteString(telegram.Bold("实例健康") + "\n")
 				bld.WriteString(line + "\n")
 				if issues {
-					bld.WriteString("可从下方运维入口处理异常。\n")
+					bld.WriteString("可从下方运维入口查看异常（写操作需管理员）。\n")
 				}
 				bld.WriteString("\n")
 			}
@@ -1420,8 +1417,8 @@ func (b *Bot) statusKeyboardFor(userID int64, issueIDs ...[]int64) *telegram.Inl
 			if i >= 4 {
 				break
 			}
-			if b.isAdmin(userID) {
-				row = append(row, telegram.Btn(fmt.Sprintf("管理 #%d", id), fmt.Sprintf("mgr_acc:%d", id)))
+			if b.canOpsRead(userID) {
+				row = append(row, telegram.Btn(fmt.Sprintf("查看 #%d", id), fmt.Sprintf("mgr_acc:%d", id)))
 			} else {
 				row = append(row, telegram.Btn(fmt.Sprintf("实时 #%d", id), fmt.Sprintf("acc_live:%d", id)))
 			}
@@ -1437,14 +1434,14 @@ func (b *Bot) statusKeyboardFor(userID int64, issueIDs ...[]int64) *telegram.Inl
 	rows = append(rows, []telegram.InlineKeyboardButton{
 		telegram.Btn("👤 监控账号", "cfg_acc"), telegram.Btn("🔌 连接", "cfg_conn"),
 	})
-	if b.isAdmin(userID) {
+	if b.canOpsRead(userID) {
 		rows = append(rows, []telegram.InlineKeyboardButton{
 			telegram.Btn("🛠 运维视图", "ops_menu"),
 			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
 		})
 		rows = append(rows, []telegram.InlineKeyboardButton{
 			telegram.Btn("📈 看板", "ops_dash"),
-			telegram.Btn("🧰 账号管理", "mgr_menu"),
+			telegram.Btn("🧰 账号浏览", "mgr_menu"),
 		})
 	}
 	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")})
@@ -1461,13 +1458,13 @@ func (b *Bot) homeText(userID int64) string {
 		telegram.Code(b.cfg.Telegram.Panel.CheckInterval.String()),
 		telegram.Code(b.cfg.Telegram.Panel.Cooldown.String()),
 	)
-	if b.isAdmin(userID) {
+	if b.canOpsRead(userID) {
 		if cli, _, err := b.userClient(userID, 5*time.Second); err == nil && cli != nil {
 			if line, issues := adminHealthSnapshot(context.Background(), cli); line != "" {
 				bld.WriteString(telegram.Bold("运维快照") + "\n")
 				bld.WriteString(line + "\n")
 				if issues {
-					bld.WriteString("可从下方「运维视图 / 看板」快速处理异常。\n")
+					bld.WriteString("可从下方「运维视图 / 看板」查看异常（写操作需管理员）。\n")
 				}
 				bld.WriteString("\n")
 			}
@@ -1680,6 +1677,19 @@ func (b *Bot) homeKeyboardFor(userID int64) *telegram.InlineKeyboardMarkup {
 	if b.isAdmin(userID) {
 		return homeKeyboard()
 	}
+	if b.isViewer(userID) {
+		// Viewer: ops read + self-service; no manage write hub
+		return &telegram.InlineKeyboardMarkup{
+			InlineKeyboard: [][]telegram.InlineKeyboardButton{
+				{telegram.Btn("📊 状态", "status"), telegram.Btn("🛠 运维视图", "ops_menu")},
+				{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn("📋 异常账号", "ops_badacc:error:0")},
+				{telegram.Btn("👤 监控账号", "cfg_acc"), telegram.Btn("🔌 连接配置", "cfg_conn")},
+				{telegram.Btn("🎯 阈值", "cfg_thr"), telegram.Btn("▶️ 立即检查", "check_now")},
+				{telegram.Btn("🔁 开关监控", "toggle_mon"), telegram.Btn("📡 切换数据源", "toggle_src")},
+				{telegram.Btn("❓ 帮助", "help")},
+			},
+		}
+	}
 	// Normal user: self-service monitoring only (no ops/manage write entry points)
 	return &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
@@ -1746,9 +1756,13 @@ func (b *Bot) accountDetailKeyboard(userID, id int64) *telegram.InlineKeyboardMa
 	rows := [][]telegram.InlineKeyboardButton{
 		{telegram.Btn("📡 实时状态/用量", fmt.Sprintf("acc_live:%d", id))},
 	}
-	if b.isAdmin(userID) {
+	if b.canOpsRead(userID) {
+		label := "🧰 管理操作"
+		if b.isViewer(userID) {
+			label = "👁 账号详情"
+		}
 		rows = append(rows, []telegram.InlineKeyboardButton{
-			telegram.Btn("🧰 管理操作", fmt.Sprintf("mgr_acc:%d", id)),
+			telegram.Btn(label, fmt.Sprintf("mgr_acc:%d", id)),
 		})
 	}
 	rows = append(rows,
@@ -1859,8 +1873,9 @@ func helpText() string {
 ` + telegram.Bold("说明") + `
 • 每位用户独立保存 base_url / key / 账号 / 阈值
 • <b>普通用户</b>：自助连接 / 监控账号 / 阈值 / 立即检查
-• <b>管理员</b>：运维视图 + 账号管理（调度/启停/清错/一键修复/临时停调度/重置额度/批量/搜索/错误分页保留页码/异常账号分标签/面板用户角色与监控）
-• 管理员入口由 admin_user_ids 或 profile.role=admin 控制；菜单对普通用户隐藏
+• <b>只读运维</b>：运维视图 / 看板 / 异常账号等只读，不能修复/调度/改角色
+• <b>管理员</b>：运维视图 + 账号管理写操作（调度/启停/清错/一键修复/临时停调度/重置额度/批量/搜索/错误分页/异常账号/面板用户角色）
+• 角色由 admin_user_ids 或 profile.role=admin|viewer|user 控制；菜单按角色显示
 • 用量达到阈值时 Bot 会私聊提醒你（Telegram / Discord 按平台投递）
 • 支持 passive（轻量缓存）与 active（刷新上游）数据源
 • 配置按用户隔离，存于 data/users.json（跨平台共享）
@@ -1897,14 +1912,15 @@ func (b *Bot) allowed(userID int64) bool {
 	return false
 }
 
-// isAdmin reports whether the Telegram user has admin privileges.
+// isAdmin reports whether the Telegram user has full admin (write) privileges.
 // Priority: Profile.Role override → admin_user_ids → numeric telegram.chat_id fallback.
+// RoleViewer / RoleUser explicitly deny admin even if listed in admin_user_ids.
 func (b *Bot) isAdmin(userID int64) bool {
 	if p, ok := b.users.Get(userID); ok {
 		switch p.EffectiveRole() {
 		case userstore.RoleAdmin:
 			return true
-		case userstore.RoleUser:
+		case userstore.RoleViewer, userstore.RoleUser:
 			return false
 		}
 	}
@@ -1922,22 +1938,69 @@ func (b *Bot) isAdmin(userID int64) bool {
 	return false
 }
 
+// isViewer reports explicit profile.role=viewer (not admin). Admins supersede viewer.
+func (b *Bot) isViewer(userID int64) bool {
+	if b.isAdmin(userID) {
+		return false
+	}
+	if p, ok := b.users.Get(userID); ok {
+		return p.EffectiveRole() == userstore.RoleViewer
+	}
+	return false
+}
+
+// canOpsRead allows ops read views (dashboard/availability/errors/badacc/...).
+func (b *Bot) canOpsRead(userID int64) bool {
+	return b.isAdmin(userID) || b.isViewer(userID)
+}
+
+// canOpsWrite allows mutating manage/ops actions (heal/clear/bulk/resolve/roles).
+func (b *Bot) canOpsWrite(userID int64) bool {
+	return b.isAdmin(userID)
+}
+
 func (b *Bot) roleLabel(userID int64) string {
 	if b.isAdmin(userID) {
 		return "管理员"
+	}
+	if b.isViewer(userID) {
+		return "只读运维"
 	}
 	return "用户"
 }
 
 // denyIfNotAdmin answers callback / sends message and returns true when denied.
+// Alias for write-gated actions (admin only).
 func (b *Bot) denyIfNotAdmin(ctx context.Context, chatID, msgID, userID int64, cqID string) bool {
-	if b.isAdmin(userID) {
+	return b.denyIfNotWrite(ctx, chatID, msgID, userID, cqID)
+}
+
+// denyIfNotWrite denies non-admins for write actions.
+func (b *Bot) denyIfNotWrite(ctx context.Context, chatID, msgID, userID int64, cqID string) bool {
+	if b.canOpsWrite(userID) {
 		return false
 	}
 	if cqID != "" {
-		_ = b.tg.AnswerCallback(ctx, cqID, "需要管理员权限", true)
+		_ = b.tg.AnswerCallback(ctx, cqID, "需要管理员写权限", true)
 	}
-	msg := "⛔ 该功能仅管理员可用。\n普通用户可配置自己的连接、监控账号与阈值。"
+	msg := "⛔ 该操作需要管理员写权限。\n只读运维可查看运维视图，但不能执行修复/调度/角色变更。"
+	if msgID > 0 {
+		_ = b.editOrSend(ctx, chatID, msgID, msg, b.homeKeyboardFor(userID))
+	} else {
+		_ = b.tg.SendChat(ctx, chatID, msg, b.homeKeyboardFor(userID))
+	}
+	return true
+}
+
+// denyIfNotOpsRead denies users without ops read (admin or viewer).
+func (b *Bot) denyIfNotOpsRead(ctx context.Context, chatID, msgID, userID int64, cqID string) bool {
+	if b.canOpsRead(userID) {
+		return false
+	}
+	if cqID != "" {
+		_ = b.tg.AnswerCallback(ctx, cqID, "需要运维查看权限", true)
+	}
+	msg := "⛔ 该功能仅管理员或只读运维可用。\n普通用户可配置自己的连接、监控账号与阈值。"
 	if msgID > 0 {
 		_ = b.editOrSend(ctx, chatID, msgID, msg, b.homeKeyboardFor(userID))
 	} else {

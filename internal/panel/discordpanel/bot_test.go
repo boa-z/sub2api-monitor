@@ -356,12 +356,12 @@ func TestAlertsComponents(t *testing.T) {
 }
 
 func TestManageComponentsForHealth(t *testing.T) {
-	comps := manageComponentsFor(&sub2api.DashboardStats{ErrorAccounts: 2, RatelimitAccounts: 1})
+	comps := manageComponentsFor(&sub2api.DashboardStats{ErrorAccounts: 2, RatelimitAccounts: 1}, true)
 	if !containsCustomID(comps, "mgr_bulk_heal") || !containsCustomID(comps, "ops_badacc:error:0") {
 		t.Fatalf("%+v", comps)
 	}
 	// healthy path still has bulk clear
-	comps2 := manageComponentsFor(nil)
+	comps2 := manageComponentsFor(nil, true)
 	if !containsCustomID(comps2, "mgr_bulk_clear") {
 		t.Fatal("nil stats missing bulk clear")
 	}
@@ -395,7 +395,7 @@ func TestStatusComponents(t *testing.T) {
 }
 
 func TestManageComponentsHasUsersGroups(t *testing.T) {
-	comps := manageComponentsFor(nil)
+	comps := manageComponentsFor(nil, true)
 	if !containsCustomID(comps, "mgr_users") || !containsCustomID(comps, "mgr_groups") {
 		t.Fatalf("%+v", comps)
 	}
@@ -445,5 +445,38 @@ func TestManageComponentsOverloadBrowse(t *testing.T) {
 	// overload lives on account browser, not manage hub; ensure ol badacc path tokens normalize
 	if browse.NormalizeBadKind("ol") != "ol" {
 		t.Fatal("ol")
+	}
+}
+
+func TestViewerRolePermissionsDiscord(t *testing.T) {
+	b, store := testBot(t)
+	b.cfg.Discord.Panel.OpenRegistration = true
+	b.cfg.Discord.Panel.AdminUserIDs = []int64{100}
+	if _, err := store.GetOrCreatePlatform(50, userstore.PlatformDiscord, "50", "v", "Viewer"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(50, func(p *userstore.Profile) error {
+		p.Role = userstore.RoleViewer
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if b.isAdmin(50) || !b.isViewer(50) || !b.canOpsRead(50) || b.canOpsWrite(50) {
+		t.Fatalf("viewer flags wrong admin=%v viewer=%v read=%v write=%v", b.isAdmin(50), b.isViewer(50), b.canOpsRead(50), b.canOpsWrite(50))
+	}
+	if b.roleLabel(50) != "只读运维" {
+		t.Fatalf("label=%s", b.roleLabel(50))
+	}
+	comps := b.homeComponents(50)
+	if !containsCustomID(comps, "ops_menu") {
+		t.Fatal("viewer home missing ops")
+	}
+	compsUser := b.homeComponents(42)
+	if containsCustomID(compsUser, "ops_menu") {
+		t.Fatal("user home should hide ops")
+	}
+	m := manageComponentsFor(&sub2api.DashboardStats{ErrorAccounts: 2}, false)
+	if containsCustomID(m, "mgr_bulk_heal") || containsCustomID(m, "pnl_users") {
+		t.Fatal("viewer manage should hide write actions")
 	}
 }
