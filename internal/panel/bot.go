@@ -2448,6 +2448,7 @@ func helpText() string {
 /ops — 运维视图（看板/可用性/告警/错误/并发）
 /manage — 账号管理（调度/清错/一键修复/刷新/浏览）
 /search &lt;关键词&gt; — 搜索账号
+管理 → 实例用户 / 分组 — 搜索与只读详情
 /check — 立即拉取用量快照
 /id — 显示你的 Telegram ID
 /thresholds — 管理用量阈值

@@ -104,7 +104,7 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 
 • 账号浏览 — 状态/平台筛选、搜索、分页
 • 批量清错 / 恢复 / 开调度 / 清限速 / 一键修复 — 批量处理（需确认）
-• 实例用户 / 分组 — Sub2API 只读列表
+• 实例用户 / 分组 — 搜索与只读详情
 • 面板用户 — 本 Bot 多用户与角色（admin/viewer/user，仅管理员可改）
 • 异常账号 — error/限速/停调度/汇总分标签分页，管理/实时/修复 / 一键监控
 
