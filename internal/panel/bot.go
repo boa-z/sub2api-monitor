@@ -332,6 +332,11 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return nil
 		}
 		return b.bulkClearErrors(ctx, chatID, msgID, cq.From.ID)
+	case data == "mgr_bulk_clear_go":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkClearErrorsExecute(ctx, chatID, msgID, cq.From.ID)
 	case data == "seed_conn":
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
@@ -354,17 +359,23 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "mgr_acc:"), 10, 64)
 		return b.showManageAccount(ctx, chatID, msgID, cq.From.ID, id, "")
 	case strings.HasPrefix(data, "mgr_act:"):
-
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
-		// mgr_act:action:id
+		// mgr_act:<action...>:<accountID>
+		// action may itself contain colons (e.g. temp:15m)
 		rest := strings.TrimPrefix(data, "mgr_act:")
-		action, idStr, ok := strings.Cut(rest, ":")
-		if !ok {
+		idx := strings.LastIndex(rest, ":")
+		if idx <= 0 {
 			return b.showManageMenu(ctx, chatID, msgID)
 		}
-		id, _ := strconv.ParseInt(idStr, 10, 64)
+		action := rest[:idx]
+		id, _ := strconv.ParseInt(rest[idx+1:], 10, 64)
+		if strings.HasPrefix(action, "temp:") && action != "temp_menu" {
+			// mgr_act:temp:15m:<id>
+			dur := strings.TrimPrefix(action, "temp:")
+			return b.applyTempUnschedulable(ctx, chatID, msgID, cq.From.ID, id, dur)
+		}
 		return b.handleManageAction(ctx, chatID, msgID, cq.From.ID, action, id)
 	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:"):
 
@@ -1178,10 +1189,17 @@ func (b *Bot) thresholdsText(userID int64) string {
 }
 
 func (b *Bot) editOrSend(ctx context.Context, chatID, msgID int64, text string, kb *telegram.InlineKeyboardMarkup) error {
+	// editMessageText cannot split; clamp to Telegram hard limit with ellipsis.
+	const maxEdit = 3900
+	editText := text
+	if rn := []rune(editText); len(rn) > maxEdit {
+		editText = string(rn[:maxEdit-1]) + "…"
+	}
 	if msgID > 0 {
-		if err := b.tg.EditMessage(ctx, chatID, msgID, text, kb); err == nil {
+		if err := b.tg.EditMessage(ctx, chatID, msgID, editText, kb); err == nil {
 			return nil
 		}
+		// fall through to send (SendChat auto-splits)
 	}
 	return b.tg.SendChat(ctx, chatID, text, kb)
 }
@@ -1379,7 +1397,7 @@ func helpText() string {
 ` + telegram.Bold("说明") + `
 • 每位用户独立保存 base_url / key / 账号 / 阈值
 • <b>普通用户</b>：自助连接 / 监控账号 / 阈值 / 立即检查
-• <b>管理员</b>：额外运维视图 + 账号管理（调度/清错/批量/搜索）
+• <b>管理员</b>：运维视图 + 账号管理（调度/启停/清错/临时停调度/重置额度/批量/搜索）
 • 用量达到阈值时 Bot 会私聊提醒你
 • 支持 passive（轻量缓存）与 active（刷新上游）数据源
 • 配置按 Telegram 用户隔离，存于 data/users.json

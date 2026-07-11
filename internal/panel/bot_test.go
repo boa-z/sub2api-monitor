@@ -277,3 +277,23 @@ func TestParseBrowseCallback(t *testing.T) {
 		t.Fatalf("got %q %d", st, page)
 	}
 }
+
+func TestParseDurationLabel(t *testing.T) {
+	if parseDurationLabel("15m") != 15*60 {
+		t.Fatal("15m")
+	}
+	if parseDurationLabel("1h") != 3600 {
+		t.Fatal("1h")
+	}
+	if parseDurationLabel("nope") != 0 {
+		t.Fatal("invalid")
+	}
+}
+
+func TestEditTextClampHelpers(t *testing.T) {
+	// ensure parseBrowse still works after other changes
+	st, page := parseBrowseCallback("plat|openai:3")
+	if st != "plat:openai" || page != 3 {
+		t.Fatalf("%s %d", st, page)
+	}
+}

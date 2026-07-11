@@ -60,6 +60,25 @@ func (c *Client) ClearTempUnschedulable(ctx context.Context, id int64) error {
 	return c.delete(ctx, fmt.Sprintf("/api/v1/admin/accounts/%d/temp-unschedulable", id), nil)
 }
 
+// SetTempUnschedulable marks an account temporarily unschedulable until the given time/reason.
+// durationSec > 0 preferred; until may be used by servers that accept absolute time.
+func (c *Client) SetTempUnschedulable(ctx context.Context, id int64, durationSec int64, reason string) (*TempUnschedulableInfo, error) {
+	payload := map[string]any{}
+	if durationSec > 0 {
+		payload["duration_seconds"] = durationSec
+		payload["duration"] = durationSec
+	}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	var out TempUnschedulableInfo
+	// Sub2API commonly uses POST for temp hold
+	if err := c.post(ctx, fmt.Sprintf("/api/v1/admin/accounts/%d/temp-unschedulable", id), payload, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // TempUnschedulableInfo reports temporary unschedulable status.
 type TempUnschedulableInfo struct {
 	Active bool `json:"active"`

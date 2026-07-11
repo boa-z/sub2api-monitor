@@ -501,13 +501,28 @@ func (b *Bot) showBadAccounts(ctx context.Context, chatID, msgID, userID int64) 
 			telegram.EscapeHTML(truncateRunes(msg, 80)),
 		)
 	}
-	// quick actions: add all error accounts? optional button later
-	kb := &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn("➕ 一键监控这些异常账号", "ops_watch_errors")},
-			{telegram.Btn("« 运维菜单", "ops_menu"), telegram.Btn("« 主面板", "home")},
-		},
+	rows := [][]telegram.InlineKeyboardButton{}
+	// direct manage buttons for first few error accounts
+	for i, a := range items {
+		if i >= 8 {
+			break
+		}
+		label := fmt.Sprintf("管理 #%d %s", a.ID, truncateRunes(a.Name, 10))
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn(label, fmt.Sprintf("mgr_acc:%d", a.ID)),
+		})
 	}
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("🧹 批量清错", "mgr_bulk_clear"),
+			telegram.Btn("➕ 一键监控", "ops_watch_errors"),
+		},
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("« 运维菜单", "ops_menu"),
+			telegram.Btn("« 主面板", "home"),
+		},
+	)
+	kb := &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
 }
 

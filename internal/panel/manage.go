@@ -29,12 +29,13 @@ func (b *Bot) manageMenuText() string {
 用你的 Admin API 管理实例（只对你配置的连接生效）：
 
 • 账号浏览 — 状态/平台筛选、搜索、分页
-• 批量处理 — 对 error 账号一键清错
+• 批量清错 — 对 error 账号一键清错（需确认）
 • 用户 / 分组 — 只读列表
-• 异常账号 — error 列表与一键监控
+• 异常账号 — error 列表，点进管理 / 一键监控
 
 进入账号后可执行：
-切换调度 · 启停状态 · 测试连通 · 清除错误/限速 · 恢复/刷新
+切换调度 · 启停状态 · 测试连通 · 清错误/限速 · 恢复/刷新
+临时停调度 · 重置额度 · 加入监控 · 实时用量
 `
 }
 
@@ -353,6 +354,25 @@ func (b *Bot) showManageAccount(ctx context.Context, chatID, msgID, userID, acco
 		statusData = fmt.Sprintf("mgr_act:enable:%d", accountID)
 	}
 
+	// enrich with quick usage snapshot (passive)
+	if usage, err := cli.GetAccountUsage(ctx, accountID, "passive", false); err == nil && usage != nil {
+		bld.WriteString("\n" + telegram.Bold("用量快照") + "\n")
+		for _, w := range usage.Windows() {
+			line := fmt.Sprintf("• %s %s%%", telegram.Code(w.Window), telegram.Code(fmt.Sprintf("%.1f", w.Utilization)))
+			if w.ResetsAt != nil {
+				line += " · 重置 " + telegram.Code(w.ResetsAt.Local().Format("01-02 15:04"))
+			}
+			bld.WriteString(line + "\n")
+		}
+		if today, err := cli.GetAccountTodayStats(ctx, accountID); err == nil && today != nil {
+			fmt.Fprintf(&bld, "今日: req %s · token %s · cost %s\n",
+				telegram.Code(itoa(today.Requests)),
+				telegram.Code(formatCompactInt(today.Tokens)),
+				telegram.Code(fmt.Sprintf("%.2f", today.Cost)),
+			)
+		}
+	}
+
 	kb := &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{telegram.Btn(schedBtn, schedData), telegram.Btn(watchBtn, watchData)},
@@ -369,7 +389,11 @@ func (b *Bot) showManageAccount(ctx context.Context, chatID, msgID, userID, acco
 				telegram.Btn("🔄 刷新凭据", fmt.Sprintf("mgr_act:refresh:%d", accountID)),
 			},
 			{
-				telegram.Btn("🚫 清临时停调度", fmt.Sprintf("mgr_act:clear_temp:%d", accountID)),
+				telegram.Btn("⏳ 临时停调度", fmt.Sprintf("mgr_act:temp_menu:%d", accountID)),
+				telegram.Btn("🚫 清临时停", fmt.Sprintf("mgr_act:clear_temp:%d", accountID)),
+			},
+			{
+				telegram.Btn("📊 重置额度", fmt.Sprintf("mgr_act:confirm_reset_quota:%d", accountID)),
 				telegram.Btn("📡 实时用量", fmt.Sprintf("acc_live:%d", accountID)),
 			},
 			{telegram.Btn("« 账号浏览", "mgr_browse"), telegram.Btn("« 管理菜单", "mgr_menu")},
@@ -379,7 +403,7 @@ func (b *Bot) showManageAccount(ctx context.Context, chatID, msgID, userID, acco
 }
 
 func (b *Bot) handleManageAction(ctx context.Context, chatID, msgID, userID int64, action string, accountID int64) error {
-	// confirmation steps
+	// confirmation / menu steps (no API call yet)
 	switch action {
 	case "confirm_unsched":
 		kb := &telegram.InlineKeyboardMarkup{
@@ -404,6 +428,35 @@ func (b *Bot) handleManageAction(ctx context.Context, chatID, msgID, userID int6
 		}
 		return b.editOrSend(ctx, chatID, msgID,
 			fmt.Sprintf("确认禁用账号 #%d？\n禁用后账号将不可用，直到重新启用。", accountID),
+			kb)
+	case "confirm_reset_quota":
+		kb := &telegram.InlineKeyboardMarkup{
+			InlineKeyboard: [][]telegram.InlineKeyboardButton{
+				{
+					telegram.Btn("✅ 确认重置额度", fmt.Sprintf("mgr_act:reset_quota:%d", accountID)),
+					telegram.Btn("取消", fmt.Sprintf("mgr_acc:%d", accountID)),
+				},
+			},
+		}
+		return b.editOrSend(ctx, chatID, msgID,
+			fmt.Sprintf("确认重置账号 #%d 的额度计数？\n部分实例可能不可逆，请谨慎。", accountID),
+			kb)
+	case "temp_menu":
+		kb := &telegram.InlineKeyboardMarkup{
+			InlineKeyboard: [][]telegram.InlineKeyboardButton{
+				{
+					telegram.Btn("15 分钟", fmt.Sprintf("mgr_act:temp:15m:%d", accountID)),
+					telegram.Btn("1 小时", fmt.Sprintf("mgr_act:temp:1h:%d", accountID)),
+				},
+				{
+					telegram.Btn("6 小时", fmt.Sprintf("mgr_act:temp:6h:%d", accountID)),
+					telegram.Btn("24 小时", fmt.Sprintf("mgr_act:temp:24h:%d", accountID)),
+				},
+				{telegram.Btn("取消", fmt.Sprintf("mgr_acc:%d", accountID))},
+			},
+		}
+		return b.editOrSend(ctx, chatID, msgID,
+			fmt.Sprintf("为账号 #%d 设置临时停调度时长：", accountID),
 			kb)
 	}
 
@@ -490,14 +543,62 @@ func (b *Bot) handleManageAction(ctx context.Context, chatID, msgID, userID int6
 		} else {
 			notice = "✅ 已移出监控"
 		}
+	case "reset_quota":
+		if _, err := cli.ResetAccountQuota(ctx, accountID); err != nil {
+			notice = "❌ 重置额度失败: " + telegram.EscapeHTML(err.Error())
+		} else {
+			notice = "✅ 已请求重置额度"
+		}
 	default:
 		notice = "未知操作"
 	}
 	return b.showManageAccount(ctx, chatID, msgID, userID, accountID, notice)
 }
 
-// bulkClearErrors clears error state for up to N accounts currently in status=error.
+// bulkClearErrors prompts confirmation then clears error state for up to N error accounts.
 func (b *Bot) bulkClearErrors(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.bulkClearErrorsPrompt(ctx, chatID, msgID, userID)
+}
+
+func (b *Bot) bulkClearErrorsPrompt(ctx context.Context, chatID, msgID, userID int64) error {
+	cli, _, err := b.userClient(userID, 15*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	items, total, err := cli.ListAccountsEx(ctx, 1, 30, sub2api.AccountListFilter{Status: "error"})
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "拉取 error 账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
+	}
+	if len(items) == 0 {
+		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有 status=error 的账号。", manageKeyboard())
+	}
+	const maxOps = 20
+	n := len(items)
+	if n > maxOps {
+		n = maxOps
+	}
+	var sample strings.Builder
+	for i := 0; i < n && i < 8; i++ {
+		a := items[i]
+		fmt.Fprintf(&sample, "• #%d %s\n", a.ID, telegram.EscapeHTML(truncateRunes(a.Name, 16)))
+	}
+	kb := &telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{telegram.Btn(fmt.Sprintf("✅ 确认清错 %d 个", n), "mgr_bulk_clear_go")},
+			{telegram.Btn("取消", "mgr_menu")},
+		},
+	}
+	msg := fmt.Sprintf("%s\n\n将清除约 %s 个 error 账号中的前 %s 个：\n%s\n共约 %s 个 error。",
+		telegram.Bold("批量清错确认"),
+		telegram.Code(itoa(total)),
+		telegram.Code(strconv.Itoa(n)),
+		sample.String(),
+		telegram.Code(itoa(total)),
+	)
+	return b.editOrSend(ctx, chatID, msgID, msg, kb)
+}
+
+func (b *Bot) bulkClearErrorsExecute(ctx context.Context, chatID, msgID, userID int64) error {
 	cli, _, err := b.userClient(userID, 30*time.Second)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
@@ -527,7 +628,11 @@ func (b *Bot) bulkClearErrors(ctx context.Context, chatID, msgID, userID int64) 
 	}
 	var bld strings.Builder
 	bld.WriteString(telegram.Bold("批量清错结果") + "\n\n")
-	fmt.Fprintf(&bld, "error 账号约 %s 个（本页处理 %d）\n", telegram.Code(itoa(total)), min(len(items), maxOps))
+	n := len(items)
+	if n > maxOps {
+		n = maxOps
+	}
+	fmt.Fprintf(&bld, "error 账号约 %s 个（本次处理 %d）\n", telegram.Code(itoa(total)), n)
 	fmt.Fprintf(&bld, "✅ 成功 %s · ❌ 失败 %s\n", telegram.Code(strconv.Itoa(okN)), telegram.Code(strconv.Itoa(failN)))
 	if len(fails) > 0 {
 		bld.WriteString("\n失败样例:\n")
@@ -536,9 +641,44 @@ func (b *Bot) bulkClearErrors(ctx context.Context, chatID, msgID, userID int64) 
 		}
 	}
 	if total > int64(maxOps) {
-		fmt.Fprintf(&bld, "\n还有更多 error 账号，可再次点「批量清错」。")
+		bld.WriteString("\n还有更多 error 账号，可再次执行「批量清错」。")
 	}
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), manageKeyboard())
+}
+
+// applyTempUnschedulable sets a temporary unschedulable hold for duration.
+func (b *Bot) applyTempUnschedulable(ctx context.Context, chatID, msgID, userID, accountID int64, durLabel string) error {
+	sec := parseDurationLabel(durLabel)
+	if sec <= 0 {
+		return b.showManageAccount(ctx, chatID, msgID, userID, accountID, "❌ 无效时长")
+	}
+	cli, _, err := b.userClient(userID, 20*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	notice := ""
+	if _, err := cli.SetTempUnschedulable(ctx, accountID, sec, "panel:"+durLabel); err != nil {
+		notice = "❌ 设置临时停调度失败: " + telegram.EscapeHTML(err.Error())
+	} else {
+		notice = fmt.Sprintf("✅ 已设置临时停调度 %s", telegram.Code(durLabel))
+	}
+	return b.showManageAccount(ctx, chatID, msgID, userID, accountID, notice)
+}
+
+func parseDurationLabel(s string) int64 {
+	s = strings.TrimSpace(strings.ToLower(s))
+	switch s {
+	case "15m":
+		return 15 * 60
+	case "1h":
+		return 60 * 60
+	case "6h":
+		return 6 * 60 * 60
+	case "24h":
+		return 24 * 60 * 60
+	default:
+		return 0
+	}
 }
 
 // seedConnectionFromGlobal copies global sub2api config into the user's panel profile.
