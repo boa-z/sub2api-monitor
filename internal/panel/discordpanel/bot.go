@@ -406,6 +406,30 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		}
 		text, comps := b.bulkAccountActionExecute(ctx, uid, "sched_on")
 		return b.update(ctx, it, text, comps)
+	case data == "mgr_bulk_clear_rl":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		text, comps := b.bulkActionPrompt(ctx, uid, "clear_rl", "批量清限速", "mgr_bulk_clear_rl_go")
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_bulk_clear_rl_go":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		text, comps := b.bulkAccountActionExecute(ctx, uid, "clear_rl")
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_bulk_heal":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		text, comps := b.bulkActionPrompt(ctx, uid, "heal", "批量一键修复", "mgr_bulk_heal_go")
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_bulk_heal_go":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		text, comps := b.bulkAccountActionExecute(ctx, uid, "heal")
+		return b.update(ctx, it, text, comps)
 	case data == "thr_add":
 		return b.update(ctx, it, "选择窗口后使用固定阈值，或之后可在配置中细化：", thrWindowComponents())
 	case strings.HasPrefix(data, "thr_set:"):

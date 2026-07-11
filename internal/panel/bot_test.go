@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/boa/sub2api-monitor/internal/config"
+	"github.com/boa/sub2api-monitor/internal/sub2api"
 	"github.com/boa/sub2api-monitor/internal/userstore"
 )
 
@@ -372,5 +373,57 @@ func TestAccountDetailKeyboardHidesManageForUser(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("admin should see manage button")
+	}
+}
+
+func TestParseBrowseCallbackAndTokens(t *testing.T) {
+	cases := []struct {
+		rest string
+		want string
+		page int
+	}{
+		{"all:0", "all", 0},
+		{"error:2", "error", 2},
+		{"search|foo:1", "search:foo", 1},
+		{"plat|openai:0", "plat:openai", 0},
+		{"plat|openai|active:3", "plat:openai:active", 3},
+		{"unsched:1", "unsched", 1},
+	}
+	for _, c := range cases {
+		got, page := parseBrowseCallback(c.rest)
+		if got != c.want || page != c.page {
+			t.Fatalf("rest=%q got=(%q,%d) want=(%q,%d)", c.rest, got, page, c.want, c.page)
+		}
+	}
+	if browseToken("search:abc") != "search|abc" {
+		t.Fatal(browseToken("search:abc"))
+	}
+	if browseToken("plat:gemini") != "plat|gemini" {
+		t.Fatal(browseToken("plat:gemini"))
+	}
+}
+
+func TestInferBulkActionKey(t *testing.T) {
+	if inferBulkActionKey("mgr_bulk_heal_go") != "heal" {
+		t.Fatal(inferBulkActionKey("mgr_bulk_heal_go"))
+	}
+	if inferBulkActionKey("mgr_bulk_clear_rl_go") != "clear_rl" {
+		t.Fatal(inferBulkActionKey("mgr_bulk_clear_rl_go"))
+	}
+	if inferBulkActionKey("mgr_bulk_sched_on_go") != "sched_on" {
+		t.Fatal(inferBulkActionKey("mgr_bulk_sched_on_go"))
+	}
+}
+
+func TestIsRateLimitedAccount(t *testing.T) {
+	now := time.Now()
+	if !isRateLimitedAccount(sub2api.Account{RateLimitedAt: &now}) {
+		t.Fatal("rate limited at")
+	}
+	if !isRateLimitedAccount(sub2api.Account{Status: "rate_limited"}) {
+		t.Fatal("status")
+	}
+	if isRateLimitedAccount(sub2api.Account{Status: "active"}) {
+		t.Fatal("active should not match")
 	}
 }

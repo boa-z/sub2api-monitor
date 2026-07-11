@@ -17,7 +17,8 @@ func manageKeyboard() *telegram.InlineKeyboardMarkup {
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{telegram.Btn("📚 账号浏览", "mgr_browse"), telegram.Btn("🔎 搜索账号", "mgr_search")},
 			{telegram.Btn("🧹 批量清错", "mgr_bulk_clear"), telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover")},
-			{telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"), telegram.Btn("📋 异常账号", "ops_badacc")},
+			{telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"), telegram.Btn("⏱ 批量清限速", "mgr_bulk_clear_rl")},
+			{telegram.Btn("📋 异常账号", "ops_badacc"), telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal")},
 			{telegram.Btn("👥 用户", "mgr_users"), telegram.Btn("🏷 分组", "mgr_groups")},
 			{telegram.Btn("« 返回主面板", "home")},
 		},
@@ -30,7 +31,7 @@ func (b *Bot) manageMenuText() string {
 用你的 Admin API 管理实例（只对你配置的连接生效）：
 
 • 账号浏览 — 状态/平台筛选、搜索、分页
-• 批量清错 / 批量恢复 / 批量开调度 — 对 error 账号批量处理（需确认）
+• 批量清错 / 恢复 / 开调度 / 清限速 / 一键修复 — 批量处理（需确认）
 • 用户 / 分组 — 只读列表
 • 异常账号 — error 列表，点进管理 / 一键监控
 
@@ -87,42 +88,9 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 		filterToken = "all"
 	}
 
-	var items []sub2api.Account
-	var total int64
-
-	switch {
-	case status == "unsched":
-		all, tot, err := cli.ListAccountsEx(ctx, page+1, pageSize, sub2api.AccountListFilter{})
-		if err != nil {
-			return b.editOrSend(ctx, chatID, msgID, "列表失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
-		}
-		total = tot
-		for _, a := range all {
-			if !a.Schedulable {
-				items = append(items, a)
-			}
-		}
-	case status == "rate_limited":
-		all, tot, err := cli.ListAccountsEx(ctx, page+1, 30, sub2api.AccountListFilter{})
-		if err != nil {
-			return b.editOrSend(ctx, chatID, msgID, "列表失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
-		}
-		total = tot
-		for _, a := range all {
-			if a.RateLimitedAt != nil || a.OverloadUntil != nil || strings.Contains(strings.ToLower(a.Status), "rate") {
-				items = append(items, a)
-			}
-		}
-		if len(items) > pageSize {
-			items = items[:pageSize]
-		}
-	default:
-		f := parseBrowseFilter(status)
-		var err error
-		items, total, err = cli.ListAccountsEx(ctx, page+1, pageSize, f)
-		if err != nil {
-			return b.editOrSend(ctx, chatID, msgID, "列表失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
-		}
+	items, total, err := listBrowserAccounts(ctx, cli, status, page, pageSize)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "列表失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 	}
 
 	var bld strings.Builder
@@ -156,6 +124,11 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 		{
 			telegram.Btn(filterLabel("openai", status, "plat:openai"), "mgr_browse:plat|openai:0"),
 			telegram.Btn(filterLabel("anthropic", status, "plat:anthropic"), "mgr_browse:plat|anthropic:0"),
+			telegram.Btn(filterLabel("gemini", status, "plat:gemini"), "mgr_browse:plat|gemini:0"),
+		},
+		{
+			telegram.Btn(filterLabel("grok", status, "plat:grok"), "mgr_browse:plat|grok:0"),
+			telegram.Btn(filterLabel("antigravity", status, "plat:antigravity"), "mgr_browse:plat|antigravity:0"),
 		},
 	}
 
@@ -189,11 +162,103 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 	if len(nav) > 0 {
 		kbRows = append(kbRows, nav)
 	}
+	// context actions for common problem filters
+	switch status {
+	case "error":
+		kbRows = append(kbRows, []telegram.InlineKeyboardButton{
+			telegram.Btn("🧹 批量清错", "mgr_bulk_clear"),
+			telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
+			telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+		})
+	case "rate_limited":
+		kbRows = append(kbRows, []telegram.InlineKeyboardButton{
+			telegram.Btn("⏱ 批量清限速", "mgr_bulk_clear_rl"),
+		})
+	case "unsched":
+		kbRows = append(kbRows, []telegram.InlineKeyboardButton{
+			telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+		})
+	}
 	kbRows = append(kbRows, []telegram.InlineKeyboardButton{
 		telegram.Btn("« 管理菜单", "mgr_menu"),
 		telegram.Btn("« 主面板", "home"),
 	})
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: kbRows})
+}
+
+// listBrowserAccounts returns one page of accounts for the manage browser.
+// Special filters unsched/rate_limited prefer API query params, with client-side fallback scan.
+func listBrowserAccounts(ctx context.Context, cli *sub2api.Client, status string, page, pageSize int) ([]sub2api.Account, int64, error) {
+	if page < 0 {
+		page = 0
+	}
+	if pageSize <= 0 {
+		pageSize = 8
+	}
+	switch status {
+	case "unsched":
+		falseV := false
+		items, total, err := cli.ListAccountsEx(ctx, page+1, pageSize, sub2api.AccountListFilter{Schedulable: &falseV})
+		if err == nil {
+			filtered := make([]sub2api.Account, 0, len(items))
+			for _, a := range items {
+				if !a.Schedulable {
+					filtered = append(filtered, a)
+				}
+			}
+			if len(items) == 0 || len(filtered) == len(items) {
+				return filtered, total, nil
+			}
+		}
+		return scanAccountsPage(ctx, cli, page, pageSize, func(a sub2api.Account) bool { return !a.Schedulable })
+	case "rate_limited":
+		items, total, err := cli.ListAccountsEx(ctx, page+1, pageSize, sub2api.AccountListFilter{Status: "rate_limited"})
+		if err == nil && (total > 0 || len(items) > 0) {
+			return items, total, nil
+		}
+		return scanAccountsPage(ctx, cli, page, pageSize, isRateLimitedAccount)
+	default:
+		f := parseBrowseFilter(status)
+		return cli.ListAccountsEx(ctx, page+1, pageSize, f)
+	}
+}
+
+func isRateLimitedAccount(a sub2api.Account) bool {
+	if a.RateLimitedAt != nil || a.OverloadUntil != nil {
+		return true
+	}
+	st := strings.ToLower(a.Status)
+	return strings.Contains(st, "rate") || strings.Contains(st, "limit") || strings.Contains(st, "overload")
+}
+
+// scanAccountsPage walks account list pages and returns the requested slice of matches.
+func scanAccountsPage(ctx context.Context, cli *sub2api.Client, page, pageSize int, match func(sub2api.Account) bool) ([]sub2api.Account, int64, error) {
+	const scanPage = 50
+	const maxScanPages = 10 // up to 500 accounts
+	var matched []sub2api.Account
+	for p := 1; p <= maxScanPages; p++ {
+		items, tot, err := cli.ListAccountsEx(ctx, p, scanPage, sub2api.AccountListFilter{})
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, a := range items {
+			if match(a) {
+				matched = append(matched, a)
+			}
+		}
+		if len(items) < scanPage || int64(p*scanPage) >= tot {
+			break
+		}
+	}
+	start := page * pageSize
+	if start >= len(matched) {
+		return []sub2api.Account{}, int64(len(matched)), nil
+	}
+	end := start + pageSize
+	if end > len(matched) {
+		end = len(matched)
+	}
+	return matched[start:end], int64(len(matched)), nil
 }
 
 // browseToken encodes status for callback_data (avoid extra colons for search).
@@ -386,7 +451,10 @@ func (b *Bot) showManageAccount(ctx context.Context, chatID, msgID, userID, acco
 				telegram.Btn("⏱ 清限速", fmt.Sprintf("mgr_act:clear_rl:%d", accountID)),
 			},
 			{
+				telegram.Btn("🛠 一键修复", fmt.Sprintf("mgr_act:heal:%d", accountID)),
 				telegram.Btn("♻️ 恢复状态", fmt.Sprintf("mgr_act:recover:%d", accountID)),
+			},
+			{
 				telegram.Btn("🔄 刷新凭据", fmt.Sprintf("mgr_act:refresh:%d", accountID)),
 			},
 			{
@@ -502,6 +570,8 @@ func (b *Bot) handleManageAction(ctx context.Context, chatID, msgID, userID int6
 			}
 			notice = "✅ 测试完成: " + telegram.Code(truncateRunes(s, 200))
 		}
+	case "heal":
+		notice = b.healAccount(ctx, cli, accountID)
 	case "clear_err":
 		if _, err := cli.ClearAccountError(ctx, accountID); err != nil {
 			notice = "❌ 清除错误失败: " + telegram.EscapeHTML(err.Error())
@@ -600,54 +670,9 @@ func (b *Bot) bulkClearErrorsPrompt(ctx context.Context, chatID, msgID, userID i
 }
 
 func (b *Bot) bulkClearErrorsExecute(ctx context.Context, chatID, msgID, userID int64) error {
-	cli, _, err := b.userClient(userID, 30*time.Second)
-	if err != nil {
-		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
-	}
-	items, total, err := cli.ListAccountsEx(ctx, 1, 30, sub2api.AccountListFilter{Status: "error"})
-	if err != nil {
-		return b.editOrSend(ctx, chatID, msgID, "拉取 error 账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
-	}
-	if len(items) == 0 {
-		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有 status=error 的账号。", manageKeyboard())
-	}
-	okN, failN := 0, 0
-	var fails []string
-	const maxOps = 20
-	for i, a := range items {
-		if i >= maxOps {
-			break
-		}
-		if _, err := cli.ClearAccountError(ctx, a.ID); err != nil {
-			failN++
-			if len(fails) < 5 {
-				fails = append(fails, fmt.Sprintf("#%d %s", a.ID, truncateRunes(err.Error(), 40)))
-			}
-		} else {
-			okN++
-		}
-	}
-	var bld strings.Builder
-	bld.WriteString(telegram.Bold("批量清错结果") + "\n\n")
-	n := len(items)
-	if n > maxOps {
-		n = maxOps
-	}
-	fmt.Fprintf(&bld, "error 账号约 %s 个（本次处理 %d）\n", telegram.Code(itoa(total)), n)
-	fmt.Fprintf(&bld, "✅ 成功 %s · ❌ 失败 %s\n", telegram.Code(strconv.Itoa(okN)), telegram.Code(strconv.Itoa(failN)))
-	if len(fails) > 0 {
-		bld.WriteString("\n失败样例:\n")
-		for _, f := range fails {
-			bld.WriteString("• " + telegram.EscapeHTML(f) + "\n")
-		}
-	}
-	if total > int64(maxOps) {
-		bld.WriteString("\n还有更多 error 账号，可再次执行「批量清错」。")
-	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), manageKeyboard())
+	return b.bulkAccountActionExecute(ctx, chatID, msgID, userID, "clear_err")
 }
 
-// applyTempUnschedulable sets a temporary unschedulable hold for duration.
 func (b *Bot) applyTempUnschedulable(ctx context.Context, chatID, msgID, userID, accountID int64, durLabel string) error {
 	sec := parseDurationLabel(durLabel)
 	if sec <= 0 {
@@ -688,14 +713,15 @@ func (b *Bot) bulkAccountActionPrompt(ctx context.Context, chatID, msgID, userID
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
 	}
-	items, total, err := cli.ListAccountsEx(ctx, 1, 30, sub2api.AccountListFilter{Status: "error"})
+	actionKey := inferBulkActionKey(confirmData)
+	const maxOps = 20
+	items, total, scopeLabel, err := b.loadBulkTargets(ctx, cli, actionKey, maxOps)
 	if err != nil {
-		return b.editOrSend(ctx, chatID, msgID, "拉取 error 账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, "拉取账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 	}
 	if len(items) == 0 {
-		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有 status=error 的账号。", manageKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有可处理的账号（"+telegram.EscapeHTML(scopeLabel)+"）。", manageKeyboard())
 	}
-	const maxOps = 20
 	n := len(items)
 	if n > maxOps {
 		n = maxOps
@@ -711,15 +737,32 @@ func (b *Bot) bulkAccountActionPrompt(ctx context.Context, chatID, msgID, userID
 			{telegram.Btn("取消", "mgr_menu")},
 		},
 	}
-	msg := fmt.Sprintf("%s\n\n将对约 %s 个 error 账号中的前 %s 个执行「%s」：\n%s\n共约 %s 个 error。",
+	msg := fmt.Sprintf("%s\n\n范围: %s\n将对约 %s 个中的前 %s 个执行「%s」：\n%s",
 		telegram.Bold(title),
+		telegram.EscapeHTML(scopeLabel),
 		telegram.Code(itoa(total)),
 		telegram.Code(strconv.Itoa(n)),
 		telegram.EscapeHTML(action),
 		sample.String(),
-		telegram.Code(itoa(total)),
 	)
 	return b.editOrSend(ctx, chatID, msgID, msg, kb)
+}
+
+func inferBulkActionKey(confirmData string) string {
+	switch confirmData {
+	case "mgr_bulk_clear_go":
+		return "clear_err"
+	case "mgr_bulk_recover_go":
+		return "recover"
+	case "mgr_bulk_sched_on_go":
+		return "sched_on"
+	case "mgr_bulk_clear_rl_go":
+		return "clear_rl"
+	case "mgr_bulk_heal_go":
+		return "heal"
+	default:
+		return "clear_err"
+	}
 }
 
 func (b *Bot) bulkRecoverPrompt(ctx context.Context, chatID, msgID, userID int64) error {
@@ -731,30 +774,39 @@ func (b *Bot) bulkSchedOnPrompt(ctx context.Context, chatID, msgID, userID int64
 }
 
 func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userID int64, action string) error {
-	cli, _, err := b.userClient(userID, 40*time.Second)
+	cli, _, err := b.userClient(userID, 45*time.Second)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
 	}
-	items, total, err := cli.ListAccountsEx(ctx, 1, 30, sub2api.AccountListFilter{Status: "error"})
+	const maxOps = 20
+	items, total, scopeLabel, err := b.loadBulkTargets(ctx, cli, action, maxOps)
 	if err != nil {
-		return b.editOrSend(ctx, chatID, msgID, "拉取 error 账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, "拉取账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 	}
 	if len(items) == 0 {
-		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有 status=error 的账号。", manageKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有可处理的账号（"+telegram.EscapeHTML(scopeLabel)+"）。", manageKeyboard())
 	}
 	okN, failN := 0, 0
 	var fails []string
-	const maxOps = 20
 	for i, a := range items {
 		if i >= maxOps {
 			break
 		}
 		var opErr error
 		switch action {
+		case "clear_err":
+			_, opErr = cli.ClearAccountError(ctx, a.ID)
 		case "recover":
 			_, opErr = cli.RecoverAccountState(ctx, a.ID)
 		case "sched_on":
 			_, opErr = cli.SetSchedulable(ctx, a.ID, true)
+		case "clear_rl":
+			_, opErr = cli.ClearAccountRateLimit(ctx, a.ID)
+		case "heal":
+			msg := b.healAccount(ctx, cli, a.ID)
+			if strings.HasPrefix(msg, "❌") {
+				opErr = fmt.Errorf("%s", strings.TrimPrefix(msg, "❌ "))
+			}
 		default:
 			opErr = fmt.Errorf("unknown action")
 		}
@@ -767,7 +819,13 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 			okN++
 		}
 	}
-	title := map[string]string{"recover": "批量恢复结果", "sched_on": "批量开调度结果"}[action]
+	title := map[string]string{
+		"clear_err": "批量清错结果",
+		"recover":   "批量恢复结果",
+		"sched_on":  "批量开调度结果",
+		"clear_rl":  "批量清限速结果",
+		"heal":      "批量一键修复结果",
+	}[action]
 	if title == "" {
 		title = "批量操作结果"
 	}
@@ -777,7 +835,8 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 	if n > maxOps {
 		n = maxOps
 	}
-	fmt.Fprintf(&bld, "error 账号约 %s 个（本次处理 %d）\n", telegram.Code(itoa(total)), n)
+	fmt.Fprintf(&bld, "范围: %s · 约 %s 个（本次 %d）\n",
+		telegram.EscapeHTML(scopeLabel), telegram.Code(itoa(total)), n)
 	fmt.Fprintf(&bld, "✅ 成功 %s · ❌ 失败 %s\n", telegram.Code(strconv.Itoa(okN)), telegram.Code(strconv.Itoa(failN)))
 	if len(fails) > 0 {
 		bld.WriteString("\n失败样例:\n")
@@ -786,6 +845,66 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 		}
 	}
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), manageKeyboard())
+}
+
+// loadBulkTargets picks accounts for bulk actions.
+func (b *Bot) loadBulkTargets(ctx context.Context, cli *sub2api.Client, action string, maxOps int) ([]sub2api.Account, int64, string, error) {
+	switch action {
+	case "clear_rl":
+		items, total, err := listBrowserAccounts(ctx, cli, "rate_limited", 0, maxOps)
+		return items, total, "限速/过载账号", err
+	case "sched_on":
+		items, total, err := listBrowserAccounts(ctx, cli, "unsched", 0, maxOps)
+		if err != nil {
+			return nil, 0, "停调度账号", err
+		}
+		if len(items) > 0 {
+			return items, total, "停调度账号", nil
+		}
+		items, total, err = cli.ListAccountsEx(ctx, 1, maxOps, sub2api.AccountListFilter{Status: "error"})
+		return items, total, "error 账号（无停调度项时回退）", err
+	default:
+		items, total, err := cli.ListAccountsEx(ctx, 1, maxOps, sub2api.AccountListFilter{Status: "error"})
+		return items, total, "status=error 账号", err
+	}
+}
+
+// healAccount clears error + rate limit, recovers state, enables schedulable.
+// Best-effort: continues on individual step failures and summarizes.
+func (b *Bot) healAccount(ctx context.Context, cli *sub2api.Client, accountID int64) string {
+	steps := []struct {
+		name string
+		fn   func() error
+	}{
+		{"清错误", func() error { _, err := cli.ClearAccountError(ctx, accountID); return err }},
+		{"清限速", func() error { _, err := cli.ClearAccountRateLimit(ctx, accountID); return err }},
+		{"恢复", func() error { _, err := cli.RecoverAccountState(ctx, accountID); return err }},
+		{"开调度", func() error { _, err := cli.SetSchedulable(ctx, accountID, true); return err }},
+	}
+	var ok, fail []string
+	for _, s := range steps {
+		if err := s.fn(); err != nil {
+			fail = append(fail, s.name+": "+truncateRunes(err.Error(), 40))
+		} else {
+			ok = append(ok, s.name)
+		}
+	}
+	if len(ok) == 0 {
+		return "❌ 一键修复全部失败: " + telegram.EscapeHTML(strings.Join(fail, "; "))
+	}
+	msg := "✅ 一键修复完成: " + telegram.Code(strings.Join(ok, " · "))
+	if len(fail) > 0 {
+		msg += "\n⚠️ 部分失败: " + telegram.EscapeHTML(strings.Join(fail, "; "))
+	}
+	return msg
+}
+
+func (b *Bot) bulkClearRLPrompt(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.bulkAccountActionPrompt(ctx, chatID, msgID, userID, "清除限速", "批量清限速确认", "mgr_bulk_clear_rl_go")
+}
+
+func (b *Bot) bulkHealPrompt(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.bulkAccountActionPrompt(ctx, chatID, msgID, userID, "一键修复(清错+清限速+恢复+开调度)", "批量一键修复确认", "mgr_bulk_heal_go")
 }
 
 // seedConnectionFromGlobal copies global sub2api config into the user's panel profile.

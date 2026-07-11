@@ -357,6 +357,26 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return nil
 		}
 		return b.bulkAccountActionExecute(ctx, chatID, msgID, cq.From.ID, "sched_on")
+	case data == "mgr_bulk_clear_rl":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkClearRLPrompt(ctx, chatID, msgID, cq.From.ID)
+	case data == "mgr_bulk_clear_rl_go":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkAccountActionExecute(ctx, chatID, msgID, cq.From.ID, "clear_rl")
+	case data == "mgr_bulk_heal":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkHealPrompt(ctx, chatID, msgID, cq.From.ID)
+	case data == "mgr_bulk_heal_go":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkAccountActionExecute(ctx, chatID, msgID, cq.From.ID, "heal")
 	case data == "oe:resolve_all:u":
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
@@ -889,10 +909,10 @@ func (b *Bot) testConnection(ctx context.Context, userID int64) string {
 func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 	p, ok := b.users.Get(userID)
 	if !ok || !p.HasConnection() {
-		return b.tg.SendChat(ctx, chatID, "请先配置连接（Base URL + API Key）", homeKeyboard())
+		return b.tg.SendChat(ctx, chatID, "请先配置连接（Base URL + API Key）", b.homeKeyboardFor(userID))
 	}
 	if len(p.Accounts) == 0 {
-		return b.tg.SendChat(ctx, chatID, "请先添加监控账号", homeKeyboard())
+		return b.tg.SendChat(ctx, chatID, "请先添加监控账号", b.homeKeyboardFor(userID))
 	}
 	cli, err := sub2api.NewClient(config.Sub2APIConfig{
 		BaseURL: p.BaseURL, AdminAPIKey: p.AdminAPIKey, JWT: p.JWT, Timeout: 25 * time.Second,
@@ -976,7 +996,7 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 	if checked == 0 {
 		bld.WriteString("\n没有启用的账号。")
 	}
-	return b.tg.SendChat(ctx, chatID, bld.String(), homeKeyboard())
+	return b.tg.SendChat(ctx, chatID, bld.String(), b.homeKeyboardFor(userID))
 }
 
 func (b *Bot) showAccountPicker(ctx context.Context, chatID, msgID, userID int64, page int) error {
@@ -1427,7 +1447,7 @@ func helpText() string {
 /start · /menu — 打开主面板
 /status — 查看配置摘要
 /ops — 运维视图（看板/可用性/告警/错误/并发）
-/manage — 账号管理（调度/清错/刷新/浏览）
+/manage — 账号管理（调度/清错/一键修复/刷新/浏览）
 /search &lt;关键词&gt; — 搜索账号
 /check — 立即拉取用量快照
 /id — 显示你的 Telegram ID
@@ -1444,7 +1464,7 @@ func helpText() string {
 ` + telegram.Bold("说明") + `
 • 每位用户独立保存 base_url / key / 账号 / 阈值
 • <b>普通用户</b>：自助连接 / 监控账号 / 阈值 / 立即检查
-• <b>管理员</b>：运维视图 + 账号管理（调度/启停/清错/临时停调度/重置额度/批量/搜索/错误解决）
+• <b>管理员</b>：运维视图 + 账号管理（调度/启停/清错/一键修复/临时停调度/重置额度/批量/搜索/错误解决）
 • 管理员入口由 admin_user_ids 或 profile.role=admin 控制；菜单对普通用户隐藏
 • 用量达到阈值时 Bot 会私聊提醒你（Telegram / Discord 按平台投递）
 • 支持 passive（轻量缓存）与 active（刷新上游）数据源

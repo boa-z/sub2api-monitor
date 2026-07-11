@@ -636,7 +636,10 @@ func (b *Bot) showBadAccounts(ctx context.Context, chatID, msgID, userID int64) 
 			telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
 		},
 		[]telegram.InlineKeyboardButton{
+			telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
 			telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+		},
+		[]telegram.InlineKeyboardButton{
 			telegram.Btn("➕ 一键监控", "ops_watch_errors"),
 		},
 		[]telegram.InlineKeyboardButton{

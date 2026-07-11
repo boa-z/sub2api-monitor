@@ -262,7 +262,11 @@ func manageComponents() []discord.Component {
 			discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
 		),
 		discord.ActionRow(
+			discord.Button("批量清限速", "mgr_bulk_clear_rl", 2),
+			discord.Button("一键修复", "mgr_bulk_heal", 1),
 			discord.Button("异常账号", "ops_badacc", 2),
+		),
+		discord.ActionRow(
 			discord.Button("« 主面板", "home", 2),
 		),
 	}
@@ -909,8 +913,11 @@ func (b *Bot) manageAccount(ctx context.Context, userID, accountID int64, notice
 			discord.Button("清限速", fmt.Sprintf("mgr_act:clear_rl:%d", accountID), 2),
 		),
 		discord.ActionRow(
+			discord.Button("一键修复", fmt.Sprintf("mgr_act:heal:%d", accountID), 1),
 			discord.Button("恢复", fmt.Sprintf("mgr_act:recover:%d", accountID), 2),
 			discord.Button("刷新", fmt.Sprintf("mgr_act:refresh:%d", accountID), 2),
+		),
+		discord.ActionRow(
 			discord.Button("测试", fmt.Sprintf("mgr_act:test:%d", accountID), 2),
 		),
 		discord.ActionRow(
@@ -973,6 +980,8 @@ func (b *Bot) doManageAction(ctx context.Context, userID int64, action string, a
 			return "❌ 清限速失败: " + err.Error()
 		}
 		return "✅ 已清限速"
+	case "heal":
+		return b.healAccount(ctx, cli, accountID)
 	case "recover":
 		if _, err := cli.RecoverAccountState(ctx, accountID); err != nil {
 			return "❌ 恢复失败: " + err.Error()
@@ -988,25 +997,66 @@ func (b *Bot) doManageAction(ctx context.Context, userID int64, action string, a
 	}
 }
 
+// loadDiscordBulkTargets selects accounts for bulk ops.
+func loadDiscordBulkTargets(ctx context.Context, cli *sub2api.Client, action string, maxOps int) ([]sub2api.Account, int64, string, error) {
+	switch action {
+	case "clear_rl":
+		items, total, err := cli.ListAccountsEx(ctx, 1, maxOps, sub2api.AccountListFilter{Status: "rate_limited"})
+		if err == nil && (len(items) > 0 || total > 0) {
+			return items, total, "限速账号", nil
+		}
+		// fallback: scan first page of all
+		all, _, err2 := cli.ListAccountsEx(ctx, 1, 50, sub2api.AccountListFilter{})
+		if err2 != nil {
+			if err != nil {
+				return nil, 0, "限速账号", err
+			}
+			return nil, 0, "限速账号", err2
+		}
+		var out []sub2api.Account
+		for _, a := range all {
+			st := strings.ToLower(a.Status)
+			if a.RateLimitedAt != nil || a.OverloadUntil != nil || strings.Contains(st, "rate") || strings.Contains(st, "overload") {
+				out = append(out, a)
+			}
+		}
+		if len(out) > maxOps {
+			out = out[:maxOps]
+		}
+		return out, int64(len(out)), "限速/过载账号", nil
+	case "sched_on":
+		falseV := false
+		items, total, err := cli.ListAccountsEx(ctx, 1, maxOps, sub2api.AccountListFilter{Schedulable: &falseV})
+		if err == nil && len(items) > 0 {
+			return items, total, "停调度账号", nil
+		}
+		items, total, err = cli.ListAccountsEx(ctx, 1, maxOps, sub2api.AccountListFilter{Status: "error"})
+		return items, total, "error 账号（无停调度时回退）", err
+	default:
+		items, total, err := cli.ListAccountsEx(ctx, 1, maxOps, sub2api.AccountListFilter{Status: "error"})
+		return items, total, "status=error 账号", err
+	}
+}
+
 func (b *Bot) bulkActionPrompt(ctx context.Context, userID int64, action, title, confirmID string) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 15*time.Second)
 	if err != nil {
 		return "❌ " + err.Error(), manageComponents()
 	}
-	items, total, err := cli.ListAccountsEx(ctx, 1, 30, sub2api.AccountListFilter{Status: "error"})
+	const maxOps = 20
+	items, total, scope, err := loadDiscordBulkTargets(ctx, cli, action, maxOps)
 	if err != nil {
-		return "拉取 error 账号失败: " + err.Error(), manageComponents()
+		return "拉取账号失败: " + err.Error(), manageComponents()
 	}
 	if len(items) == 0 {
-		return "✅ 当前没有 status=error 的账号。", manageComponents()
+		return "✅ 当前没有可处理的账号（" + scope + "）。", manageComponents()
 	}
-	const maxOps = 20
 	n := len(items)
 	if n > maxOps {
 		n = maxOps
 	}
 	var bld strings.Builder
-	fmt.Fprintf(&bld, "**%s**\n\n将对约 %d 个 error 账号中的前 %d 个执行「%s」：\n", title, total, n, action)
+	fmt.Fprintf(&bld, "**%s**\n\n范围: %s\n将对约 %d 个中的前 %d 个执行「%s」：\n", title, scope, total, n, action)
 	for i := 0; i < n && i < 8; i++ {
 		a := items[i]
 		fmt.Fprintf(&bld, "• #%d %s\n", a.ID, truncate(a.Name, 16))
@@ -1025,14 +1075,14 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 	if err != nil {
 		return "❌ " + err.Error(), manageComponents()
 	}
-	items, total, err := cli.ListAccountsEx(ctx, 1, 30, sub2api.AccountListFilter{Status: "error"})
+	const maxOps = 20
+	items, total, scope, err := loadDiscordBulkTargets(ctx, cli, action, maxOps)
 	if err != nil {
 		return "拉取失败: " + err.Error(), manageComponents()
 	}
 	if len(items) == 0 {
-		return "✅ 当前无 error 账号", manageComponents()
+		return "✅ 当前没有可处理的账号（" + scope + "）", manageComponents()
 	}
-	const maxOps = 20
 	n := len(items)
 	if n > maxOps {
 		n = maxOps
@@ -1049,6 +1099,13 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 			_, opErr = cli.RecoverAccountState(ctx, a.ID)
 		case "sched_on":
 			_, opErr = cli.SetSchedulable(ctx, a.ID, true)
+		case "clear_rl":
+			_, opErr = cli.ClearAccountRateLimit(ctx, a.ID)
+		case "heal":
+			msg := b.healAccount(ctx, cli, a.ID)
+			if strings.HasPrefix(msg, "❌") {
+				opErr = fmt.Errorf("%s", strings.TrimPrefix(msg, "❌ "))
+			}
 		default:
 			opErr = fmt.Errorf("unknown action %s", action)
 		}
@@ -1065,6 +1122,8 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 		"clear_err": "批量清错",
 		"recover":   "批量恢复",
 		"sched_on":  "批量开调度",
+		"clear_rl":  "批量清限速",
+		"heal":      "批量一键修复",
 	}[action]
 	if title == "" {
 		title = "批量操作"
@@ -1078,4 +1137,33 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 		}
 	}
 	return bld.String(), manageComponents()
+}
+
+// healAccount best-effort: clear error, clear rate limit, recover, enable schedule.
+func (b *Bot) healAccount(ctx context.Context, cli *sub2api.Client, accountID int64) string {
+	steps := []struct {
+		name string
+		fn   func() error
+	}{
+		{"清错误", func() error { _, err := cli.ClearAccountError(ctx, accountID); return err }},
+		{"清限速", func() error { _, err := cli.ClearAccountRateLimit(ctx, accountID); return err }},
+		{"恢复", func() error { _, err := cli.RecoverAccountState(ctx, accountID); return err }},
+		{"开调度", func() error { _, err := cli.SetSchedulable(ctx, accountID, true); return err }},
+	}
+	var ok, fail []string
+	for _, s := range steps {
+		if err := s.fn(); err != nil {
+			fail = append(fail, s.name+": "+truncate(err.Error(), 40))
+		} else {
+			ok = append(ok, s.name)
+		}
+	}
+	if len(ok) == 0 {
+		return "❌ 一键修复全部失败: " + strings.Join(fail, "; ")
+	}
+	msg := "✅ 一键修复完成: " + strings.Join(ok, " · ")
+	if len(fail) > 0 {
+		msg += "\n⚠️ 部分失败: " + strings.Join(fail, "; ")
+	}
+	return msg
 }
