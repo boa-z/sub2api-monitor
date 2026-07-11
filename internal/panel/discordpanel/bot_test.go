@@ -686,3 +686,25 @@ func TestOpsComponentsForHealth(t *testing.T) {
 		t.Fatal("viewer should not get bulk heal")
 	}
 }
+
+func TestDiscordModalHelpers(t *testing.T) {
+	m := discord.NewModal("modal_search", "搜索账号", "q", "关键词", "片段", 80)
+	if m.CustomID != "modal_search" {
+		t.Fatal(m.CustomID)
+	}
+	if len(m.Components) != 1 || len(m.Components[0].Components) != 1 {
+		t.Fatalf("%+v", m.Components)
+	}
+	if m.Components[0].Components[0].CustomID != "q" {
+		t.Fatal(m.Components[0].Components[0].CustomID)
+	}
+}
+
+func TestModalValueUsedByPanel(t *testing.T) {
+	// ensure Interaction.ModalValue is available to panel package
+	it := &discord.Interaction{Type: 5}
+	// Data nil -> empty
+	if it.ModalValue("q") != "" {
+		t.Fatal("expected empty")
+	}
+}

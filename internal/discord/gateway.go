@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,10 +27,11 @@ type GatewayEvent struct {
 }
 
 // Interaction is a subset of Discord interaction objects.
+// Type: 2 application command, 3 message component, 5 modal submit.
 type Interaction struct {
 	ID    string `json:"id"`
 	Token string `json:"token"`
-	Type  int    `json:"type"` // 2 application command, 3 message component
+	Type  int    `json:"type"`
 	Data  *struct {
 		CustomID string `json:"custom_id"`
 		Name     string `json:"name"`
@@ -38,8 +40,9 @@ type Interaction struct {
 			Type  int             `json:"type"`
 			Value json.RawMessage `json:"value"`
 		} `json:"options"`
-		ComponentType int      `json:"component_type"`
-		Values        []string `json:"values"`
+		ComponentType int         `json:"component_type"`
+		Values        []string    `json:"values"`
+		Components    []Component `json:"components"` // modal submit nested rows
 	} `json:"data"`
 	GuildID   string `json:"guild_id"`
 	ChannelID string `json:"channel_id"`
@@ -50,6 +53,25 @@ type Interaction struct {
 	Message *struct {
 		ID string `json:"id"`
 	} `json:"message"`
+}
+
+// ModalValue returns the submitted value for a text-input custom_id from a modal submit.
+func (it *Interaction) ModalValue(fieldID string) string {
+	if it == nil || it.Data == nil {
+		return ""
+	}
+	for _, row := range it.Data.Components {
+		for _, c := range row.Components {
+			if c.CustomID == fieldID {
+				return strings.TrimSpace(c.Value)
+			}
+		}
+		// defensive: some payloads may flatten
+		if row.CustomID == fieldID && row.Value != "" {
+			return strings.TrimSpace(row.Value)
+		}
+	}
+	return ""
 }
 
 type User struct {

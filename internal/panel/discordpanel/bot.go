@@ -157,6 +157,8 @@ func (b *Bot) handleInteraction(ctx context.Context, it *discord.Interaction) er
 		return b.handleCommand(ctx, it, uid, user)
 	case 3: // message component
 		return b.handleComponent(ctx, it, uid, user)
+	case 5: // modal submit
+		return b.handleModal(ctx, it, uid, user)
 	default:
 		return nil
 	}
@@ -278,13 +280,20 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		}
 		return b.update(ctx, it, b.seedConnection(uid), b.connComponents(uid))
 	case data == "set_base_prompt":
-		b.setAwait(uid, awaitBaseURL, 0, "")
-		return b.update(ctx, it, "请使用 `/setbase url:<Base URL>` 设置，例如 `/setbase url:http://127.0.0.1:8080`", b.connComponents(uid))
+		return b.openModal(ctx, it, discord.NewModal(
+			"modal_base", "设置 Base URL", "base_url", "Base URL",
+			"http://127.0.0.1:8080", 200,
+		))
 	case data == "set_key_prompt":
-		b.setAwait(uid, awaitAPIKey, 0, "")
-		return b.update(ctx, it, "请使用 `/setkey key:<API Key>` 设置（建议在私密频道/DM）。", b.connComponents(uid))
+		return b.openModal(ctx, it, discord.NewModal(
+			"modal_key", "设置 Admin API Key", "api_key", "API Key",
+			"sk-...", 200,
+		))
 	case data == "add_acc_prompt":
-		return b.update(ctx, it, "请使用 `/addaccount id:<账号ID>` 添加监控账号，或点「从列表选择」。", b.accountsComponents(uid))
+		return b.openModal(ctx, it, discord.NewModal(
+			"modal_addacc", "添加监控账号", "account_id", "账号数字 ID",
+			"12345", 32,
+		))
 	case data == "pick_acc" || strings.HasPrefix(data, "pick_acc:"):
 		status, page := "all", 0
 		if strings.HasPrefix(data, "pick_acc:") {
@@ -598,7 +607,10 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.canOpsRead(uid) {
 			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, "请使用 `/search q:<关键词>` 搜索账号（名称片段）。", manageComponents())
+		return b.openModal(ctx, it, discord.NewModal(
+			"modal_search", "搜索账号", "q", "关键词",
+			"名称 / 邮箱片段", 100,
+		))
 	case data == "pnl_users" || strings.HasPrefix(data, "pnl_users:"):
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -716,6 +728,46 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		return b.update(ctx, it, "✅ 已重置为系统默认\n\n"+b.thresholdsText(uid), b.thrComponents(uid))
 	default:
 		return b.update(ctx, it, "未知操作: "+data, b.homeComponents(uid))
+	}
+}
+
+func (b *Bot) openModal(ctx context.Context, it *discord.Interaction, modal discord.Modal) error {
+	if b.dc == nil {
+		return fmt.Errorf("discord client nil")
+	}
+	return b.dc.RespondModal(ctx, it.ID, it.Token, modal)
+}
+
+func (b *Bot) handleModal(ctx context.Context, it *discord.Interaction, uid int64, user *discord.User) error {
+	if it.Data == nil {
+		return nil
+	}
+	switch it.Data.CustomID {
+	case "modal_search":
+		if !b.canOpsRead(uid) {
+			return b.respond(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid), true)
+		}
+		q := strings.TrimSpace(it.ModalValue("q"))
+		if q == "" {
+			return b.respond(ctx, it, "关键词不能为空。可再点「搜索」重试，或使用 `/search q:<关键词>`。", manageComponents(), true)
+		}
+		text, comps := b.accountBrowser(ctx, uid, "search:"+q, 0)
+		return b.respond(ctx, it, text, comps, false)
+	case "modal_base":
+		url := strings.TrimSpace(it.ModalValue("base_url"))
+		msg := b.setBaseURL(uid, url)
+		return b.respond(ctx, it, msg+"\n\n"+b.connText(uid), b.connComponents(uid), false)
+	case "modal_key":
+		key := strings.TrimSpace(it.ModalValue("api_key"))
+		msg := b.setAPIKey(uid, key)
+		// ephemeral for secrets
+		return b.respond(ctx, it, msg+"\n\n"+b.connText(uid), b.connComponents(uid), true)
+	case "modal_addacc":
+		idRaw := strings.TrimSpace(it.ModalValue("account_id"))
+		msg := b.addAccount(ctx, uid, idRaw)
+		return b.respond(ctx, it, msg+"\n\n"+b.accountsText(uid), b.accountsComponents(uid), false)
+	default:
+		return b.respond(ctx, it, "未知表单: "+it.Data.CustomID, b.homeComponents(uid), true)
 	}
 }
 

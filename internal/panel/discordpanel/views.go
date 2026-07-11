@@ -24,7 +24,8 @@ func helpText() string {
 • **管理员**：运维写操作 + 账号管理（调度/清错/恢复/批量/一键修复/临时停调度/搜索/面板用户）
 • 角色由 admin_user_ids 或 profile.role=admin|viewer|user 控制
 • 配置按用户隔离，存于 users.json（可与 Telegram 共享）
-• 斜杠命令：` + "`/panel` `/status` `/check` `/setbase` `/setkey` `/addaccount` `/ops` `/manage`"
+• 按钮可弹出输入框（搜索 / Base URL / API Key / 添加账号 ID）；也可用斜杠命令
+• 斜杠命令：` + "`/panel` `/status` `/check` `/setbase` `/setkey` `/addaccount` `/search` `/ops` `/manage`"
 }
 
 func (b *Bot) homeText(userID int64) string {
@@ -424,7 +425,7 @@ func (b *Bot) connText(userID int64) string {
 		base = "(未设置)"
 	}
 	fmt.Fprintf(&bld, "Base URL: `%s`\nAPI Key: `%s`\n", base, userstore.MaskKey(p.AdminAPIKey))
-	bld.WriteString("\n用 `/setbase` `/setkey` 设置，或点下方按钮查看说明。")
+	bld.WriteString("\n点下方按钮弹出输入框，或用 `/setbase` `/setkey`。")
 	return bld.String()
 }
 

@@ -226,7 +226,7 @@ func (c *Client) EditChannelMessage(ctx context.Context, channelID, messageID, c
 }
 
 // RespondInteraction answers a slash/component interaction.
-// typ: 4=channel message, 7=update message
+// typ: 4=channel message, 7=update message, 9=modal (prefer RespondModal).
 func (c *Client) RespondInteraction(ctx context.Context, interactionID, interactionToken string, typ int, content string, components []Component, ephemeral bool) error {
 	data := map[string]any{"content": content}
 	if len(components) > 0 {
@@ -238,6 +238,32 @@ func (c *Client) RespondInteraction(ctx context.Context, interactionID, interact
 	body := map[string]any{
 		"type": typ,
 		"data": data,
+	}
+	return c.do(ctx, http.MethodPost, "/interactions/"+interactionID+"/"+interactionToken+"/callback", body, nil)
+}
+
+// RespondModal opens a Discord modal (interaction response type 9).
+// Must be the first (and only) response to the triggering interaction.
+func (c *Client) RespondModal(ctx context.Context, interactionID, interactionToken string, modal Modal) error {
+	if modal.CustomID == "" {
+		return fmt.Errorf("modal custom_id required")
+	}
+	if modal.Title == "" {
+		return fmt.Errorf("modal title required")
+	}
+	if len(modal.Title) > 45 {
+		modal.Title = modal.Title[:45]
+	}
+	if len(modal.CustomID) > 100 {
+		modal.CustomID = modal.CustomID[:100]
+	}
+	body := map[string]any{
+		"type": 9,
+		"data": map[string]any{
+			"custom_id":  modal.CustomID,
+			"title":      modal.Title,
+			"components": modal.Components,
+		},
 	}
 	return c.do(ctx, http.MethodPost, "/interactions/"+interactionID+"/"+interactionToken+"/callback", body, nil)
 }
@@ -266,13 +292,24 @@ func (c *Client) RegisterCommands(ctx context.Context, cmds []ApplicationCommand
 	return c.do(ctx, http.MethodPut, path, cmds, nil)
 }
 
-// Component types for Discord message components.
+// Modal is a Discord modal dialog (response type 9).
+type Modal struct {
+	CustomID   string
+	Title      string
+	Components []Component // action rows with text inputs
+}
+
+// Component types for Discord message components and modal inputs.
 type Component struct {
-	Type        int         `json:"type"` // 1 action row, 2 button, 3 select
+	Type        int         `json:"type"` // 1 action row, 2 button, 3 select, 4 text input
 	CustomID    string      `json:"custom_id,omitempty"`
 	Label       string      `json:"label,omitempty"`
-	Style       int         `json:"style,omitempty"` // buttons 1-5
+	Style       int         `json:"style,omitempty"` // buttons 1-5; text input 1 short / 2 paragraph
 	Disabled    bool        `json:"disabled,omitempty"`
+	Required    *bool       `json:"required,omitempty"`
+	MinLength   int         `json:"min_length,omitempty"`
+	MaxLength   int         `json:"max_length,omitempty"`
+	Value       string      `json:"value,omitempty"`
 	Emoji       *Emoji      `json:"emoji,omitempty"`
 	Options     []SelectOpt `json:"options,omitempty"`
 	Placeholder string      `json:"placeholder,omitempty"`
@@ -324,6 +361,52 @@ func SelectOption(label, value, desc string) SelectOpt {
 		desc = desc[:97] + "…"
 	}
 	return SelectOpt{Label: label, Value: value, Description: desc}
+}
+
+// TextInput builds a type-4 modal text input (must sit inside an ActionRow).
+// style: 1 = Short, 2 = Paragraph.
+func TextInput(customID, label string, style int, required bool, placeholder string, maxLen int) Component {
+	if style != 1 && style != 2 {
+		style = 1
+	}
+	if maxLen <= 0 || maxLen > 4000 {
+		maxLen = 100
+	}
+	if len(label) > 45 {
+		label = label[:45]
+	}
+	if len(customID) > 100 {
+		customID = customID[:100]
+	}
+	if len(placeholder) > 100 {
+		placeholder = placeholder[:100]
+	}
+	req := required
+	return Component{
+		Type:        4,
+		CustomID:    customID,
+		Label:       label,
+		Style:       style,
+		Required:    &req,
+		Placeholder: placeholder,
+		MaxLength:   maxLen,
+	}
+}
+
+// ModalRow wraps a single text input in an action row for modal payloads.
+func ModalRow(input Component) Component {
+	return ActionRow(input)
+}
+
+// NewModal builds a modal with one short text field (common panel prompts).
+func NewModal(customID, title, fieldID, fieldLabel, placeholder string, maxLen int) Modal {
+	return Modal{
+		CustomID: customID,
+		Title:    title,
+		Components: []Component{
+			ModalRow(TextInput(fieldID, fieldLabel, 1, true, placeholder, maxLen)),
+		},
+	}
 }
 
 type ApplicationCommand struct {
