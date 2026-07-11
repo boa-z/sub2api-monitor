@@ -1030,12 +1030,17 @@ func (b *Bot) showConcurrency(ctx context.Context, chatID, msgID, userID int64) 
 	sort.Slice(plats, func(i, j int) bool { return plats[i].b.LoadPercentage > plats[j].b.LoadPercentage })
 	bld.WriteString(telegram.Bold("平台") + "\n")
 	for _, r := range plats {
-		fmt.Fprintf(&bld, "• %s: %s/%s (%.0f%%) wait=%s\n",
+		hotMark := ""
+		if browse.IsHotLoad(r.b.LoadPercentage, r.b.WaitingInQueue) {
+			hotMark = " 🔥"
+		}
+		fmt.Fprintf(&bld, "• %s: %s/%s (%.0f%%) wait=%s%s\n",
 			telegram.EscapeHTML(r.name),
 			telegram.Code(strconv.Itoa(r.b.CurrentInUse)),
 			telegram.Code(strconv.Itoa(r.b.MaxCapacity)),
 			r.b.LoadPercentage,
 			telegram.Code(strconv.Itoa(r.b.WaitingInQueue)),
+			hotMark,
 		)
 	}
 	// top loaded groups
@@ -1066,13 +1071,18 @@ func (b *Bot) showConcurrency(ctx context.Context, chatID, msgID, userID int64) 
 		if r.b.GroupID > 0 {
 			idPart = fmt.Sprintf("#%d ", r.b.GroupID)
 		}
-		fmt.Fprintf(&bld, "• %s%s: %s/%s (%.0f%%) wait=%s\n",
+		hotMark := ""
+		if browse.IsHotLoad(r.b.LoadPercentage, r.b.WaitingInQueue) {
+			hotMark = " 🔥"
+		}
+		fmt.Fprintf(&bld, "• %s%s: %s/%s (%.0f%%) wait=%s%s\n",
 			idPart,
 			telegram.EscapeHTML(truncateRunes(r.name, 14)),
 			telegram.Code(strconv.Itoa(r.b.CurrentInUse)),
 			telegram.Code(strconv.Itoa(r.b.MaxCapacity)),
 			r.b.LoadPercentage,
 			telegram.Code(strconv.Itoa(r.b.WaitingInQueue)),
+			hotMark,
 		)
 	}
 	// top loaded accounts
@@ -1096,12 +1106,17 @@ func (b *Bot) showConcurrency(ctx context.Context, chatID, msgID, userID int64) 
 			fmt.Fprintf(&bld, "… 另有 %d 个\n", len(accs)-10)
 			break
 		}
-		fmt.Fprintf(&bld, "• #%d %s: %s/%s (%.0f%%)\n",
+		hotMark := ""
+		if browse.IsHotLoad(r.b.LoadPercentage, r.b.WaitingInQueue) {
+			hotMark = " 🔥"
+		}
+		fmt.Fprintf(&bld, "• #%d %s: %s/%s (%.0f%%)%s\n",
 			r.b.AccountID,
 			telegram.EscapeHTML(truncateRunes(r.name, 14)),
 			telegram.Code(strconv.Itoa(r.b.CurrentInUse)),
 			telegram.Code(strconv.Itoa(r.b.MaxCapacity)),
 			r.b.LoadPercentage,
+			hotMark,
 		)
 	}
 	hotPlats := browse.HotConcurrencyPlatforms(snap, 3)

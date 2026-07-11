@@ -2345,8 +2345,12 @@ func (b *Bot) showConcurrencyView(ctx context.Context, userID int64) (string, []
 			fmt.Fprintf(&bld, "… 另有 %d 个\n", len(accs)-10)
 			break
 		}
-		fmt.Fprintf(&bld, "• #%d %s: `%d/%d` (%.0f%%)\n",
-			r.b.AccountID, truncate(r.name, 14), r.b.CurrentInUse, r.b.MaxCapacity, r.b.LoadPercentage)
+		hotMark := ""
+		if browse.IsHotLoad(r.b.LoadPercentage, r.b.WaitingInQueue) {
+			hotMark = " 🔥"
+		}
+		fmt.Fprintf(&bld, "• #%d %s: `%d/%d` (%.0f%%)%s\n",
+			r.b.AccountID, truncate(r.name, 14), r.b.CurrentInUse, r.b.MaxCapacity, r.b.LoadPercentage, hotMark)
 	}
 	hotPlats := browse.HotConcurrencyPlatforms(snap, 3)
 	hotGroups := browse.HotConcurrencyGroups(snap, 2)
