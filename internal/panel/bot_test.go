@@ -1188,3 +1188,38 @@ func TestParseFlexibleDuration(t *testing.T) {
 		}
 	}
 }
+
+
+func TestParseUsersCallback(t *testing.T) {
+	page, search := parseUsersCallback("mgr_users")
+	if page != 0 || search != "" {
+		t.Fatalf("%d %q", page, search)
+	}
+	page, search = parseUsersCallback("mgr_users:2")
+	if page != 2 || search != "" {
+		t.Fatalf("%d %q", page, search)
+	}
+	page, search = parseUsersCallback("mgr_users|alice@x.com:1")
+	if page != 1 || search != "alice@x.com" {
+		t.Fatalf("%d %q", page, search)
+	}
+	if usersCallback(0, "") != "mgr_users" {
+		t.Fatal(usersCallback(0, ""))
+	}
+	if usersCallback(2, "") != "mgr_users:2" {
+		t.Fatal(usersCallback(2, ""))
+	}
+	if usersCallback(1, "a:b") != "mgr_users|a b:1" {
+		t.Fatal(usersCallback(1, "a:b"))
+	}
+}
+
+func TestParseGroupsCallback(t *testing.T) {
+	page, search := parseGroupsCallback("mgr_groups|openai:3")
+	if page != 3 || search != "openai" {
+		t.Fatalf("%d %q", page, search)
+	}
+	if groupsCallback(0, "x|y") != "mgr_groups|x y:0" {
+		t.Fatal(groupsCallback(0, "x|y"))
+	}
+}

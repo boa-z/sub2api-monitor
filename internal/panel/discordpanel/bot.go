@@ -21,13 +21,15 @@ import (
 )
 
 const (
-	awaitNone    = ""
-	awaitBaseURL = "base_url"
-	awaitAPIKey  = "api_key"
-	awaitAddAcc  = "add_account"
-	awaitThrPct  = "set_threshold_pct"
-	awaitSearch  = "search_account"
-	awaitRename  = "rename_account"
+	awaitNone        = ""
+	awaitBaseURL     = "base_url"
+	awaitAPIKey      = "api_key"
+	awaitAddAcc      = "add_account"
+	awaitThrPct      = "set_threshold_pct"
+	awaitSearch      = "search_account"
+	awaitUserSearch  = "search_user"
+	awaitGroupSearch = "search_group"
+	awaitRename      = "rename_account"
 )
 
 type session struct {
@@ -42,6 +44,9 @@ type session struct {
 	ManageBack   string
 	BrowseStatus string
 	BrowsePage   int
+	// UserSearch/GroupSearch remember last instance user/group list query.
+	UserSearch  string
+	GroupSearch string
 }
 
 // Bot is the Discord interactive panel.
@@ -468,25 +473,61 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		}
 		text, comps := b.manageMenuView(ctx, uid)
 		return b.update(ctx, it, text, comps)
-	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:"):
+	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:") || strings.HasPrefix(data, "mgr_users|"):
 		if !b.canOpsRead(uid) {
 			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
-		page := 0
-		if strings.HasPrefix(data, "mgr_users:") {
-			page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_users:"))
-		}
-		text, comps := b.showUsersView(ctx, uid, page)
+		page, search := parseUsersCallback(data)
+		text, comps := b.showUsersView(ctx, uid, page, search)
 		return b.update(ctx, it, text, comps)
-	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:"):
+	case data == "mgr_user_search":
 		if !b.canOpsRead(uid) {
 			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
-		page := 0
-		if strings.HasPrefix(data, "mgr_groups:") {
-			page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_groups:"))
+		return b.openModal(ctx, it, discord.NewModal(
+			"modal_user_search", "搜索实例用户", "q", "邮箱/用户名/ID",
+			"alice@example.com", 80,
+		))
+	case data == "mgr_user_clear":
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
-		text, comps := b.showGroupsView(ctx, uid, page)
+		text, comps := b.showUsersView(ctx, uid, 0, "")
+		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "mgr_user:"):
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
+		}
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "mgr_user:"), 10, 64)
+		text, comps := b.showUserDetailView(ctx, uid, id)
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:") || strings.HasPrefix(data, "mgr_groups|"):
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
+		}
+		page, search := parseGroupsCallback(data)
+		text, comps := b.showGroupsView(ctx, uid, page, search)
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_group_search":
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
+		}
+		return b.openModal(ctx, it, discord.NewModal(
+			"modal_group_search", "搜索分组", "q", "名称/平台/ID",
+			"openai", 80,
+		))
+	case data == "mgr_group_clear":
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
+		}
+		text, comps := b.showGroupsView(ctx, uid, 0, "")
+		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "mgr_group:"):
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
+		}
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "mgr_group:"), 10, 64)
+		text, comps := b.showGroupDetailView(ctx, uid, id)
 		return b.update(ctx, it, text, comps)
 	case data == "mgr_browse" || strings.HasPrefix(data, "mgr_browse:"):
 		if !b.canOpsRead(uid) {
@@ -799,6 +840,26 @@ func (b *Bot) handleModal(ctx context.Context, it *discord.Interaction, uid int6
 		}
 		text, comps := b.accountBrowser(ctx, uid, "search:"+q, 0)
 		return b.respond(ctx, it, text, comps, false)
+	case "modal_user_search":
+		if !b.canOpsRead(uid) {
+			return b.respond(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid), true)
+		}
+		q := strings.TrimSpace(it.ModalValue("q"))
+		if q == "" {
+			return b.respond(ctx, it, "关键词不能为空。可再点「搜索用户」重试。", manageComponents(), true)
+		}
+		text, comps := b.showUsersView(ctx, uid, 0, q)
+		return b.respond(ctx, it, text, comps, false)
+	case "modal_group_search":
+		if !b.canOpsRead(uid) {
+			return b.respond(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid), true)
+		}
+		q := strings.TrimSpace(it.ModalValue("q"))
+		if q == "" {
+			return b.respond(ctx, it, "关键词不能为空。可再点「搜索分组」重试。", manageComponents(), true)
+		}
+		text, comps := b.showGroupsView(ctx, uid, 0, q)
+		return b.respond(ctx, it, text, comps, false)
 	case "modal_base":
 		url := strings.TrimSpace(it.ModalValue("base_url"))
 		msg := b.setBaseURL(uid, url)
@@ -1061,6 +1122,119 @@ func (b *Bot) getOpsErrorView(userID int64) (kind string, page int) {
 	return kind, page
 }
 
+func (b *Bot) setUserSearch(userID int64, search string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.UserSearch = strings.TrimSpace(search)
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getUserSearch(userID int64) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return ""
+	}
+	return s.UserSearch
+}
+
+func (b *Bot) setGroupSearch(userID int64, search string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.GroupSearch = strings.TrimSpace(search)
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getGroupSearch(userID int64) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return ""
+	}
+	return s.GroupSearch
+}
+
+// usersCallback / parseUsersCallback keep search across pages (shared with TG forms).
+func usersCallback(page int, search string) string {
+	search = strings.TrimSpace(search)
+	if search == "" {
+		if page <= 0 {
+			return "mgr_users"
+		}
+		return fmt.Sprintf("mgr_users:%d", page)
+	}
+	safe := strings.ReplaceAll(search, ":", " ")
+	safe = strings.ReplaceAll(safe, "|", " ")
+	return fmt.Sprintf("mgr_users|%s:%d", safe, page)
+}
+
+func parseUsersCallback(data string) (page int, search string) {
+	data = strings.TrimSpace(data)
+	if data == "mgr_users" {
+		return 0, ""
+	}
+	if strings.HasPrefix(data, "mgr_users|") {
+		rest := strings.TrimPrefix(data, "mgr_users|")
+		if i := strings.LastIndex(rest, ":"); i >= 0 {
+			search = strings.TrimSpace(rest[:i])
+			page, _ = strconv.Atoi(rest[i+1:])
+			return page, search
+		}
+		return 0, strings.TrimSpace(rest)
+	}
+	if strings.HasPrefix(data, "mgr_users:") {
+		page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_users:"))
+		return page, ""
+	}
+	return 0, ""
+}
+
+func groupsCallback(page int, search string) string {
+	search = strings.TrimSpace(search)
+	if search == "" {
+		if page <= 0 {
+			return "mgr_groups"
+		}
+		return fmt.Sprintf("mgr_groups:%d", page)
+	}
+	safe := strings.ReplaceAll(search, ":", " ")
+	safe = strings.ReplaceAll(safe, "|", " ")
+	return fmt.Sprintf("mgr_groups|%s:%d", safe, page)
+}
+
+func parseGroupsCallback(data string) (page int, search string) {
+	data = strings.TrimSpace(data)
+	if data == "mgr_groups" {
+		return 0, ""
+	}
+	if strings.HasPrefix(data, "mgr_groups|") {
+		rest := strings.TrimPrefix(data, "mgr_groups|")
+		if i := strings.LastIndex(rest, ":"); i >= 0 {
+			search = strings.TrimSpace(rest[:i])
+			page, _ = strconv.Atoi(rest[i+1:])
+			return page, search
+		}
+		return 0, strings.TrimSpace(rest)
+	}
+	if strings.HasPrefix(data, "mgr_groups:") {
+		page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_groups:"))
+		return page, ""
+	}
+	return 0, ""
+}
+
 func (b *Bot) setManageBack(userID int64, data string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -1139,10 +1313,14 @@ func (b *Bot) manageBackLabel(userID int64) (label, data string) {
 		label = "« 浏览"
 	case strings.HasPrefix(data, "ops_errors"):
 		label = "« 错误"
-	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:"):
+	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:") || strings.HasPrefix(data, "mgr_users|"):
 		label = "« 实例用户"
-	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:"):
+	case strings.HasPrefix(data, "mgr_user:"):
+		label = "« 用户详情"
+	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:") || strings.HasPrefix(data, "mgr_groups|"):
 		label = "« 分组"
+	case strings.HasPrefix(data, "mgr_group:"):
+		label = "« 分组详情"
 	}
 	return label, data
 }

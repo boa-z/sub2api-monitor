@@ -800,3 +800,18 @@ func TestDiscordParseFlexibleDuration(t *testing.T) {
 		t.Fatal(parseTempDur("bad"))
 	}
 }
+
+
+func TestParseUsersCallback(t *testing.T) {
+	page, search := parseUsersCallback("mgr_users|bob:0")
+	if page != 0 || search != "bob" {
+		t.Fatalf("%d %q", page, search)
+	}
+	if usersCallback(1, "q") != "mgr_users|q:1" {
+		t.Fatal(usersCallback(1, "q"))
+	}
+	page, search = parseGroupsCallback("mgr_groups:4")
+	if page != 4 || search != "" {
+		t.Fatalf("%d %q", page, search)
+	}
+}

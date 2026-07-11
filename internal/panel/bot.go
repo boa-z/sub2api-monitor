@@ -18,14 +18,16 @@ import (
 
 // pending input kinds for multi-step wizards
 const (
-	awaitNone    = ""
-	awaitBaseURL = "base_url"
-	awaitAPIKey  = "api_key"
-	awaitAddAcc  = "add_account"
-	awaitThrPct  = "set_threshold_pct" // window stored in session.Window
-	awaitRename  = "rename_account"    // account id in session.AccountID
-	awaitSearch  = "search_account"
-	awaitTempDur = "temp_unsched_dur" // account id in session.AccountID
+	awaitNone        = ""
+	awaitBaseURL     = "base_url"
+	awaitAPIKey      = "api_key"
+	awaitAddAcc      = "add_account"
+	awaitThrPct      = "set_threshold_pct" // window stored in session.Window
+	awaitRename      = "rename_account"    // account id in session.AccountID
+	awaitSearch      = "search_account"
+	awaitUserSearch  = "search_user"
+	awaitGroupSearch = "search_group"
+	awaitTempDur     = "temp_unsched_dur" // account id in session.AccountID
 )
 
 type session struct {
@@ -42,6 +44,9 @@ type session struct {
 	// BrowseStatus/Page remember last account browser filter.
 	BrowseStatus string
 	BrowsePage   int
+	// UserSearch/GroupSearch remember last instance user/group list query.
+	UserSearch  string
+	GroupSearch string
 }
 
 // Bot is the interactive Telegram control panel.
@@ -494,24 +499,56 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return b.applyTempUnschedulable(ctx, chatID, msgID, cq.From.ID, id, dur)
 		}
 		return b.handleManageAction(ctx, chatID, msgID, cq.From.ID, action, id)
-	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:"):
+	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:") || strings.HasPrefix(data, "mgr_users|"):
 		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
-		page := 0
-		if strings.HasPrefix(data, "mgr_users:") {
-			page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_users:"))
-		}
-		return b.showUsers(ctx, chatID, msgID, cq.From.ID, page)
-	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:"):
+		page, search := parseUsersCallback(data)
+		return b.showUsers(ctx, chatID, msgID, cq.From.ID, page, search)
+	case data == "mgr_user_search":
 		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
-		page := 0
-		if strings.HasPrefix(data, "mgr_groups:") {
-			page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_groups:"))
+		b.setAwait(cq.From.ID, awaitUserSearch, 0, "")
+		_ = b.tg.AnswerCallback(ctx, cq.ID, "", false)
+		return b.editOrSend(ctx, chatID, msgID,
+			"🔎 搜索实例用户\n发送邮箱/用户名/ID 片段；/cancel 取消", cancelKeyboard())
+	case data == "mgr_user_clear":
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
 		}
-		return b.showGroups(ctx, chatID, msgID, cq.From.ID, page)
+		return b.showUsers(ctx, chatID, msgID, cq.From.ID, 0, "")
+	case strings.HasPrefix(data, "mgr_user:"):
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "mgr_user:"), 10, 64)
+		return b.showUserDetail(ctx, chatID, msgID, cq.From.ID, id)
+	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:") || strings.HasPrefix(data, "mgr_groups|"):
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		page, search := parseGroupsCallback(data)
+		return b.showGroups(ctx, chatID, msgID, cq.From.ID, page, search)
+	case data == "mgr_group_search":
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		b.setAwait(cq.From.ID, awaitGroupSearch, 0, "")
+		_ = b.tg.AnswerCallback(ctx, cq.ID, "", false)
+		return b.editOrSend(ctx, chatID, msgID,
+			"🔎 搜索分组\n发送名称/平台/ID 片段；/cancel 取消", cancelKeyboard())
+	case data == "mgr_group_clear":
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.showGroups(ctx, chatID, msgID, cq.From.ID, 0, "")
+	case strings.HasPrefix(data, "mgr_group:"):
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "mgr_group:"), 10, 64)
+		return b.showGroupDetail(ctx, chatID, msgID, cq.From.ID, id)
 	case data == "pnl_users" || strings.HasPrefix(data, "pnl_users:"):
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
@@ -851,6 +888,20 @@ func (b *Bot) handleAwait(ctx context.Context, m *telegram.InMessage, s *session
 		}
 		// reuse showAccountBrowser with search via special status prefix search:keyword
 		return b.showAccountBrowser(ctx, m.Chat.ID, 0, m.From.ID, "search:"+q, 0)
+	case awaitUserSearch:
+		q := strings.TrimSpace(text)
+		b.clearSession(m.From.ID)
+		if q == "" {
+			return b.tg.SendChat(ctx, m.Chat.ID, "关键词不能为空", manageKeyboard())
+		}
+		return b.showUsers(ctx, m.Chat.ID, 0, m.From.ID, 0, q)
+	case awaitGroupSearch:
+		q := strings.TrimSpace(text)
+		b.clearSession(m.From.ID)
+		if q == "" {
+			return b.tg.SendChat(ctx, m.Chat.ID, "关键词不能为空", manageKeyboard())
+		}
+		return b.showGroups(ctx, m.Chat.ID, 0, m.From.ID, 0, q)
 	case awaitRename:
 		name := strings.TrimSpace(text)
 		if name == "" {
@@ -2593,6 +2644,50 @@ func (b *Bot) getOpsErrorView(userID int64) (kind string, page int) {
 	return kind, page
 }
 
+func (b *Bot) setUserSearch(userID int64, search string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.UserSearch = strings.TrimSpace(search)
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getUserSearch(userID int64) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return ""
+	}
+	return s.UserSearch
+}
+
+func (b *Bot) setGroupSearch(userID int64, search string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.GroupSearch = strings.TrimSpace(search)
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getGroupSearch(userID int64) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return ""
+	}
+	return s.GroupSearch
+}
+
 func (b *Bot) setManageBack(userID int64, data string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -2672,10 +2767,14 @@ func (b *Bot) manageBackButton(userID int64) telegram.InlineKeyboardButton {
 		label = "« 账号浏览"
 	case strings.HasPrefix(data, "ops_errors"):
 		label = "« 错误列表"
-	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:"):
+	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:") || strings.HasPrefix(data, "mgr_users|"):
 		label = "« 实例用户"
-	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:"):
+	case strings.HasPrefix(data, "mgr_user:"):
+		label = "« 用户详情"
+	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:") || strings.HasPrefix(data, "mgr_groups|"):
 		label = "« 分组"
+	case strings.HasPrefix(data, "mgr_group:"):
+		label = "« 分组详情"
 	}
 	return telegram.Btn(label, data)
 }

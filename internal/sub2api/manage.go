@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // SetSchedulable enables/disables account scheduling.
@@ -118,7 +119,25 @@ type User struct {
 	Notes              string  `json:"notes"`
 }
 
+// UserListFilter controls admin users list query params.
+type UserListFilter struct {
+	Search string // email/username/id keyword (API: search / q)
+	Status string // active|disabled|...
+	Role   string // admin|user|...
+}
+
+// GroupListFilter controls admin groups list query params.
+type GroupListFilter struct {
+	Search   string
+	Platform string
+	Status   string
+}
+
 func (c *Client) ListGroups(ctx context.Context, page, pageSize int) ([]Group, int64, error) {
+	return c.ListGroupsEx(ctx, page, pageSize, GroupListFilter{})
+}
+
+func (c *Client) ListGroupsEx(ctx context.Context, page, pageSize int, f GroupListFilter) ([]Group, int64, error) {
 	if page <= 0 {
 		page = 1
 	}
@@ -128,14 +147,271 @@ func (c *Client) ListGroups(ctx context.Context, page, pageSize int) ([]Group, i
 	q := url.Values{}
 	q.Set("page", strconv.Itoa(page))
 	q.Set("page_size", strconv.Itoa(pageSize))
+	if f.Search != "" {
+		q.Set("search", f.Search)
+		q.Set("q", f.Search)
+		q.Set("keyword", f.Search)
+	}
+	if f.Platform != "" {
+		q.Set("platform", f.Platform)
+	}
+	if f.Status != "" {
+		q.Set("status", f.Status)
+	}
 	body, err := c.getRaw(ctx, "/api/v1/admin/groups", q)
 	if err != nil {
 		return nil, 0, err
 	}
-	return parseNamedList[Group](body)
+	items, total, err := parseNamedList[Group](body)
+	if err != nil {
+		return nil, 0, err
+	}
+	if f.Search == "" {
+		return items, total, nil
+	}
+	if listLooksGroupSearchAware(items, f.Search) {
+		return items, total, nil
+	}
+	// API ignored search — limited client-side scan.
+	return c.searchGroupsLocal(ctx, page, pageSize, f.Search)
 }
 
 func (c *Client) ListUsers(ctx context.Context, page, pageSize int) ([]User, int64, error) {
+	return c.ListUsersEx(ctx, page, pageSize, UserListFilter{})
+}
+
+func (c *Client) ListUsersEx(ctx context.Context, page, pageSize int, f UserListFilter) ([]User, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	q := url.Values{}
+	q.Set("page", strconv.Itoa(page))
+	q.Set("page_size", strconv.Itoa(pageSize))
+	if f.Search != "" {
+		q.Set("search", f.Search)
+		q.Set("q", f.Search)
+		q.Set("keyword", f.Search)
+	}
+	if f.Status != "" {
+		q.Set("status", f.Status)
+	}
+	if f.Role != "" {
+		q.Set("role", f.Role)
+	}
+	body, err := c.getRaw(ctx, "/api/v1/admin/users", q)
+	if err != nil {
+		return nil, 0, err
+	}
+	items, total, err := parseNamedList[User](body)
+	if err != nil {
+		return nil, 0, err
+	}
+	if f.Search == "" {
+		return items, total, nil
+	}
+	if listLooksUserSearchAware(items, f.Search) {
+		return items, total, nil
+	}
+	// API ignored search — limited client-side scan.
+	return c.searchUsersLocal(ctx, page, pageSize, f.Search)
+}
+
+// GetUser fetches one instance user. Tries detail endpoint, then list/search fallback.
+func (c *Client) GetUser(ctx context.Context, id int64) (*User, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("invalid user id")
+	}
+	var out User
+	if err := c.get(ctx, fmt.Sprintf("/api/v1/admin/users/%d", id), nil, &out); err == nil && out.ID != 0 {
+		return &out, nil
+	}
+	// Fallback: search by id string then exact match.
+	items, _, err := c.ListUsersEx(ctx, 1, 50, UserListFilter{Search: strconv.FormatInt(id, 10)})
+	if err == nil {
+		for i := range items {
+			if items[i].ID == id {
+				u := items[i]
+				return &u, nil
+			}
+		}
+	}
+	// Last resort: scan first pages without search.
+	for page := 1; page <= 5; page++ {
+		items, total, err := c.ListUsers(ctx, page, 50)
+		if err != nil {
+			return nil, err
+		}
+		for i := range items {
+			if items[i].ID == id {
+				u := items[i]
+				return &u, nil
+			}
+		}
+		if int64(page*50) >= total || len(items) == 0 {
+			break
+		}
+	}
+	return nil, fmt.Errorf("user #%d not found", id)
+}
+
+// GetGroup fetches one group. Tries detail endpoint, then list/search fallback.
+func (c *Client) GetGroup(ctx context.Context, id int64) (*Group, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("invalid group id")
+	}
+	var out Group
+	if err := c.get(ctx, fmt.Sprintf("/api/v1/admin/groups/%d", id), nil, &out); err == nil && out.ID != 0 {
+		return &out, nil
+	}
+	items, _, err := c.ListGroupsEx(ctx, 1, 50, GroupListFilter{Search: strconv.FormatInt(id, 10)})
+	if err == nil {
+		for i := range items {
+			if items[i].ID == id {
+				g := items[i]
+				return &g, nil
+			}
+		}
+	}
+	for page := 1; page <= 5; page++ {
+		items, total, err := c.ListGroups(ctx, page, 50)
+		if err != nil {
+			return nil, err
+		}
+		for i := range items {
+			if items[i].ID == id {
+				g := items[i]
+				return &g, nil
+			}
+		}
+		if int64(page*50) >= total || len(items) == 0 {
+			break
+		}
+	}
+	return nil, fmt.Errorf("group #%d not found", id)
+}
+
+func userMatchesSearch(u User, q string) bool {
+	q = strings.ToLower(strings.TrimSpace(q))
+	if q == "" {
+		return true
+	}
+	if strconv.FormatInt(u.ID, 10) == q {
+		return true
+	}
+	blob := strings.ToLower(strings.Join([]string{u.Email, u.Username, u.Role, u.Status, u.Notes}, " "))
+	return strings.Contains(blob, q)
+}
+
+func groupMatchesSearch(g Group, q string) bool {
+	q = strings.ToLower(strings.TrimSpace(q))
+	if q == "" {
+		return true
+	}
+	if strconv.FormatInt(g.ID, 10) == q {
+		return true
+	}
+	blob := strings.ToLower(strings.Join([]string{g.Name, g.Description, g.Platform, g.Status}, " "))
+	return strings.Contains(blob, q)
+}
+
+func listLooksUserSearchAware(items []User, q string) bool {
+	if len(items) == 0 {
+		return true
+	}
+	for _, u := range items {
+		if !userMatchesSearch(u, q) {
+			return false
+		}
+	}
+	return true
+}
+
+func listLooksGroupSearchAware(items []Group, q string) bool {
+	if len(items) == 0 {
+		return true
+	}
+	for _, g := range items {
+		if !groupMatchesSearch(g, q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Client) searchUsersLocal(ctx context.Context, page, pageSize int, q string) ([]User, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	var matched []User
+	const maxScan = 10
+	for p := 1; p <= maxScan; p++ {
+		items, total, err := c.listUsersRawNoSearch(ctx, p, 50)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, u := range items {
+			if userMatchesSearch(u, q) {
+				matched = append(matched, u)
+			}
+		}
+		if int64(p*50) >= total || len(items) == 0 {
+			break
+		}
+	}
+	total := int64(len(matched))
+	start := (page - 1) * pageSize
+	if start >= len(matched) {
+		return []User{}, total, nil
+	}
+	end := start + pageSize
+	if end > len(matched) {
+		end = len(matched)
+	}
+	return matched[start:end], total, nil
+}
+
+func (c *Client) searchGroupsLocal(ctx context.Context, page, pageSize int, q string) ([]Group, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	var matched []Group
+	const maxScan = 10
+	for p := 1; p <= maxScan; p++ {
+		items, total, err := c.listGroupsRawNoSearch(ctx, p, 50)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, g := range items {
+			if groupMatchesSearch(g, q) {
+				matched = append(matched, g)
+			}
+		}
+		if int64(p*50) >= total || len(items) == 0 {
+			break
+		}
+	}
+	total := int64(len(matched))
+	start := (page - 1) * pageSize
+	if start >= len(matched) {
+		return []Group{}, total, nil
+	}
+	end := start + pageSize
+	if end > len(matched) {
+		end = len(matched)
+	}
+	return matched[start:end], total, nil
+}
+
+func (c *Client) listUsersRawNoSearch(ctx context.Context, page, pageSize int) ([]User, int64, error) {
 	if page <= 0 {
 		page = 1
 	}
@@ -150,6 +426,23 @@ func (c *Client) ListUsers(ctx context.Context, page, pageSize int) ([]User, int
 		return nil, 0, err
 	}
 	return parseNamedList[User](body)
+}
+
+func (c *Client) listGroupsRawNoSearch(ctx context.Context, page, pageSize int) ([]Group, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	q := url.Values{}
+	q.Set("page", strconv.Itoa(page))
+	q.Set("page_size", strconv.Itoa(pageSize))
+	body, err := c.getRaw(ctx, "/api/v1/admin/groups", q)
+	if err != nil {
+		return nil, 0, err
+	}
+	return parseNamedList[Group](body)
 }
 
 func parseNamedList[T any](body []byte) ([]T, int64, error) {

@@ -1022,7 +1022,7 @@ func (b *Bot) seedConnectionFromGlobal(ctx context.Context, chatID, msgID, userI
 	return b.editOrSend(ctx, chatID, msgID, msg, connKeyboardFor(true))
 }
 
-func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page int) error {
+func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page int, search string) error {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
@@ -1030,18 +1030,27 @@ func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page i
 	if page < 0 {
 		page = 0
 	}
-	const pageSize = 12
-	items, total, err := cli.ListUsers(ctx, page+1, pageSize)
+	search = strings.TrimSpace(search)
+	b.setUserSearch(userID, search)
+	const pageSize = 8
+	items, total, err := cli.ListUsersEx(ctx, page+1, pageSize, sub2api.UserListFilter{Search: search})
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "用户列表失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 	}
 	var bld strings.Builder
-	bld.WriteString(telegram.Bold("用户列表") + "\n")
-	fmt.Fprintf(&bld, "第 %d 页 · 共 %s\n\n", page+1, telegram.Code(itoa(total)))
+	bld.WriteString(telegram.Bold("实例用户") + "（Sub2API）\n")
+	if search != "" {
+		fmt.Fprintf(&bld, "搜索: %s\n", telegram.Code(truncateRunes(search, 40)))
+	}
+	fmt.Fprintf(&bld, "第 %d 页 · 共 %s\n点用户查看详情\n\n", page+1, telegram.Code(itoa(total)))
+	rows := [][]telegram.InlineKeyboardButton{}
 	for _, u := range items {
 		name := u.Username
 		if name == "" {
 			name = u.Email
+		}
+		if name == "" {
+			name = strconv.FormatInt(u.ID, 10)
 		}
 		fmt.Fprintf(&bld, "• #%d %s [%s] %s",
 			u.ID,
@@ -1058,31 +1067,99 @@ func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page i
 			fmt.Fprintf(&bld, " · 余额 %s", telegram.Code(fmt.Sprintf("%.2f", u.Balance)))
 		}
 		bld.WriteString("\n")
+		label := fmt.Sprintf("#%d %s", u.ID, truncateRunes(name, 12))
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn(label, fmt.Sprintf("mgr_user:%d", u.ID)),
+		})
 	}
 	if len(items) == 0 {
 		bld.WriteString("无用户。")
 	}
 	nav := []telegram.InlineKeyboardButton{}
 	if page > 0 {
-		nav = append(nav, telegram.Btn("« 上页", fmt.Sprintf("mgr_users:%d", page-1)))
+		nav = append(nav, telegram.Btn("« 上页", usersCallback(page-1, search)))
 	}
 	if int64((page+1)*pageSize) < total {
-		nav = append(nav, telegram.Btn("下页 »", fmt.Sprintf("mgr_users:%d", page+1)))
+		nav = append(nav, telegram.Btn("下页 »", usersCallback(page+1, search)))
 	}
-	rows := [][]telegram.InlineKeyboardButton{}
 	if len(nav) > 0 {
 		rows = append(rows, nav)
 	}
+	action := []telegram.InlineKeyboardButton{telegram.Btn("🔎 搜索", "mgr_user_search")}
+	if search != "" {
+		action = append(action, telegram.Btn("清除搜索", "mgr_user_clear"))
+	}
+	rows = append(rows, action)
 	rows = append(rows,
 		[]telegram.InlineKeyboardButton{
+			telegram.Btn("🏷 分组", "mgr_groups"),
 			telegram.Btn("📚 账号浏览", "mgr_browse"),
+		},
+		[]telegram.InlineKeyboardButton{
 			telegram.Btn("« 管理菜单", "mgr_menu"),
 		},
 	)
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
-func (b *Bot) showGroups(ctx context.Context, chatID, msgID, userID int64, page int) error {
+func (b *Bot) showUserDetail(ctx context.Context, chatID, msgID, userID, targetID int64) error {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	u, err := cli.GetUser(ctx, targetID)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "用户详情失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
+	}
+	b.setManageBack(userID, usersCallback(0, b.getUserSearch(userID)))
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold(fmt.Sprintf("实例用户 #%d", u.ID)) + "\n\n")
+	name := u.Username
+	if name == "" {
+		name = "(无用户名)"
+	}
+	fmt.Fprintf(&bld, "用户名: %s\n", telegram.Code(truncateRunes(name, 40)))
+	email := u.Email
+	if email == "" {
+		email = "(无邮箱)"
+	}
+	fmt.Fprintf(&bld, "邮箱: %s\n", telegram.Code(truncateRunes(email, 48)))
+	fmt.Fprintf(&bld, "角色: %s · 状态: %s\n", telegram.Code(u.Role), telegram.Code(u.Status))
+	fmt.Fprintf(&bld, "余额: %s", telegram.Code(fmt.Sprintf("%.2f", u.Balance)))
+	if u.FrozenBalance != 0 {
+		fmt.Fprintf(&bld, " · 冻结 %s", telegram.Code(fmt.Sprintf("%.2f", u.FrozenBalance)))
+	}
+	bld.WriteString("\n")
+	fmt.Fprintf(&bld, "并发: %s/%s",
+		telegram.Code(itoa(u.CurrentConcurrency)),
+		telegram.Code(itoa(u.Concurrency)),
+	)
+	if u.RPMLimit > 0 {
+		fmt.Fprintf(&bld, " · RPM %s", telegram.Code(itoa(u.RPMLimit)))
+	}
+	bld.WriteString("\n")
+	if strings.TrimSpace(u.Notes) != "" {
+		fmt.Fprintf(&bld, "备注: %s\n", telegram.EscapeHTML(truncateRunes(u.Notes, 120)))
+	}
+	bld.WriteString("\n只读详情；写操作需上游 Admin API 支持后再开放。")
+	back := usersCallback(0, b.getUserSearch(userID))
+	kb := &telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{telegram.Btn("🔄 刷新", fmt.Sprintf("mgr_user:%d", u.ID))},
+			{
+				telegram.Btn("« 用户列表", back),
+				telegram.Btn("🏷 分组", "mgr_groups"),
+			},
+			{
+				telegram.Btn("📚 账号浏览", "mgr_browse"),
+				telegram.Btn("« 管理菜单", "mgr_menu"),
+			},
+		},
+	}
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
+}
+
+func (b *Bot) showGroups(ctx context.Context, chatID, msgID, userID int64, page int, search string) error {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
@@ -1090,14 +1167,20 @@ func (b *Bot) showGroups(ctx context.Context, chatID, msgID, userID int64, page 
 	if page < 0 {
 		page = 0
 	}
-	const pageSize = 12
-	items, total, err := cli.ListGroups(ctx, page+1, pageSize)
+	search = strings.TrimSpace(search)
+	b.setGroupSearch(userID, search)
+	const pageSize = 8
+	items, total, err := cli.ListGroupsEx(ctx, page+1, pageSize, sub2api.GroupListFilter{Search: search})
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "分组列表失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 	}
 	var bld strings.Builder
-	bld.WriteString(telegram.Bold("分组列表") + "\n")
-	fmt.Fprintf(&bld, "第 %d 页 · 共 %s\n\n", page+1, telegram.Code(itoa(total)))
+	bld.WriteString(telegram.Bold("分组列表") + "（Sub2API）\n")
+	if search != "" {
+		fmt.Fprintf(&bld, "搜索: %s\n", telegram.Code(truncateRunes(search, 40)))
+	}
+	fmt.Fprintf(&bld, "第 %d 页 · 共 %s\n点分组查看详情\n\n", page+1, telegram.Code(itoa(total)))
+	rows := [][]telegram.InlineKeyboardButton{}
 	for _, g := range items {
 		excl := ""
 		if g.IsExclusive {
@@ -1111,28 +1194,158 @@ func (b *Bot) showGroups(ctx context.Context, chatID, msgID, userID int64, page 
 			g.RateMultiplier,
 			excl,
 		)
+		label := fmt.Sprintf("#%d %s", g.ID, truncateRunes(g.Name, 12))
+		if g.Name == "" {
+			label = fmt.Sprintf("#%d", g.ID)
+		}
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn(label, fmt.Sprintf("mgr_group:%d", g.ID)),
+		})
 	}
 	if len(items) == 0 {
 		bld.WriteString("无分组。")
 	}
 	nav := []telegram.InlineKeyboardButton{}
 	if page > 0 {
-		nav = append(nav, telegram.Btn("« 上页", fmt.Sprintf("mgr_groups:%d", page-1)))
+		nav = append(nav, telegram.Btn("« 上页", groupsCallback(page-1, search)))
 	}
 	if int64((page+1)*pageSize) < total {
-		nav = append(nav, telegram.Btn("下页 »", fmt.Sprintf("mgr_groups:%d", page+1)))
+		nav = append(nav, telegram.Btn("下页 »", groupsCallback(page+1, search)))
 	}
-	rows := [][]telegram.InlineKeyboardButton{}
 	if len(nav) > 0 {
 		rows = append(rows, nav)
 	}
+	action := []telegram.InlineKeyboardButton{telegram.Btn("🔎 搜索", "mgr_group_search")}
+	if search != "" {
+		action = append(action, telegram.Btn("清除搜索", "mgr_group_clear"))
+	}
+	rows = append(rows, action)
 	rows = append(rows,
 		[]telegram.InlineKeyboardButton{
+			telegram.Btn("👥 实例用户", "mgr_users"),
 			telegram.Btn("📚 账号浏览", "mgr_browse"),
+		},
+		[]telegram.InlineKeyboardButton{
 			telegram.Btn("« 管理菜单", "mgr_menu"),
 		},
 	)
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (b *Bot) showGroupDetail(ctx context.Context, chatID, msgID, userID, groupID int64) error {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	g, err := cli.GetGroup(ctx, groupID)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "分组详情失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
+	}
+	b.setManageBack(userID, groupsCallback(0, b.getGroupSearch(userID)))
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold(fmt.Sprintf("分组 #%d", g.ID)) + "\n\n")
+	name := g.Name
+	if name == "" {
+		name = "(未命名)"
+	}
+	fmt.Fprintf(&bld, "名称: %s\n", telegram.Code(truncateRunes(name, 40)))
+	fmt.Fprintf(&bld, "平台: %s · 状态: %s\n", telegram.Code(g.Platform), telegram.Code(g.Status))
+	fmt.Fprintf(&bld, "倍率: %s", telegram.Code(fmt.Sprintf("%.2f", g.RateMultiplier)))
+	if g.IsExclusive {
+		bld.WriteString(" · 独占")
+	}
+	bld.WriteString("\n")
+	if strings.TrimSpace(g.Description) != "" {
+		fmt.Fprintf(&bld, "描述: %s\n", telegram.EscapeHTML(truncateRunes(g.Description, 160)))
+	}
+	bld.WriteString("\n只读详情。")
+	back := groupsCallback(0, b.getGroupSearch(userID))
+	kb := &telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{telegram.Btn("🔄 刷新", fmt.Sprintf("mgr_group:%d", g.ID))},
+			{
+				telegram.Btn("« 分组列表", back),
+				telegram.Btn("👥 实例用户", "mgr_users"),
+			},
+			{
+				telegram.Btn("📚 账号浏览", "mgr_browse"),
+				telegram.Btn("« 管理菜单", "mgr_menu"),
+			},
+		},
+	}
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
+}
+
+// usersCallback encodes list page (+ optional search) for Telegram callback_data.
+// Forms: mgr_users | mgr_users:1 | mgr_users|kw:0
+func usersCallback(page int, search string) string {
+	search = strings.TrimSpace(search)
+	if search == "" {
+		if page <= 0 {
+			return "mgr_users"
+		}
+		return fmt.Sprintf("mgr_users:%d", page)
+	}
+	// avoid colon inside search token for parse simplicity
+	safe := strings.ReplaceAll(search, ":", " ")
+	safe = strings.ReplaceAll(safe, "|", " ")
+	return fmt.Sprintf("mgr_users|%s:%d", safe, page)
+}
+
+func parseUsersCallback(data string) (page int, search string) {
+	data = strings.TrimSpace(data)
+	if data == "mgr_users" {
+		return 0, ""
+	}
+	if strings.HasPrefix(data, "mgr_users|") {
+		rest := strings.TrimPrefix(data, "mgr_users|")
+		// rest = kw:page
+		if i := strings.LastIndex(rest, ":"); i >= 0 {
+			search = strings.TrimSpace(rest[:i])
+			page, _ = strconv.Atoi(rest[i+1:])
+			return page, search
+		}
+		return 0, strings.TrimSpace(rest)
+	}
+	if strings.HasPrefix(data, "mgr_users:") {
+		page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_users:"))
+		return page, ""
+	}
+	return 0, ""
+}
+
+func groupsCallback(page int, search string) string {
+	search = strings.TrimSpace(search)
+	if search == "" {
+		if page <= 0 {
+			return "mgr_groups"
+		}
+		return fmt.Sprintf("mgr_groups:%d", page)
+	}
+	safe := strings.ReplaceAll(search, ":", " ")
+	safe = strings.ReplaceAll(safe, "|", " ")
+	return fmt.Sprintf("mgr_groups|%s:%d", safe, page)
+}
+
+func parseGroupsCallback(data string) (page int, search string) {
+	data = strings.TrimSpace(data)
+	if data == "mgr_groups" {
+		return 0, ""
+	}
+	if strings.HasPrefix(data, "mgr_groups|") {
+		rest := strings.TrimPrefix(data, "mgr_groups|")
+		if i := strings.LastIndex(rest, ":"); i >= 0 {
+			search = strings.TrimSpace(rest[:i])
+			page, _ = strconv.Atoi(rest[i+1:])
+			return page, search
+		}
+		return 0, strings.TrimSpace(rest)
+	}
+	if strings.HasPrefix(data, "mgr_groups:") {
+		page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_groups:"))
+		return page, ""
+	}
+	return 0, ""
 }
 
 // showPanelUsers lists local monitor panel profiles (not Sub2API users).

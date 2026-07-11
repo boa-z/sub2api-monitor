@@ -3574,7 +3574,7 @@ func (b *Bot) healAccount(ctx context.Context, cli *sub2api.Client, accountID in
 	return msg
 }
 
-func (b *Bot) showUsersView(ctx context.Context, userID int64, page int) (string, []discord.Component) {
+func (b *Bot) showUsersView(ctx context.Context, userID int64, page int, search string) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
 		return "❌ " + err.Error(), manageComponents()
@@ -3582,18 +3582,27 @@ func (b *Bot) showUsersView(ctx context.Context, userID int64, page int) (string
 	if page < 0 {
 		page = 0
 	}
-	const pageSize = 12
-	items, total, err := cli.ListUsers(ctx, page+1, pageSize)
+	search = strings.TrimSpace(search)
+	b.setUserSearch(userID, search)
+	const pageSize = 8
+	items, total, err := cli.ListUsersEx(ctx, page+1, pageSize, sub2api.UserListFilter{Search: search})
 	if err != nil {
 		return "用户列表失败: " + err.Error(), manageComponents()
 	}
 	var bld strings.Builder
 	bld.WriteString("**实例用户**（Sub2API）\n")
-	fmt.Fprintf(&bld, "第 %d 页 · 共 `%d`\n\n", page+1, total)
+	if search != "" {
+		fmt.Fprintf(&bld, "搜索: `%s`\n", truncate(search, 40))
+	}
+	fmt.Fprintf(&bld, "第 %d 页 · 共 `%d`\n点选用户查看详情\n\n", page+1, total)
+	opts := make([]discord.SelectOpt, 0, len(items))
 	for _, u := range items {
 		name := u.Username
 		if name == "" {
 			name = u.Email
+		}
+		if name == "" {
+			name = strconv.FormatInt(u.ID, 10)
 		}
 		fmt.Fprintf(&bld, "• `#%d` %s [%s] `%s`",
 			u.ID, truncate(name, 16), u.Role, u.Status)
@@ -3604,21 +3613,34 @@ func (b *Bot) showUsersView(ctx context.Context, userID int64, page int) (string
 			fmt.Fprintf(&bld, " · 余额 `%.2f`", u.Balance)
 		}
 		bld.WriteString("\n")
+		opts = append(opts, discord.SelectOption(
+			fmt.Sprintf("#%d %s", u.ID, truncate(name, 12)),
+			fmt.Sprintf("mgr_user:%d", u.ID),
+			fmt.Sprintf("%s · %s", u.Role, u.Status),
+		))
 	}
 	if len(items) == 0 {
 		bld.WriteString("无用户。")
 	}
 	comps := []discord.Component{}
+	if len(opts) > 0 {
+		comps = append(comps, discord.ActionRow(discord.StringSelect("select:mgr_user", "选择用户…", opts...)))
+	}
 	nav := []discord.Component{}
 	if page > 0 {
-		nav = append(nav, discord.Button("« 上页", fmt.Sprintf("mgr_users:%d", page-1), 2))
+		nav = append(nav, discord.Button("« 上页", usersCallback(page-1, search), 2))
 	}
 	if int64((page+1)*pageSize) < total {
-		nav = append(nav, discord.Button("下页 »", fmt.Sprintf("mgr_users:%d", page+1), 2))
+		nav = append(nav, discord.Button("下页 »", usersCallback(page+1, search), 2))
 	}
 	if len(nav) > 0 {
 		comps = append(comps, discord.ActionRow(nav...))
 	}
+	action := []discord.Component{discord.Button("🔎 搜索", "mgr_user_search", 2)}
+	if search != "" {
+		action = append(action, discord.Button("清除搜索", "mgr_user_clear", 2))
+	}
+	comps = append(comps, discord.ActionRow(action...))
 	comps = append(comps, discord.ActionRow(
 		discord.Button("分组", "mgr_groups", 2),
 		discord.Button("浏览账号", "mgr_browse:all:0", 2),
@@ -3627,7 +3649,59 @@ func (b *Bot) showUsersView(ctx context.Context, userID int64, page int) (string
 	return bld.String(), comps
 }
 
-func (b *Bot) showGroupsView(ctx context.Context, userID int64, page int) (string, []discord.Component) {
+func (b *Bot) showUserDetailView(ctx context.Context, userID, targetID int64) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), manageComponents()
+	}
+	u, err := cli.GetUser(ctx, targetID)
+	if err != nil {
+		return "用户详情失败: " + err.Error(), manageComponents()
+	}
+	b.setManageBack(userID, usersCallback(0, b.getUserSearch(userID)))
+	var bld strings.Builder
+	fmt.Fprintf(&bld, "**实例用户 `#%d`**\n\n", u.ID)
+	name := u.Username
+	if name == "" {
+		name = "(无用户名)"
+	}
+	fmt.Fprintf(&bld, "用户名: `%s`\n", truncate(name, 40))
+	email := u.Email
+	if email == "" {
+		email = "(无邮箱)"
+	}
+	fmt.Fprintf(&bld, "邮箱: `%s`\n", truncate(email, 48))
+	fmt.Fprintf(&bld, "角色: `%s` · 状态: `%s`\n", u.Role, u.Status)
+	fmt.Fprintf(&bld, "余额: `%.2f`", u.Balance)
+	if u.FrozenBalance != 0 {
+		fmt.Fprintf(&bld, " · 冻结 `%.2f`", u.FrozenBalance)
+	}
+	bld.WriteString("\n")
+	fmt.Fprintf(&bld, "并发: `%d/%d`", u.CurrentConcurrency, u.Concurrency)
+	if u.RPMLimit > 0 {
+		fmt.Fprintf(&bld, " · RPM `%d`", u.RPMLimit)
+	}
+	bld.WriteString("\n")
+	if strings.TrimSpace(u.Notes) != "" {
+		fmt.Fprintf(&bld, "备注: %s\n", truncate(u.Notes, 120))
+	}
+	bld.WriteString("\n只读详情；写操作需上游 Admin API 支持后再开放。")
+	back := usersCallback(0, b.getUserSearch(userID))
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button("🔄 刷新", fmt.Sprintf("mgr_user:%d", u.ID), 2),
+			discord.Button("« 用户列表", back, 2),
+		),
+		discord.ActionRow(
+			discord.Button("分组", "mgr_groups", 2),
+			discord.Button("浏览账号", "mgr_browse:all:0", 2),
+			discord.Button("« 管理", "mgr_menu", 2),
+		),
+	}
+	return bld.String(), comps
+}
+
+func (b *Bot) showGroupsView(ctx context.Context, userID int64, page int, search string) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
 		return "❌ " + err.Error(), manageComponents()
@@ -3635,14 +3709,20 @@ func (b *Bot) showGroupsView(ctx context.Context, userID int64, page int) (strin
 	if page < 0 {
 		page = 0
 	}
-	const pageSize = 12
-	items, total, err := cli.ListGroups(ctx, page+1, pageSize)
+	search = strings.TrimSpace(search)
+	b.setGroupSearch(userID, search)
+	const pageSize = 8
+	items, total, err := cli.ListGroupsEx(ctx, page+1, pageSize, sub2api.GroupListFilter{Search: search})
 	if err != nil {
 		return "分组列表失败: " + err.Error(), manageComponents()
 	}
 	var bld strings.Builder
 	bld.WriteString("**分组列表**（Sub2API）\n")
-	fmt.Fprintf(&bld, "第 %d 页 · 共 `%d`\n\n", page+1, total)
+	if search != "" {
+		fmt.Fprintf(&bld, "搜索: `%s`\n", truncate(search, 40))
+	}
+	fmt.Fprintf(&bld, "第 %d 页 · 共 `%d`\n点选分组查看详情\n\n", page+1, total)
+	opts := make([]discord.SelectOpt, 0, len(items))
 	for _, g := range items {
 		excl := ""
 		if g.IsExclusive {
@@ -3653,26 +3733,85 @@ func (b *Bot) showGroupsView(ctx context.Context, userID int64, page int) (strin
 		if g.Description != "" {
 			fmt.Fprintf(&bld, "  %s\n", truncate(g.Description, 60))
 		}
+		label := g.Name
+		if label == "" {
+			label = strconv.FormatInt(g.ID, 10)
+		}
+		opts = append(opts, discord.SelectOption(
+			fmt.Sprintf("#%d %s", g.ID, truncate(label, 12)),
+			fmt.Sprintf("mgr_group:%d", g.ID),
+			fmt.Sprintf("%s · %s", g.Platform, g.Status),
+		))
 	}
 	if len(items) == 0 {
 		bld.WriteString("无分组。")
 	}
 	comps := []discord.Component{}
+	if len(opts) > 0 {
+		comps = append(comps, discord.ActionRow(discord.StringSelect("select:mgr_group", "选择分组…", opts...)))
+	}
 	nav := []discord.Component{}
 	if page > 0 {
-		nav = append(nav, discord.Button("« 上页", fmt.Sprintf("mgr_groups:%d", page-1), 2))
+		nav = append(nav, discord.Button("« 上页", groupsCallback(page-1, search), 2))
 	}
 	if int64((page+1)*pageSize) < total {
-		nav = append(nav, discord.Button("下页 »", fmt.Sprintf("mgr_groups:%d", page+1), 2))
+		nav = append(nav, discord.Button("下页 »", groupsCallback(page+1, search), 2))
 	}
 	if len(nav) > 0 {
 		comps = append(comps, discord.ActionRow(nav...))
 	}
+	action := []discord.Component{discord.Button("🔎 搜索", "mgr_group_search", 2)}
+	if search != "" {
+		action = append(action, discord.Button("清除搜索", "mgr_group_clear", 2))
+	}
+	comps = append(comps, discord.ActionRow(action...))
 	comps = append(comps, discord.ActionRow(
 		discord.Button("实例用户", "mgr_users", 2),
 		discord.Button("浏览账号", "mgr_browse:all:0", 2),
 		discord.Button("« 管理", "mgr_menu", 2),
 	))
+	return bld.String(), comps
+}
+
+func (b *Bot) showGroupDetailView(ctx context.Context, userID, groupID int64) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), manageComponents()
+	}
+	g, err := cli.GetGroup(ctx, groupID)
+	if err != nil {
+		return "分组详情失败: " + err.Error(), manageComponents()
+	}
+	b.setManageBack(userID, groupsCallback(0, b.getGroupSearch(userID)))
+	var bld strings.Builder
+	fmt.Fprintf(&bld, "**分组 `#%d`**\n\n", g.ID)
+	name := g.Name
+	if name == "" {
+		name = "(未命名)"
+	}
+	fmt.Fprintf(&bld, "名称: `%s`\n", truncate(name, 40))
+	fmt.Fprintf(&bld, "平台: `%s` · 状态: `%s`\n", g.Platform, g.Status)
+	fmt.Fprintf(&bld, "倍率: `%.2f`", g.RateMultiplier)
+	if g.IsExclusive {
+		bld.WriteString(" · 独占")
+	}
+	bld.WriteString("\n")
+	if strings.TrimSpace(g.Description) != "" {
+		fmt.Fprintf(&bld, "描述: %s\n", truncate(g.Description, 160))
+	}
+	bld.WriteString("\n只读详情。")
+	back := groupsCallback(0, b.getGroupSearch(userID))
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button("🔄 刷新", fmt.Sprintf("mgr_group:%d", g.ID), 2),
+			discord.Button("« 分组列表", back, 2),
+		),
+		discord.ActionRow(
+			discord.Button("实例用户", "mgr_users", 2),
+			discord.Button("浏览账号", "mgr_browse:all:0", 2),
+			discord.Button("« 管理", "mgr_menu", 2),
+		),
+	}
 	return bld.String(), comps
 }
 

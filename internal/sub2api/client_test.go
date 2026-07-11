@@ -194,3 +194,50 @@ func TestCompactUsageSummary(t *testing.T) {
 		t.Fatalf("error-only usage: %q %v", line, hit)
 	}
 }
+
+
+func TestUserMatchesSearch(t *testing.T) {
+	u := User{ID: 42, Email: "Alice@Example.com", Username: "alice", Role: "user", Status: "active", Notes: "vip"}
+	if !userMatchesSearch(u, "42") {
+		t.Fatal("id")
+	}
+	if !userMatchesSearch(u, "alice@") {
+		t.Fatal("email case-insensitive")
+	}
+	if !userMatchesSearch(u, "VIP") {
+		t.Fatal("notes")
+	}
+	if userMatchesSearch(u, "zzz") {
+		t.Fatal("should miss")
+	}
+}
+
+func TestListLooksUserSearchAware(t *testing.T) {
+	items := []User{
+		{ID: 1, Email: "a@x.com", Username: "alice"},
+		{ID: 2, Email: "b@x.com", Username: "bob"},
+	}
+	if listLooksUserSearchAware(items, "alice") {
+		t.Fatal("mixed list should not look search-aware for alice")
+	}
+	filtered := []User{{ID: 1, Email: "a@x.com", Username: "alice"}}
+	if !listLooksUserSearchAware(filtered, "alice") {
+		t.Fatal("all matching should look aware")
+	}
+	if !listLooksUserSearchAware(nil, "alice") {
+		t.Fatal("empty is aware")
+	}
+}
+
+func TestGroupMatchesSearch(t *testing.T) {
+	g := Group{ID: 7, Name: "OpenAI Pro", Platform: "openai", Status: "active", Description: "main"}
+	if !groupMatchesSearch(g, "openai") {
+		t.Fatal("platform")
+	}
+	if !groupMatchesSearch(g, "7") {
+		t.Fatal("id")
+	}
+	if groupMatchesSearch(g, "anthropic") {
+		t.Fatal("miss")
+	}
+}
