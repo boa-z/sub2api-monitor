@@ -1313,18 +1313,24 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 		return bld.String(), nil
 	}
 
-	bld.WriteString("\n" + telegram.Bold("启用账号快照") + "\n")
+	bld.WriteString("\n" + telegram.Bold("启用账号快照") + "（含用量）\n")
 	cli, err := sub2api.NewClient(config.Sub2APIConfig{
-		BaseURL: p.BaseURL, AdminAPIKey: p.AdminAPIKey, JWT: p.JWT, Timeout: 8 * time.Second,
+		BaseURL: p.BaseURL, AdminAPIKey: p.AdminAPIKey, JWT: p.JWT, Timeout: 12 * time.Second,
 	})
 	if err != nil {
 		bld.WriteString("客户端错误: " + telegram.EscapeHTML(err.Error()))
 		return bld.String(), nil
 	}
+	thsDefault := p.Thresholds
+	if len(thsDefault) == 0 {
+		thsDefault = b.defaults
+	}
+	usageSrc := p.EffectiveSource()
 	warnN := 0
+	usageHitN := 0
 	shown := 0
 	var issueIDs []int64
-	const maxShow = 12
+	const maxShow = 8
 	for _, a := range enabled {
 		if shown >= maxShow {
 			fmt.Fprintf(&bld, "… 另有 %s 个启用账号\n", telegram.Code(strconv.Itoa(len(enabled)-maxShow)))
@@ -1334,13 +1340,11 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 		name := displayName(a)
 		flag := "✅"
 		detail := ""
+		statusBad := false
 		if acc, err := cli.GetAccount(ctx, a.ID); err != nil {
 			flag = "❓"
 			detail = telegram.EscapeHTML(truncateRunes(err.Error(), 40))
-			warnN++
-			if len(issueIDs) < 6 {
-				issueIDs = append(issueIDs, a.ID)
-			}
+			statusBad = true
 		} else if acc != nil {
 			if acc.Name != "" && name == fmt.Sprintf("#%d", a.ID) {
 				name = acc.Name
@@ -1352,23 +1356,23 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 			if !acc.Schedulable {
 				parts = append(parts, "停调度")
 				flag = "⏸"
-				warnN++
+				statusBad = true
 			}
 			if acc.RateLimitedAt != nil || strings.Contains(strings.ToLower(acc.Status), "rate") {
 				parts = append(parts, "限速")
 				flag = "⏱"
-				warnN++
+				statusBad = true
 			}
 			if strings.EqualFold(acc.Status, "error") || acc.ErrorMessage != "" {
 				flag = "❌"
-				warnN++
+				statusBad = true
 				if acc.ErrorMessage != "" {
 					detail = telegram.EscapeHTML(truncateRunes(acc.ErrorMessage, 48))
 				}
 			}
 			if strings.EqualFold(acc.Status, "disabled") {
 				flag = "🚫"
-				warnN++
+				statusBad = true
 			}
 			detailLine := strings.Join(parts, "/")
 			fmt.Fprintf(&bld, "%s #%d %s · %s\n",
@@ -1380,19 +1384,68 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 			if detail != "" && flag == "❌" {
 				fmt.Fprintf(&bld, "   %s\n", detail)
 			}
-			if flag != "✅" && len(issueIDs) < 6 {
-				issueIDs = append(issueIDs, a.ID)
-			}
-			continue
+		} else {
+			fmt.Fprintf(&bld, "%s #%d %s\n", flag, a.ID, telegram.EscapeHTML(truncateRunes(name, 14)))
 		}
-		fmt.Fprintf(&bld, "%s #%d %s · %s\n", flag, a.ID, telegram.EscapeHTML(truncateRunes(name, 14)), detail)
+
+		// compact usage vs thresholds (passive/active per profile; not force)
+		ths := a.Thresholds
+		if len(ths) == 0 {
+			ths = thsDefault
+		}
+		thMap := map[string]float64{}
+		for _, th := range ths {
+			thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
+		}
+		usageLine := ""
+		usageHit := false
+		if usage, err := cli.GetAccountUsage(ctx, a.ID, usageSrc, false); err != nil {
+			usageLine = "用量: " + telegram.EscapeHTML(truncateRunes(err.Error(), 36))
+			usageHit = true
+		} else if usage != nil {
+			sum, hit := usage.CompactUsageSummary(thMap, 3)
+			usageHit = hit
+			if sum == "" {
+				sum = "(无窗口)"
+			}
+			usageLine = "用量: " + telegram.Code(sum)
+			if usage.Error != "" {
+				usageHit = true
+			}
+		}
+		if usageLine != "" {
+			fmt.Fprintf(&bld, "   %s\n", usageLine)
+		}
+		if statusBad || usageHit {
+			warnN++
+			if usageHit {
+				usageHitN++
+			}
+			if len(issueIDs) < 6 {
+				// avoid dups
+				dup := false
+				for _, id := range issueIDs {
+					if id == a.ID {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					issueIDs = append(issueIDs, a.ID)
+				}
+			}
+		}
 	}
 	if len(enabled) == 0 {
 		bld.WriteString("(没有启用的监控账号)\n")
 	} else if warnN > 0 {
-		fmt.Fprintf(&bld, "\n⚠️ 需关注 %s 个账号，可用「立即检查」看用量详情。\n", telegram.Code(strconv.Itoa(warnN)))
+		fmt.Fprintf(&bld, "\n⚠️ 需关注 %s 个账号", telegram.Code(strconv.Itoa(warnN)))
+		if usageHitN > 0 {
+			fmt.Fprintf(&bld, "（含 %s 个超阈值/用量异常）", telegram.Code(strconv.Itoa(usageHitN)))
+		}
+		bld.WriteString("；点下方账号或「立即检查」看详情。\n")
 	} else {
-		bld.WriteString("\n✅ 启用账号状态正常。\n")
+		bld.WriteString("\n✅ 启用账号状态与用量正常。\n")
 	}
 	if !p.Enabled {
 		bld.WriteString("\n⏸ 自动监控已关闭（不会后台告警）。")
@@ -2177,13 +2230,5 @@ func displayName(a userstore.AccountWatch) string {
 }
 
 func normalizeWindow(w string) string {
-	w = strings.TrimSpace(strings.ToLower(w))
-	switch w {
-	case "5h", "5_hour", "5hour", "five-hour":
-		return "five_hour"
-	case "7d", "7_day", "7day", "seven-day":
-		return "seven_day"
-	default:
-		return w
-	}
+	return sub2api.NormalizeWindow(w)
 }

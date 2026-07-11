@@ -450,6 +450,128 @@ func (u *UsageInfo) Window(name string) (WindowValue, bool) {
 	return WindowValue{}, false
 }
 
+// NormalizeWindow maps common aliases (5h/7d) to canonical usage window names.
+func NormalizeWindow(w string) string {
+	w = strings.TrimSpace(strings.ToLower(w))
+	switch w {
+	case "5h", "5_hour", "5hour", "five-hour":
+		return "five_hour"
+	case "7d", "7_day", "7day", "seven-day":
+		return "seven_day"
+	default:
+		return w
+	}
+}
+
+// ThresholdMap builds window -> utilization threshold map from config-like pairs.
+func ThresholdMap(windows []string, values []float64) map[string]float64 {
+	m := map[string]float64{}
+	for i := range windows {
+		if i >= len(values) {
+			break
+		}
+		k := NormalizeWindow(windows[i])
+		if k == "" {
+			continue
+		}
+		m[k] = values[i]
+	}
+	return m
+}
+
+// ThresholdHit reports whether utilization meets/exceeds a configured threshold.
+func ThresholdHit(window string, utilization float64, thMap map[string]float64) bool {
+	if len(thMap) == 0 {
+		return false
+	}
+	key := NormalizeWindow(window)
+	if thr, ok := thMap[key]; ok && utilization >= thr {
+		return true
+	}
+	// alias lookups already normalized; also try raw lower
+	if thr, ok := thMap[strings.ToLower(strings.TrimSpace(window))]; ok && utilization >= thr {
+		return true
+	}
+	return false
+}
+
+// CompactUsageSummary formats primary windows compactly and reports any threshold hit.
+// Example: "five_hour 72.0%⚠ · seven_day 41.2%"
+func (u *UsageInfo) CompactUsageSummary(thMap map[string]float64, maxParts int) (line string, hit bool) {
+	if u == nil {
+		return "", false
+	}
+	if maxParts <= 0 {
+		maxParts = 3
+	}
+	wins := u.Windows()
+	if len(wins) == 0 {
+		if u.Error != "" {
+			return "err", true
+		}
+		return "(无窗口)", false
+	}
+	// Prefer primary windows first
+	priority := map[string]int{
+		"five_hour": 0, "seven_day": 1, "seven_day_sonnet": 2, "seven_day_fable": 3,
+		"gemini_shared_daily": 4, "gemini_pro_daily": 5, "gemini_flash_daily": 6,
+	}
+	type item struct {
+		w    WindowValue
+		rank int
+	}
+	items := make([]item, 0, len(wins))
+	for _, w := range wins {
+		rank, ok := priority[w.Window]
+		if !ok {
+			rank = 50
+		}
+		items = append(items, item{w, rank})
+	}
+	// simple insertion by rank then utilization desc for non-priority
+	for i := 0; i < len(items); i++ {
+		for j := i + 1; j < len(items); j++ {
+			if items[j].rank < items[i].rank || (items[j].rank == items[i].rank && items[j].w.Utilization > items[i].w.Utilization) {
+				items[i], items[j] = items[j], items[i]
+			}
+		}
+	}
+	parts := make([]string, 0, maxParts)
+	for _, it := range items {
+		if len(parts) >= maxParts {
+			break
+		}
+		mark := ""
+		if ThresholdHit(it.w.Window, it.w.Utilization, thMap) {
+			mark = "⚠"
+			hit = true
+		}
+		// short labels
+		label := it.w.Window
+		switch label {
+		case "five_hour":
+			label = "5h"
+		case "seven_day":
+			label = "7d"
+		case "seven_day_sonnet":
+			label = "7d-s"
+		case "seven_day_fable":
+			label = "7d-f"
+		case "gemini_shared_daily":
+			label = "g-sh"
+		case "gemini_pro_daily":
+			label = "g-pro"
+		case "gemini_flash_daily":
+			label = "g-fl"
+		}
+		parts = append(parts, fmt.Sprintf("%s %.0f%%%s", label, it.w.Utilization, mark))
+	}
+	if u.Error != "" {
+		hit = true
+	}
+	return strings.Join(parts, " · "), hit
+}
+
 func (c *Client) GetAccountUsage(ctx context.Context, id int64, source string, force bool) (*UsageInfo, error) {
 	q := url.Values{}
 	if source != "" {

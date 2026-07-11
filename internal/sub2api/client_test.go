@@ -2,6 +2,7 @@ package sub2api
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -106,5 +107,90 @@ func TestTrafficSummaryHelpers(t *testing.T) {
 	}
 	if tr.WindowLabel() != "5min" {
 		t.Fatal(tr.WindowLabel())
+	}
+}
+
+func TestNormalizeWindow(t *testing.T) {
+	cases := map[string]string{
+		"5h":         "five_hour",
+		"5_hour":     "five_hour",
+		"Five_Hour":  "five_hour",
+		"7d":         "seven_day",
+		"seven-day":  "seven_day",
+		"five_hour":  "five_hour",
+		"custom_win": "custom_win",
+		"  7D  ":     "seven_day",
+	}
+	for in, want := range cases {
+		if got := NormalizeWindow(in); got != want {
+			t.Fatalf("NormalizeWindow(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
+func TestThresholdHit(t *testing.T) {
+	th := map[string]float64{
+		"five_hour": 70,
+		"seven_day": 80,
+	}
+	if !ThresholdHit("5h", 70, th) {
+		t.Fatal("expected hit at boundary")
+	}
+	if ThresholdHit("5h", 69.9, th) {
+		t.Fatal("expected miss below threshold")
+	}
+	if !ThresholdHit("seven_day", 90, th) {
+		t.Fatal("expected seven_day hit")
+	}
+	if ThresholdHit("unknown", 100, th) {
+		t.Fatal("unknown window should miss")
+	}
+	if ThresholdHit("5h", 100, nil) {
+		t.Fatal("nil map should miss")
+	}
+}
+
+func TestCompactUsageSummary(t *testing.T) {
+	u := &UsageInfo{
+		FiveHour: &UsageProgress{Utilization: 72},
+		SevenDay: &UsageProgress{Utilization: 41.2},
+	}
+	th := map[string]float64{"five_hour": 70, "seven_day": 80}
+	line, hit := u.CompactUsageSummary(th, 3)
+	if !hit {
+		t.Fatalf("expected hit, line=%q", line)
+	}
+	if !strings.Contains(line, "5h 72%⚠") {
+		t.Fatalf("expected 5h warning in %q", line)
+	}
+	if !strings.Contains(line, "7d 41%") {
+		t.Fatalf("expected 7d part in %q", line)
+	}
+
+	// priority: five_hour / seven_day before lower-priority windows
+	u2 := &UsageInfo{
+		GeminiFlashDaily: &UsageProgress{Utilization: 99},
+		FiveHour:         &UsageProgress{Utilization: 10},
+		SevenDay:         &UsageProgress{Utilization: 20},
+	}
+	line2, hit2 := u2.CompactUsageSummary(map[string]float64{"gemini_flash_daily": 90}, 2)
+	if hit2 {
+		t.Fatalf("gemini hit should be truncated out of maxParts=2, line=%q", line2)
+	}
+	if !strings.HasPrefix(line2, "5h ") || !strings.Contains(line2, "7d ") {
+		t.Fatalf("expected primary windows first, got %q", line2)
+	}
+	line3, hit3 := u2.CompactUsageSummary(map[string]float64{"gemini_flash_daily": 90}, 3)
+	if !hit3 || !strings.Contains(line3, "g-fl 99%⚠") {
+		t.Fatalf("expected gemini hit when included, got %q hit=%v", line3, hit3)
+	}
+
+	// empty / error
+	if line, hit := (*UsageInfo)(nil).CompactUsageSummary(nil, 3); line != "" || hit {
+		t.Fatalf("nil usage: %q %v", line, hit)
+	}
+	uErr := &UsageInfo{Error: "timeout"}
+	if line, hit := uErr.CompactUsageSummary(nil, 3); line != "err" || !hit {
+		t.Fatalf("error-only usage: %q %v", line, hit)
 	}
 }

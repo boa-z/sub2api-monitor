@@ -198,35 +198,40 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 		bld.WriteString("⚠️ 请添加至少一个监控账号")
 		return bld.String(), nil
 	}
-	bld.WriteString("**启用账号快照**\n")
+	bld.WriteString("**启用账号快照**（含用量）\n")
 	cli, err := sub2api.NewClient(config.Sub2APIConfig{
-		BaseURL: p.BaseURL, AdminAPIKey: p.AdminAPIKey, JWT: p.JWT, Timeout: 8 * time.Second,
+		BaseURL: p.BaseURL, AdminAPIKey: p.AdminAPIKey, JWT: p.JWT, Timeout: 12 * time.Second,
 	})
 	if err != nil {
 		bld.WriteString("客户端错误: " + err.Error())
 		return bld.String(), nil
 	}
+	thsDefault := p.Thresholds
+	if len(thsDefault) == 0 {
+		thsDefault = b.defaults
+	}
+	usageSrc := p.EffectiveSource()
 	warnN := 0
+	usageHitN := 0
+	shown := 0
 	var issueIDs []int64
-	const maxShow = 12
-	for i, a := range enabled {
-		if i >= maxShow {
+	const maxShow = 8
+	for _, a := range enabled {
+		if shown >= maxShow {
 			fmt.Fprintf(&bld, "… 另有 `%d` 个启用账号\n", len(enabled)-maxShow)
 			break
 		}
+		shown++
 		name := a.Name
 		if name == "" {
 			name = fmt.Sprintf("#%d", a.ID)
 		}
 		flag := "✅"
+		statusBad := false
 		if acc, err := cli.GetAccount(ctx, a.ID); err != nil {
 			flag = "❓"
-			warnN++
-			if len(issueIDs) < 6 {
-				issueIDs = append(issueIDs, a.ID)
-			}
+			statusBad = true
 			fmt.Fprintf(&bld, "%s `#%d` %s · %s\n", flag, a.ID, truncate(name, 14), truncate(err.Error(), 40))
-			continue
 		} else if acc != nil {
 			if acc.Name != "" && name == fmt.Sprintf("#%d", a.ID) {
 				name = acc.Name
@@ -238,38 +243,86 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 			if !acc.Schedulable {
 				parts = append(parts, "停调度")
 				flag = "⏸"
-				warnN++
+				statusBad = true
 			}
 			if acc.RateLimitedAt != nil || strings.Contains(strings.ToLower(acc.Status), "rate") {
 				parts = append(parts, "限速")
 				flag = "⏱"
-				warnN++
+				statusBad = true
 			}
 			if strings.EqualFold(acc.Status, "error") || acc.ErrorMessage != "" {
 				flag = "❌"
-				warnN++
+				statusBad = true
 			}
 			if strings.EqualFold(acc.Status, "disabled") {
 				flag = "🚫"
-				warnN++
+				statusBad = true
 			}
 			fmt.Fprintf(&bld, "%s `#%d` %s · `%s`\n", flag, a.ID, truncate(name, 14), strings.Join(parts, "/"))
 			if flag == "❌" && acc.ErrorMessage != "" {
 				fmt.Fprintf(&bld, "   %s\n", truncate(acc.ErrorMessage, 48))
 			}
-			if flag != "✅" && len(issueIDs) < 6 {
-				issueIDs = append(issueIDs, a.ID)
-			}
-			continue
+		} else {
+			fmt.Fprintf(&bld, "%s `#%d` %s\n", flag, a.ID, truncate(name, 14))
 		}
-		fmt.Fprintf(&bld, "%s `#%d` %s\n", flag, a.ID, truncate(name, 14))
+
+		// compact usage vs thresholds (not force-check)
+		ths := a.Thresholds
+		if len(ths) == 0 {
+			ths = thsDefault
+		}
+		thMap := map[string]float64{}
+		for _, th := range ths {
+			thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
+		}
+		usageLine := ""
+		usageHit := false
+		if usage, err := cli.GetAccountUsage(ctx, a.ID, usageSrc, false); err != nil {
+			usageLine = "用量: " + truncate(err.Error(), 36)
+			usageHit = true
+		} else if usage != nil {
+			sum, hit := usage.CompactUsageSummary(thMap, 3)
+			usageHit = hit
+			if sum == "" {
+				sum = "(无窗口)"
+			}
+			usageLine = "用量: `" + sum + "`"
+			if usage.Error != "" {
+				usageHit = true
+			}
+		}
+		if usageLine != "" {
+			fmt.Fprintf(&bld, "   %s\n", usageLine)
+		}
+		if statusBad || usageHit {
+			warnN++
+			if usageHit {
+				usageHitN++
+			}
+			if len(issueIDs) < 6 {
+				dup := false
+				for _, id := range issueIDs {
+					if id == a.ID {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					issueIDs = append(issueIDs, a.ID)
+				}
+			}
+		}
 	}
 	if len(enabled) == 0 {
 		bld.WriteString("(没有启用的监控账号)\n")
 	} else if warnN > 0 {
-		fmt.Fprintf(&bld, "\n⚠️ 需关注 `%d` 个账号，可用「立即检查」看用量详情。\n", warnN)
+		fmt.Fprintf(&bld, "\n⚠️ 需关注 `%d` 个账号", warnN)
+		if usageHitN > 0 {
+			fmt.Fprintf(&bld, "（含 `%d` 个超阈值/用量异常）", usageHitN)
+		}
+		bld.WriteString("；点下方账号或「立即检查」看详情。\n")
 	} else {
-		bld.WriteString("\n✅ 启用账号状态正常。\n")
+		bld.WriteString("\n✅ 启用账号状态与用量正常。\n")
 	}
 	if !p.Enabled {
 		bld.WriteString("\n⏸ 自动监控已关闭（不会后台告警）。")
