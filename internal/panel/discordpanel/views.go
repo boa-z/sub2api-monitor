@@ -1932,11 +1932,20 @@ func (b *Bot) showAvailabilityView(ctx context.Context, userID int64) (string, [
 	if len(row) > 0 {
 		comps = append(comps, discord.ActionRow(row...))
 	}
-	comps = append(comps, discord.ActionRow(
+	footer := []discord.Component{
 		discord.Button("异常账号", "ops_badacc:error:0", 2),
 		discord.Button("限速", "ops_badacc:rl:0", 2),
-		discord.Button("错误", "ops_errors:all:0", 2),
-	))
+		discord.Button("异常汇总", "mgr_browse:problem:0", 2),
+	}
+	if b.canOpsWrite(userID) && len(bad) > 0 {
+		footer = append(footer, discord.Button("一键修复", "mgr_bulk_heal", 1))
+	} else {
+		footer = append(footer, discord.Button("错误", "ops_errors:all:0", 2))
+	}
+	comps = append(comps, discord.ActionRow(footer...))
+	if len(comps) > 5 {
+		comps = comps[:5]
+	}
 	return bld.String(), comps
 }
 
@@ -3135,6 +3144,12 @@ func (b *Bot) manageAccount(ctx context.Context, userID, accountID int64, notice
 	fmt.Fprintf(&bld, "**管理账号 #%d**\n\n", accountID)
 	fmt.Fprintf(&bld, "名称: `%s`\n平台/类型: `%s` / `%s`\n状态: `%s`\n可调度: `%v`\n",
 		acc.Name, acc.Platform, acc.Type, acc.Status, acc.Schedulable)
+	issue := browse.AccountIssueKind(*acc)
+	if issue != browse.IssueOK {
+		fmt.Fprintf(&bld, "诊断: **%s**\n", browse.AccountIssueLabel(issue))
+	} else {
+		fmt.Fprintf(&bld, "诊断: `正常`\n")
+	}
 	if acc.ErrorMessage != "" {
 		fmt.Fprintf(&bld, "错误: %s\n", truncate(acc.ErrorMessage, 120))
 	}
@@ -3232,33 +3247,90 @@ func (b *Bot) manageAccount(ctx context.Context, userID, accountID int64, notice
 	backLabel, backData := b.manageBackLabel(userID)
 	var comps []discord.Component
 	if b.canOpsWrite(userID) {
-		comps = []discord.Component{
-			discord.ActionRow(
+		kind := browse.AccountIssueKind(*acc)
+		// Row budget max 5: triage + secondary + common + live/back
+		switch kind {
+		case browse.IssueError:
+			comps = append(comps, discord.ActionRow(
+				discord.Button("一键修复", fmt.Sprintf("mgr_act:heal:%d", accountID), 1),
+				discord.Button("清错误", fmt.Sprintf("mgr_act:clear_err:%d", accountID), 2),
+				discord.Button("恢复", fmt.Sprintf("mgr_act:recover:%d", accountID), 2),
+				discord.Button(schedBtn, schedData, 1),
+			))
+		case browse.IssueRL, browse.IssueOverload:
+			comps = append(comps, discord.ActionRow(
+				discord.Button("清限速", fmt.Sprintf("mgr_act:clear_rl:%d", accountID), 2),
+				discord.Button("一键修复", fmt.Sprintf("mgr_act:heal:%d", accountID), 1),
+				discord.Button(schedBtn, schedData, 1),
+				discord.Button("清错误", fmt.Sprintf("mgr_act:clear_err:%d", accountID), 2),
+			))
+		case browse.IssueUnsched:
+			comps = append(comps, discord.ActionRow(
+				discord.Button("开调度", fmt.Sprintf("mgr_act:sched:%d", accountID), 1),
+				discord.Button("一键修复", fmt.Sprintf("mgr_act:heal:%d", accountID), 1),
+				discord.Button("清临时停", fmt.Sprintf("mgr_act:clear_temp:%d", accountID), 2),
+				discord.Button("临时停", fmt.Sprintf("mgr_act:temp_menu:%d", accountID), 2),
+			))
+		case browse.IssueTemp:
+			comps = append(comps, discord.ActionRow(
+				discord.Button("清临时停", fmt.Sprintf("mgr_act:clear_temp:%d", accountID), 1),
+				discord.Button("开调度", fmt.Sprintf("mgr_act:sched:%d", accountID), 1),
+				discord.Button("再设临时停", fmt.Sprintf("mgr_act:temp_menu:%d", accountID), 2),
+				discord.Button("一键修复", fmt.Sprintf("mgr_act:heal:%d", accountID), 1),
+			))
+		case browse.IssueDisabled:
+			comps = append(comps, discord.ActionRow(
+				discord.Button("启用", fmt.Sprintf("mgr_act:enable:%d", accountID), 1),
+				discord.Button("测试", fmt.Sprintf("mgr_act:test:%d", accountID), 2),
+				discord.Button(schedBtn, schedData, 2),
+				discord.Button("刷新", fmt.Sprintf("mgr_act:refresh:%d", accountID), 2),
+			))
+		default:
+			comps = append(comps, discord.ActionRow(
 				discord.Button(schedBtn, schedData, 1),
 				discord.Button(watchBtn, watchData, 2),
 				discord.Button(statusBtn, statusData, 2),
-			),
-			discord.ActionRow(
+			))
+		}
+		// Secondary row
+		if kind != browse.IssueOK && kind != browse.IssueDisabled {
+			comps = append(comps, discord.ActionRow(
+				discord.Button(watchBtn, watchData, 2),
+				discord.Button(statusBtn, statusData, 2),
+				discord.Button("测试", fmt.Sprintf("mgr_act:test:%d", accountID), 2),
+				discord.Button("刷新", fmt.Sprintf("mgr_act:refresh:%d", accountID), 2),
+			))
+		} else if kind == browse.IssueOK {
+			comps = append(comps, discord.ActionRow(
 				discord.Button("一键修复", fmt.Sprintf("mgr_act:heal:%d", accountID), 1),
 				discord.Button("清错误", fmt.Sprintf("mgr_act:clear_err:%d", accountID), 2),
 				discord.Button("清限速", fmt.Sprintf("mgr_act:clear_rl:%d", accountID), 2),
-			),
-			discord.ActionRow(
+			))
+			comps = append(comps, discord.ActionRow(
 				discord.Button("恢复", fmt.Sprintf("mgr_act:recover:%d", accountID), 2),
 				discord.Button("刷新", fmt.Sprintf("mgr_act:refresh:%d", accountID), 2),
 				discord.Button("测试", fmt.Sprintf("mgr_act:test:%d", accountID), 2),
-			),
-			discord.ActionRow(
+			))
+		}
+		// Temp / quota row (when not already primary)
+		if kind != browse.IssueTemp && kind != browse.IssueUnsched {
+			comps = append(comps, discord.ActionRow(
 				discord.Button("临时停调度", fmt.Sprintf("mgr_act:temp_menu:%d", accountID), 2),
 				discord.Button("清临时停", fmt.Sprintf("mgr_act:clear_temp:%d", accountID), 2),
 				discord.Button("重置额度", fmt.Sprintf("mgr_act:confirm_reset_quota:%d", accountID), 4),
-			),
-			discord.ActionRow(
-				discord.Button("实时用量", fmt.Sprintf("acc_live:%d", accountID), 1),
-				discord.Button(backLabel, backData, 2),
-				discord.Button("« 管理", "mgr_menu", 2),
-			),
+			))
+		} else {
+			comps = append(comps, discord.ActionRow(
+				discord.Button("重置额度", fmt.Sprintf("mgr_act:confirm_reset_quota:%d", accountID), 4),
+				discord.Button("清限速", fmt.Sprintf("mgr_act:clear_rl:%d", accountID), 2),
+			))
 		}
+		// Footer
+		comps = append(comps, discord.ActionRow(
+			discord.Button("实时用量", fmt.Sprintf("acc_live:%d", accountID), 1),
+			discord.Button(backLabel, backData, 2),
+			discord.Button("« 管理", "mgr_menu", 2),
+		))
 	} else {
 		comps = []discord.Component{
 			discord.ActionRow(
@@ -3267,6 +3339,9 @@ func (b *Bot) manageAccount(ctx context.Context, userID, accountID int64, notice
 				discord.Button("« 浏览", "mgr_menu", 2),
 			),
 		}
+	}
+	if len(comps) > 5 {
+		comps = comps[:5]
 	}
 	return bld.String(), comps
 }

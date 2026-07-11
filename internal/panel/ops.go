@@ -408,11 +408,21 @@ func (b *Bot) showAvailability(ctx context.Context, chatID, msgID, userID int64)
 			telegram.Btn("⏱ 限速", "ops_badacc:rl:0"),
 		},
 		[]telegram.InlineKeyboardButton{
+			telegram.Btn("📚 异常汇总", "mgr_browse:problem:0"),
 			telegram.Btn("❌ 错误", "ops_errors:all:0"),
-			telegram.Btn("📈 看板", "ops_dash"),
 		},
-		[]telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")},
 	)
+	if b.canOpsWrite(userID) && len(bad) > 0 {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
+			telegram.Btn("📈 看板", "ops_dash"),
+		})
+	} else {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("📈 看板", "ops_dash"),
+		})
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")})
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
@@ -1689,12 +1699,18 @@ func (b *Bot) showAccountLiveWithNotice(ctx context.Context, chatID, msgID, user
 	}
 	bld.WriteString(telegram.Bold(fmt.Sprintf("账号 #%d 实时", accountID)) + "\n\n")
 
+	var liveAcc *sub2api.Account
 	if acc, err := cli.GetAccount(ctx, accountID); err == nil && acc != nil {
+		liveAcc = acc
 		fmt.Fprintf(&bld, "名称: %s\n", telegram.Code(acc.Name))
 		fmt.Fprintf(&bld, "平台/类型: %s / %s\n", telegram.Code(acc.Platform), telegram.Code(acc.Type))
 		fmt.Fprintf(&bld, "状态: %s · 可调度: %s\n",
 			telegram.Code(acc.Status),
 			telegram.Code(fmt.Sprintf("%v", acc.Schedulable)))
+
+		if kind := browse.AccountIssueKind(*acc); kind != browse.IssueOK {
+			fmt.Fprintf(&bld, "诊断: %s\n", telegram.Bold(browse.AccountIssueLabel(kind)))
+		}
 		if acc.ErrorMessage != "" {
 			fmt.Fprintf(&bld, "错误: %s\n", telegram.EscapeHTML(truncateRunes(acc.ErrorMessage, 120)))
 		}
@@ -1783,23 +1799,70 @@ func (b *Bot) showAccountLiveWithNotice(ctx context.Context, chatID, msgID, user
 		{telegram.Btn("🔄 刷新", fmt.Sprintf("acc_live:%d", accountID))},
 	}
 	if b.canOpsWrite(userID) {
-		rows = append(rows,
-			[]telegram.InlineKeyboardButton{
-				telegram.Btn("🛠 一键修复", fmt.Sprintf("live_act:heal:%d", accountID)),
-				telegram.Btn("🧹 清错误", fmt.Sprintf("live_act:clear_err:%d", accountID)),
-			},
-			[]telegram.InlineKeyboardButton{
-				telegram.Btn("⏱ 清限速", fmt.Sprintf("live_act:clear_rl:%d", accountID)),
-				telegram.Btn("♻️ 恢复", fmt.Sprintf("live_act:recover:%d", accountID)),
-			},
-			[]telegram.InlineKeyboardButton{
-				telegram.Btn("▶️ 开调度", fmt.Sprintf("live_act:sched:%d", accountID)),
+		kind := browse.IssueOK
+		if liveAcc != nil {
+			kind = browse.AccountIssueKind(*liveAcc)
+		}
+		switch kind {
+		case browse.IssueError:
+			rows = append(rows,
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("🛠 一键修复", fmt.Sprintf("live_act:heal:%d", accountID)),
+					telegram.Btn("🧹 清错误", fmt.Sprintf("live_act:clear_err:%d", accountID)),
+				},
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("♻️ 恢复", fmt.Sprintf("live_act:recover:%d", accountID)),
+					telegram.Btn("▶️ 开调度", fmt.Sprintf("live_act:sched:%d", accountID)),
+				},
+			)
+		case browse.IssueRL, browse.IssueOverload:
+			rows = append(rows,
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("⏱ 清限速", fmt.Sprintf("live_act:clear_rl:%d", accountID)),
+					telegram.Btn("🛠 一键修复", fmt.Sprintf("live_act:heal:%d", accountID)),
+				},
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("▶️ 开调度", fmt.Sprintf("live_act:sched:%d", accountID)),
+					telegram.Btn("🧹 清错误", fmt.Sprintf("live_act:clear_err:%d", accountID)),
+				},
+			)
+		case browse.IssueUnsched, browse.IssueTemp:
+			rows = append(rows,
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("▶️ 开调度", fmt.Sprintf("live_act:sched:%d", accountID)),
+					telegram.Btn("🛠 一键修复", fmt.Sprintf("live_act:heal:%d", accountID)),
+				},
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("⏱ 清限速", fmt.Sprintf("live_act:clear_rl:%d", accountID)),
+					telegram.Btn("♻️ 恢复", fmt.Sprintf("live_act:recover:%d", accountID)),
+				},
+			)
+		default:
+			rows = append(rows,
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("🛠 一键修复", fmt.Sprintf("live_act:heal:%d", accountID)),
+					telegram.Btn("🧹 清错误", fmt.Sprintf("live_act:clear_err:%d", accountID)),
+				},
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("⏱ 清限速", fmt.Sprintf("live_act:clear_rl:%d", accountID)),
+					telegram.Btn("♻️ 恢复", fmt.Sprintf("live_act:recover:%d", accountID)),
+				},
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("▶️ 开调度", fmt.Sprintf("live_act:sched:%d", accountID)),
+					telegram.Btn("🔄 刷新凭据", fmt.Sprintf("live_act:refresh:%d", accountID)),
+				},
+			)
+		}
+		if kind != browse.IssueOK {
+			rows = append(rows, []telegram.InlineKeyboardButton{
 				telegram.Btn("🔄 刷新凭据", fmt.Sprintf("live_act:refresh:%d", accountID)),
-			},
-			[]telegram.InlineKeyboardButton{
 				telegram.Btn("🧰 完整管理", fmt.Sprintf("mgr_acc:%d", accountID)),
-			},
-		)
+			})
+		} else {
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn("🧰 完整管理", fmt.Sprintf("mgr_acc:%d", accountID)),
+			})
+		}
 	} else if b.canOpsRead(userID) {
 		rows = append(rows, []telegram.InlineKeyboardButton{
 			telegram.Btn("👁 账号详情", fmt.Sprintf("mgr_acc:%d", accountID)),
