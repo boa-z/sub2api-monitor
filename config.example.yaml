@@ -12,13 +12,17 @@ sub2api:
 
 telegram:
   bot_token: ""
-  chat_id: "" # 用户/群/频道 ID，群多为负数
+  chat_id: "" # 默认接收人（用户/群/频道 ID，群多为负数）
+  # extra_chat_ids:               # 额外默认接收人（所有默认告警都会抄送）
+  #   - "123456789"
   parse_mode: "HTML" # HTML | MarkdownV2 | 空
   disable_notification: false # true 时静音推送
+  send_startup_message: true # 启动时是否向默认 chat 发一条通知
+  min_send_interval: 50ms # 全局限速，避免 Telegram 429
   # api_base: "https://api.telegram.org"  # 可选代理镜像
 
 poll:
-  interval: 30s # 主循环间隔
+  interval: 30s # 主循环间隔（各探针也可单独设 interval）
   jitter: 3s # 防惊群抖动
 
 alert:
@@ -31,7 +35,7 @@ alert:
   #   allow_severities: ["P0"]
 
 state:
-  driver: "memory" # memory | sqlite
+  driver: "memory" # memory | sqlite（sqlite 实际落盘为 JSON 文件）
   sqlite_path: "./data/state.db"
 
 checks:
@@ -82,6 +86,68 @@ checks:
     interval: 60s
     window: 5min # 对应 API: 1min|5min|30min|1h
     min_qps: 0.1 # 低于此 QPS 视为异常（需业务常有流量）
+
+  # ---------- 指定账号用量监控 ----------
+  # 轮询：
+  #   GET /api/v1/admin/accounts/:id/usage?source=passive|active
+  #   GET /api/v1/admin/accounts/:id/today-stats
+  # utilization 为 0-100 的百分比；达到阈值后向 chat_ids（或默认 chat）推送
+  # 低于恢复线（默认 threshold-5，可 resolve_below 覆盖）时发 RESOLVED
+  account_usage:
+    enabled: false
+    interval: 5m
+    source: "passive" # passive 不打上游；active 会触发上游查询（更准但更重）
+    force_active: false # source=active 时是否 force=true 刷新上游
+    concurrency: 3 # 并发查询账号数
+    cooldown: 2h # 同一账号+窗口阈值的去重冷却（覆盖全局 alert.cooldown）
+    # 默认阈值（每个账号可覆盖）
+    default_thresholds:
+      - window: five_hour # 别名: 5h ；Claude/Codex 5 小时窗口
+        utilization_gte: 80 # 使用率 >= 该百分比时告警
+        # resolve_below: 75   # 可选迟滞；默认 threshold-5
+        severity: P2 # P0 | P1 | P2 | P3
+      - window: seven_day # 别名: 7d
+        utilization_gte: 90
+        severity: P1
+      # - window: max           # 取所有可用窗口的最高使用率
+      #   utilization_gte: 95
+      #   severity: P0
+      # - window: seven_day_sonnet
+      #   utilization_gte: 85
+      # - window: seven_day_fable
+      #   utilization_gte: 85
+      # - window: gemini_shared_daily
+      #   utilization_gte: 80
+      # - window: gemini_pro_daily
+      #   utilization_gte: 80
+      # - window: gemini_flash_daily
+      #   utilization_gte: 80
+      # - window: "antigravity:claude-sonnet-4-5"
+      #   utilization_gte: 80
+    # default_today:              # 可选：今日本地统计阈值（cost/tokens/requests）
+    #   cost_gte: 50              # 今日费用 >=
+    #   tokens_gte: 5000000       # 今日 token >=
+    #   requests_gte: 10000       # 今日请求数 >=
+    #   severity: P2
+    accounts:
+      # - id: 42                  # 必填：Sub2API 账号 ID
+      #   name: "claude-main"     # 仅展示用；不填则用后台账号名
+      #   chat_ids:               # 不填则用 telegram.chat_id (+ extra_chat_ids)
+      #     - "1951951866"
+      #   # source: active        # 覆盖全局 source
+      #   # disable_usage: false  # 只关用量窗口、保留 today
+      #   # disable_today: false  # 只关 today 统计
+      #   thresholds:             # 覆盖 default_thresholds
+      #     - window: five_hour
+      #       utilization_gte: 70
+      #       severity: P1
+      #     - window: seven_day
+      #       utilization_gte: 85
+      #       severity: P1
+      #   today:                  # 覆盖 default_today
+      #     cost_gte: 20
+      #     tokens_gte: 2000000
+      #     severity: P2
 
 logging:
   level: "info" # debug|info|warn|error

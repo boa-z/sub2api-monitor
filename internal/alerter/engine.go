@@ -21,26 +21,36 @@ const (
 	SevP3 Severity = "P3"
 )
 
+// Event is a deduplicated alert/notification.
 type Event struct {
 	Fingerprint string
 	Severity    Severity
 	Title       string
-	Body        string // HTML-safe content (already escaped where needed)
+	Body        string // HTML fragments (values should already be escaped)
 	Resolved    bool
 	Silent      bool
-	// Force bypasses cooldown (use sparingly)
+	// ChatIDs overrides default telegram recipients for this event.
+	ChatIDs []string
+	// Cooldown overrides global alert.cooldown when > 0.
+	Cooldown time.Duration
+	// Force bypasses cooldown (use sparingly).
 	Force bool
 }
 
-type Engine struct {
-	cfg    *config.Config
-	store  state.Store
-	bot    *telegram.Bot
-	logger *slog.Logger
+// Notifier is the outbound messaging port (implemented by telegram.Client).
+type Notifier interface {
+	SendTo(ctx context.Context, chatIDs []string, text string, silent bool) error
 }
 
-func New(cfg *config.Config, store state.Store, bot *telegram.Bot, logger *slog.Logger) *Engine {
-	return &Engine{cfg: cfg, store: store, bot: bot, logger: logger}
+type Engine struct {
+	cfg      *config.Config
+	store    state.Store
+	notifier Notifier
+	logger   *slog.Logger
+}
+
+func New(cfg *config.Config, store state.Store, notifier Notifier, logger *slog.Logger) *Engine {
+	return &Engine{cfg: cfg, store: store, notifier: notifier, logger: logger}
 }
 
 func (e *Engine) Emit(ctx context.Context, ev Event) error {
@@ -58,30 +68,33 @@ func (e *Engine) Emit(ctx context.Context, ev Event) error {
 
 	now := time.Now()
 	last, seen := e.store.LastAlert(ev.Fingerprint)
+	cooldown := e.cfg.Alert.Cooldown
+	if ev.Cooldown > 0 {
+		cooldown = ev.Cooldown
+	}
 
 	if ev.Resolved {
 		if !seen {
-			return nil // never fired, nothing to resolve
+			return nil
 		}
 		if !e.cfg.Alert.SendResolved {
 			_ = e.store.ClearAlert(ev.Fingerprint)
 			return nil
 		}
 		msg := e.format(ev)
-		if err := e.bot.SendWithOptions(ctx, msg, true); err != nil {
+		if err := e.notifier.SendTo(ctx, ev.ChatIDs, msg, true); err != nil {
 			return err
 		}
 		return e.store.ClearAlert(ev.Fingerprint)
 	}
 
-	// firing
-	if seen && !ev.Force && now.Sub(last) < e.cfg.Alert.Cooldown {
-		e.logger.Debug("cooldown", "fp", ev.Fingerprint, "left", e.cfg.Alert.Cooldown-now.Sub(last))
+	if seen && !ev.Force && now.Sub(last) < cooldown {
+		e.logger.Debug("cooldown", "fp", ev.Fingerprint, "left", cooldown-now.Sub(last))
 		return nil
 	}
 
 	msg := e.format(ev)
-	if err := e.bot.SendWithOptions(ctx, msg, ev.Silent); err != nil {
+	if err := e.notifier.SendTo(ctx, ev.ChatIDs, msg, ev.Silent); err != nil {
 		return err
 	}
 	return e.store.MarkAlert(ev.Fingerprint, now)
@@ -96,7 +109,9 @@ func (e *Engine) format(ev Event) string {
 	}
 	switch ev.Severity {
 	case SevP0:
-		icon = "🚨"
+		if !ev.Resolved {
+			icon = "🚨"
+		}
 	case SevP1:
 		if !ev.Resolved {
 			icon = "🔴"
@@ -108,18 +123,21 @@ func (e *Engine) format(ev Event) string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s <b>[%s] %s</b> · %s\n", icon, telegram.EscapeHTML(string(ev.Severity)), telegram.EscapeHTML(label), telegram.EscapeHTML(ev.Title))
-	fmt.Fprintf(&b, "实例: <code>%s</code>\n", telegram.EscapeHTML(e.cfg.Instance))
+	fmt.Fprintf(&b, "%s %s · %s\n",
+		icon,
+		telegram.Bold("["+string(ev.Severity)+"] "+label),
+		telegram.EscapeHTML(ev.Title),
+	)
+	fmt.Fprintf(&b, "实例: %s\n", telegram.Code(e.cfg.Instance))
 	if ev.Body != "" {
 		b.WriteString(ev.Body)
 		if !strings.HasSuffix(ev.Body, "\n") {
 			b.WriteByte('\n')
 		}
 	}
-	fmt.Fprintf(&b, "时间: <code>%s</code>", time.Now().Format("2006-01-02 15:04:05 MST"))
+	fmt.Fprintf(&b, "时间: %s", telegram.Code(time.Now().Format("2006-01-02 15:04:05 MST")))
 
 	msg := b.String()
-	// soft trim
 	runes := []rune(msg)
 	if max := e.cfg.Alert.MaxMessageRunes; max > 0 && len(runes) > max {
 		msg = string(runes[:max]) + "…"
@@ -149,15 +167,10 @@ func (e *Engine) inQuietHours(sev Severity) bool {
 	if start.Before(end) {
 		return !now.Before(start) && now.Before(end)
 	}
-	// wraps midnight
 	return !now.Before(start) || now.Before(end)
 }
 
 func parseHHMM(s string, ref time.Time) (time.Time, error) {
-	parts := strings.Split(s, ":")
-	if len(parts) != 2 {
-		return time.Time{}, fmt.Errorf("bad time")
-	}
 	var h, m int
 	if _, err := fmt.Sscanf(s, "%d:%d", &h, &m); err != nil {
 		return time.Time{}, err
@@ -165,7 +178,7 @@ func parseHHMM(s string, ref time.Time) (time.Time, error) {
 	return time.Date(ref.Year(), ref.Month(), ref.Day(), h, m, 0, 0, ref.Location()), nil
 }
 
-// Seen returns whether fingerprint is currently active (has been fired and not resolved).
+// Seen reports whether fingerprint is currently active.
 func (e *Engine) Seen(fp string) bool {
 	_, ok := e.store.LastAlert(fp)
 	return ok

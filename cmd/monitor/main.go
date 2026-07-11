@@ -56,9 +56,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	tg, err := telegram.NewBot(cfg.Telegram)
+	tg, err := telegram.New(cfg.Telegram)
 	if err != nil {
-		logger.Error("create telegram bot", "err", err)
+		logger.Error("create telegram client", "err", err)
 		os.Exit(1)
 	}
 
@@ -82,13 +82,19 @@ func main() {
 
 	if cfg.Telegram.SendStartupMessage {
 		_ = tg.Send(ctx, fmt.Sprintf(
-			"🟢 <b>sub2api-monitor started</b>\n实例: <code>%s</code>\n版本: <code>%s</code>",
-			telegram.EscapeHTML(cfg.Instance), telegram.EscapeHTML(version),
+			"🟢 %s\n实例: %s\n版本: %s",
+			telegram.Bold("sub2api-monitor started"),
+			telegram.Code(cfg.Instance),
+			telegram.Code(version),
 		))
 	}
 
 	runners := collector.Build(cfg, client, engine, logger)
-	logger.Info("collectors ready", "count", len(runners))
+	names := make([]string, 0, len(runners))
+	for _, r := range runners {
+		names = append(names, r.Name)
+	}
+	logger.Info("collectors ready", "count", len(runners), "names", strings.Join(names, ","))
 
 	errCh := make(chan error, 1)
 	go func() {

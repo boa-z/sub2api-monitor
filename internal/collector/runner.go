@@ -46,6 +46,10 @@ func Build(cfg *config.Config, client *sub2api.Client, engine *alerter.Engine, l
 		t := &trafficCollector{cfg: cfg, client: client, engine: engine, logger: logger}
 		out = append(out, Runner{Name: "traffic", Interval: cfg.Checks.Traffic.Interval, Run: t.Run})
 	}
+	if cfg.Checks.AccountUsage.Enabled {
+		u := &accountUsageCollector{cfg: cfg, client: client, engine: engine, logger: logger}
+		out = append(out, Runner{Name: "account_usage", Interval: cfg.Checks.AccountUsage.Interval, Run: u.Run})
+	}
 	return out
 }
 
@@ -100,5 +104,5 @@ func runOnce(ctx context.Context, r Runner, logger *slog.Logger) {
 }
 
 func line(k, v string) string {
-	return fmt.Sprintf("%s: <code>%s</code>\n", k, telegram.EscapeHTML(v))
+	return fmt.Sprintf("%s: %s\n", k, telegram.Code(v))
 }

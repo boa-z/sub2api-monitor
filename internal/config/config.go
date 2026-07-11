@@ -29,12 +29,14 @@ type Sub2APIConfig struct {
 }
 
 type TelegramConfig struct {
-	BotToken             string `yaml:"bot_token"`
-	ChatID               string `yaml:"chat_id"`
-	ParseMode            string `yaml:"parse_mode"`
-	DisableNotification  bool   `yaml:"disable_notification"`
-	APIBase              string `yaml:"api_base"`
-	SendStartupMessage   bool   `yaml:"send_startup_message"`
+	BotToken            string        `yaml:"bot_token"`
+	ChatID              string        `yaml:"chat_id"`
+	ExtraChatIDs        []string      `yaml:"extra_chat_ids"`
+	ParseMode           string        `yaml:"parse_mode"`
+	DisableNotification bool          `yaml:"disable_notification"`
+	APIBase             string        `yaml:"api_base"`
+	SendStartupMessage  bool          `yaml:"send_startup_message"`
+	MinSendInterval     time.Duration `yaml:"min_send_interval"`
 }
 
 type PollConfig struct {
@@ -43,20 +45,20 @@ type PollConfig struct {
 }
 
 type AlertConfig struct {
-	Cooldown         time.Duration `yaml:"cooldown"`
-	SendResolved     bool          `yaml:"send_resolved"`
-	MaxMessageRunes  int           `yaml:"max_message_runes"`
-	QuietHours       *QuietHours   `yaml:"quiet_hours"`
+	Cooldown        time.Duration `yaml:"cooldown"`
+	SendResolved    bool          `yaml:"send_resolved"`
+	MaxMessageRunes int           `yaml:"max_message_runes"`
+	QuietHours      *QuietHours   `yaml:"quiet_hours"`
 }
 
 type QuietHours struct {
-	Start           string   `yaml:"start"` // HH:MM
+	Start           string   `yaml:"start"`
 	End             string   `yaml:"end"`
 	AllowSeverities []string `yaml:"allow_severities"`
 }
 
 type StateConfig struct {
-	Driver     string `yaml:"driver"` // memory|sqlite
+	Driver     string `yaml:"driver"`
 	SQLitePath string `yaml:"sqlite_path"`
 }
 
@@ -73,6 +75,7 @@ type ChecksConfig struct {
 	OpsAlerts    OpsAlertsCheck    `yaml:"ops_alerts"`
 	Errors       ErrorsCheck       `yaml:"errors"`
 	Traffic      TrafficCheck      `yaml:"traffic"`
+	AccountUsage AccountUsageCheck `yaml:"account_usage"`
 }
 
 type HealthCheck struct {
@@ -90,20 +93,20 @@ type DashboardCheck struct {
 }
 
 type AccountsCheck struct {
-	Enabled                 bool          `yaml:"enabled"`
-	Interval                time.Duration `yaml:"interval"`
-	WatchStatuses           []string      `yaml:"watch_statuses"`
-	WatchRateLimited        bool          `yaml:"watch_rate_limited"`
-	WatchOverload           bool          `yaml:"watch_overload"`
-	WatchTempUnschedulable  bool          `yaml:"watch_temp_unschedulable"`
-	PageSize                int           `yaml:"page_size"`
+	Enabled                bool          `yaml:"enabled"`
+	Interval               time.Duration `yaml:"interval"`
+	WatchStatuses          []string      `yaml:"watch_statuses"`
+	WatchRateLimited       bool          `yaml:"watch_rate_limited"`
+	WatchOverload          bool          `yaml:"watch_overload"`
+	WatchTempUnschedulable bool          `yaml:"watch_temp_unschedulable"`
+	PageSize               int           `yaml:"page_size"`
 }
 
 type AvailabilityCheck struct {
-	Enabled             bool          `yaml:"enabled"`
-	Interval            time.Duration `yaml:"interval"`
-	MinAvailableRatio   float64       `yaml:"min_available_ratio"`
-	MinAvailableAccounts int          `yaml:"min_available_accounts"`
+	Enabled              bool          `yaml:"enabled"`
+	Interval             time.Duration `yaml:"interval"`
+	MinAvailableRatio    float64       `yaml:"min_available_ratio"`
+	MinAvailableAccounts int           `yaml:"min_available_accounts"`
 }
 
 type OpsAlertsCheck struct {
@@ -128,6 +131,55 @@ type TrafficCheck struct {
 	MinQPS   float64       `yaml:"min_qps"`
 }
 
+// ----- account usage quotas -----
+
+// UsageThreshold fires when a usage window utilization reaches UtilizationGTE (0-100).
+type UsageThreshold struct {
+	// Window: five_hour|7d alias|seven_day|seven_day_sonnet|seven_day_fable|
+	// gemini_shared_daily|gemini_pro_daily|gemini_flash_daily|antigravity:<model>|max
+	Window string `yaml:"window"`
+	// UtilizationGTE is percent 0-100+. Example: 80 means alert at >= 80% used.
+	UtilizationGTE float64 `yaml:"utilization_gte"`
+	// ResolveBelow is optional hysteresis; default = UtilizationGTE - 5 (min 0).
+	ResolveBelow *float64 `yaml:"resolve_below"`
+	Severity     string   `yaml:"severity"` // P0-P3, default P2
+}
+
+// TodayThreshold fires on local today-stats counters (cost/tokens/requests).
+// Zero means disabled for that field.
+type TodayThreshold struct {
+	CostGTE     float64 `yaml:"cost_gte"`
+	TokensGTE   int64   `yaml:"tokens_gte"`
+	RequestsGTE int64   `yaml:"requests_gte"`
+	Severity    string  `yaml:"severity"`
+}
+
+// AccountUsageTarget is a single monitored account.
+type AccountUsageTarget struct {
+	ID         int64            `yaml:"id"`
+	Name       string           `yaml:"name"` // optional display label
+	ChatIDs    []string         `yaml:"chat_ids"`
+	Thresholds []UsageThreshold `yaml:"thresholds"` // empty → inherit defaults
+	Today      *TodayThreshold  `yaml:"today"`      // nil → inherit default_today if set
+	// Source override: passive|active
+	Source string `yaml:"source"`
+	// Disable usage windows / today independently
+	DisableUsage bool `yaml:"disable_usage"`
+	DisableToday bool `yaml:"disable_today"`
+}
+
+type AccountUsageCheck struct {
+	Enabled           bool                `yaml:"enabled"`
+	Interval          time.Duration       `yaml:"interval"`
+	Source            string              `yaml:"source"` // passive|active
+	ForceActive       bool                `yaml:"force_active"`
+	Concurrency       int                 `yaml:"concurrency"`
+	Cooldown           time.Duration       `yaml:"cooldown"`
+	DefaultThresholds []UsageThreshold    `yaml:"default_thresholds"`
+	DefaultToday      *TodayThreshold     `yaml:"default_today"`
+	Accounts          []AccountUsageTarget `yaml:"accounts"`
+}
+
 // Load reads YAML config and overlays environment variables.
 func Load(path string) (*Config, error) {
 	cfg := defaultConfig()
@@ -137,7 +189,6 @@ func Load(path string) (*Config, error) {
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("read config: %w", err)
 		}
-		// allow env-only boot when file missing
 	} else {
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("parse config: %w", err)
@@ -161,6 +212,7 @@ func defaultConfig() *Config {
 			ParseMode:          "HTML",
 			APIBase:            "https://api.telegram.org",
 			SendStartupMessage: true,
+			MinSendInterval:    50 * time.Millisecond,
 		},
 		Poll: PollConfig{
 			Interval: 30 * time.Second,
@@ -185,9 +237,11 @@ func defaultConfig() *Config {
 			},
 			Accounts: AccountsCheck{
 				Enabled: true, Interval: 60 * time.Second,
-				WatchStatuses: []string{"error"},
-				WatchRateLimited: true, WatchOverload: true, WatchTempUnschedulable: true,
-				PageSize: 100,
+				WatchStatuses:          []string{"error"},
+				WatchRateLimited:       true,
+				WatchOverload:          true,
+				WatchTempUnschedulable: true,
+				PageSize:               100,
 			},
 			Availability: AvailabilityCheck{
 				Enabled: true, Interval: 60 * time.Second,
@@ -203,6 +257,17 @@ func defaultConfig() *Config {
 			},
 			Traffic: TrafficCheck{
 				Enabled: false, Interval: 60 * time.Second, Window: "5min", MinQPS: 0.1,
+			},
+			AccountUsage: AccountUsageCheck{
+				Enabled:     false,
+				Interval:    5 * time.Minute,
+				Source:      "passive",
+				Concurrency: 3,
+				Cooldown:     2 * time.Hour,
+				DefaultThresholds: []UsageThreshold{
+					{Window: "five_hour", UtilizationGTE: 80, Severity: "P2"},
+					{Window: "seven_day", UtilizationGTE: 90, Severity: "P1"},
+				},
 			},
 		},
 		Logging: LoggingConfig{Level: "info", Format: "text"},
@@ -241,11 +306,21 @@ func (c *Config) Validate() error {
 	if c.Sub2API.AdminAPIKey == "" && c.Sub2API.JWT == "" {
 		return fmt.Errorf("sub2api.admin_api_key or sub2api.jwt is required")
 	}
-	if c.Telegram.BotToken == "" {
+	if strings.TrimSpace(c.Telegram.BotToken) == "" {
 		return fmt.Errorf("telegram.bot_token is required")
 	}
-	if c.Telegram.ChatID == "" {
-		return fmt.Errorf("telegram.chat_id is required")
+	// default chat can be empty only if extra chats exist or per-account chat_ids will be used
+	if c.Telegram.ChatID == "" && len(c.Telegram.ExtraChatIDs) == 0 {
+		// still allow if account_usage targets all specify chat_ids — warn via soft check later
+		// require at least one global recipient for ops alerts
+		if !c.Checks.AccountUsage.Enabled || len(c.Checks.AccountUsage.Accounts) == 0 {
+			return fmt.Errorf("telegram.chat_id is required")
+		}
+		for _, a := range c.Checks.AccountUsage.Accounts {
+			if len(a.ChatIDs) == 0 {
+				return fmt.Errorf("telegram.chat_id is required (or set chat_ids on every account_usage target)")
+			}
+		}
 	}
 	if c.Sub2API.Timeout <= 0 {
 		c.Sub2API.Timeout = 15 * time.Second
@@ -265,11 +340,77 @@ func (c *Config) Validate() error {
 	if c.Telegram.ParseMode == "" {
 		c.Telegram.ParseMode = "HTML"
 	}
+	if c.Telegram.MinSendInterval <= 0 {
+		c.Telegram.MinSendInterval = 50 * time.Millisecond
+	}
 	if c.Checks.Accounts.PageSize <= 0 {
 		c.Checks.Accounts.PageSize = 100
 	}
 	if c.Checks.Health.FailThreshold <= 0 {
 		c.Checks.Health.FailThreshold = 1
 	}
+
+	// account usage validation
+	au := &c.Checks.AccountUsage
+	if au.Enabled {
+		if len(au.Accounts) == 0 {
+			return fmt.Errorf("checks.account_usage.accounts must not be empty when enabled")
+		}
+		if au.Interval <= 0 {
+			au.Interval = 5 * time.Minute
+		}
+		if au.Concurrency <= 0 {
+			au.Concurrency = 3
+		}
+		if au.Cooldown <= 0 {
+			au.Cooldown = 2 * time.Hour
+		}
+		src := strings.ToLower(strings.TrimSpace(au.Source))
+		if src == "" {
+			src = "passive"
+		}
+		if src != "passive" && src != "active" {
+			return fmt.Errorf("checks.account_usage.source must be passive or active")
+		}
+		au.Source = src
+		for i := range au.Accounts {
+			if au.Accounts[i].ID <= 0 {
+				return fmt.Errorf("checks.account_usage.accounts[%d].id is required", i)
+			}
+			ths := au.Accounts[i].Thresholds
+			if len(ths) == 0 {
+				ths = au.DefaultThresholds
+			}
+			if !au.Accounts[i].DisableUsage {
+				for j, th := range ths {
+					if strings.TrimSpace(th.Window) == "" {
+						return fmt.Errorf("account_usage account %d threshold[%d].window required", au.Accounts[i].ID, j)
+					}
+					if th.UtilizationGTE <= 0 || th.UtilizationGTE > 200 {
+						return fmt.Errorf("account_usage account %d threshold[%d].utilization_gte must be in (0,200]", au.Accounts[i].ID, j)
+					}
+				}
+			}
+		}
+	}
 	return nil
+}
+
+// ResolveThresholds returns effective thresholds for a target.
+func (t AccountUsageTarget) ResolveThresholds(defaults []UsageThreshold) []UsageThreshold {
+	if len(t.Thresholds) > 0 {
+		return t.Thresholds
+	}
+	return defaults
+}
+
+// ResolveToday returns effective today threshold (may be nil = disabled).
+func (t AccountUsageTarget) ResolveToday(defaults *TodayThreshold) *TodayThreshold {
+	if t.DisableToday {
+		return nil
+	}
+	if t.Today != nil {
+		return t.Today
+	}
+	return defaults
 }

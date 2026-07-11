@@ -77,6 +77,7 @@ Admin API Key 在后台「设置 → Admin API Key」生成。
 | `ops_alerts` | 30s | 轮询 `alert-events`，把内置告警桥接到 TG |
 | `errors` | 60s | 窗口内 request/upstream 错误突增 |
 | `traffic` | 60s | QPS 骤降（可选） |
+| `account_usage` | 5m | **指定账号** 用量窗口 / 今日统计达到配置阈值 |
 
 ### 告警去重与抑制
 
@@ -143,9 +144,71 @@ docker compose up -d
 关键项：
 
 - `sub2api.base_url` / `admin_api_key`
-- `telegram.bot_token` / `chat_id`
+- `telegram.bot_token` / `chat_id`（可再配 `extra_chat_ids` 抄送）
 - `checks.*.enabled` 与阈值
 - `alert.cooldown` 去重窗口
+- `checks.account_usage` 指定账号用量监控
+
+## 指定账号用量提醒
+
+不改 sub2api，轮询 Admin API：
+
+- `GET /api/v1/admin/accounts/:id/usage?source=passive|active`
+- `GET /api/v1/admin/accounts/:id/today-stats`
+
+`utilization` 为 **0–100 百分比**。达到阈值后向该账号配置的 `chat_ids`（或默认 chat）推送；低于恢复线（默认阈值 −5）发 RESOLVED。
+
+```yaml
+checks:
+  account_usage:
+    enabled: true
+    interval: 5m
+    source: passive          # passive 不打上游；active 更准但更重
+    cooldown: 2h
+    default_thresholds:
+      - window: five_hour    # 5h 窗口
+        utilization_gte: 80
+        severity: P2
+      - window: seven_day
+        utilization_gte: 90
+        severity: P1
+    accounts:
+      - id: 42
+        name: claude-main
+        chat_ids: ["1951951866"]   # 可推给特定用户/群
+        thresholds:                # 可选，覆盖 default
+          - window: five_hour
+            utilization_gte: 70
+            severity: P1
+        today:                     # 可选：今日本地统计
+          cost_gte: 20
+          tokens_gte: 2000000
+          severity: P2
+```
+
+支持的 `window`：
+
+| 值 | 含义 |
+|----|------|
+| `five_hour` / `5h` | Claude/Codex 等 5 小时窗口 |
+| `seven_day` / `7d` | 7 天窗口 |
+| `seven_day_sonnet` / `seven_day_fable` | 细分 7d 窗口 |
+| `gemini_shared_daily` / `gemini_pro_daily` / `gemini_flash_daily` | Gemini 日配额 |
+| `antigravity:<model>` | Antigravity 单模型利用率 |
+| `max` | 所有可用窗口的最高利用率 |
+
+## Telegram 架构
+
+```
+alerter.Engine ──Notifier──► telegram.Client
+                               ├─ 多 chat（default + extra + 事件级覆盖）
+                               ├─ 长消息分片（≤4000 runes）
+                               ├─ parse 失败自动降级纯文本
+                               └─ 全局限速 + 429 retry_after
+```
+
+- 运维类探针默认发到 `telegram.chat_id`（+ `extra_chat_ids`）
+- `account_usage` 可为每个账号指定 `chat_ids`，实现「用量到了提醒某个人」
 
 ## 项目结构
 
@@ -155,10 +218,10 @@ sub2api-monitor/
 ├── internal/
 │   ├── config/           # 配置加载
 │   ├── sub2api/          # Admin API 客户端
-│   ├── telegram/         # Bot 发送
-│   ├── collector/        # 各探针
-│   ├── alerter/          # 规则、去重、格式化
-│   └── state/            # 本地状态（内存/SQLite）
+│   ├── telegram/         # 多会话 Bot 客户端
+│   ├── collector/        # 各探针（含 account_usage）
+│   ├── alerter/          # 规则、去重、格式化、路由 chat
+│   └── state/            # 本地状态（内存/文件）
 ├── config.example.yaml
 ├── docker-compose.yml
 ├── Dockerfile
@@ -170,11 +233,11 @@ sub2api-monitor/
 
 | | Sub2API 内置 Ops Alerts | 本项目 |
 |--|-------------------------|--------|
-| 通道 | 邮件 | Telegram |
+| 通道 | 邮件 | Telegram（多 chat） |
 | 部署 | 内嵌主进程 | 独立进程 |
 | 修改主项目 | — | 否 |
-| 指标 | success_rate、error_rate、账号可用等 | 同上 + health + 账号明细变化 |
-| 推荐用法 | 主站规则引擎 | 把 `alert-events` 桥到 TG，并补充 health/账号状态差量 |
+| 指标 | success_rate、error_rate、账号可用等 | 同上 + health + 账号明细 + **指定账号用量** |
+| 推荐用法 | 主站规则引擎 | 把 `alert-events` 桥到 TG，并补充 health/账号/用量 |
 
 两者可并存：在 sub2api 后台配置规则 → 本程序轮询 `ops/alert-events` 转发到 Telegram。
 
@@ -184,6 +247,7 @@ sub2api-monitor/
 - 不要把 `config.yaml` / `.env` 提交到 git
 - Telegram chat 建议使用私有群，限制 bot 权限
 - 生产环境建议 HTTPS + 固定出口 IP（若 sub2api 有防火墙）
+- `account_usage.source=active` 会触发上游用量查询，请控制 `interval` 与账号数量
 
 ## License
 

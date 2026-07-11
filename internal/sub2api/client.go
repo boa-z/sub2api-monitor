@@ -38,8 +38,6 @@ func NewClient(cfg config.Sub2APIConfig) (*Client, error) {
 	}, nil
 }
 
-// ----- generic envelope -----
-
 type envelope struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
@@ -77,11 +75,9 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if out == nil {
 		return nil
 	}
-	// Try envelope first: {code, message, data}
 	var env envelope
 	if err := json.Unmarshal(body, &env); err == nil && (env.Data != nil || env.Code != 0 || env.Message != "") {
 		if env.Code != 0 && env.Code != 200 && env.Code != http.StatusOK {
-			// some APIs use code=0 for success; others use 200
 			if env.Data == nil {
 				return fmt.Errorf("%s %s: api code=%d message=%s", method, path, env.Code, env.Message)
 			}
@@ -90,109 +86,11 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 			return json.Unmarshal(env.Data, out)
 		}
 	}
-	// Fallback: raw JSON body
 	return json.Unmarshal(body, out)
 }
 
 func (c *Client) get(ctx context.Context, path string, query url.Values, out any) error {
 	return c.do(ctx, http.MethodGet, path, query, out)
-}
-
-// Health hits /health without auth.
-func (c *Client) Health(ctx context.Context) error {
-	u := c.baseURL + "/health"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body) //nolint:errcheck
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("health status %d", resp.StatusCode)
-	}
-	return nil
-}
-
-// ----- dashboard -----
-
-type DashboardStats struct {
-	TotalUsers         int64 `json:"total_users"`
-	TodayNewUsers      int64 `json:"today_new_users"`
-	ActiveUsers        int64 `json:"active_users"`
-	TotalAPIKeys       int64 `json:"total_api_keys"`
-	ActiveAPIKeys      int64 `json:"active_api_keys"`
-	TotalAccounts      int64 `json:"total_accounts"`
-	NormalAccounts     int64 `json:"normal_accounts"`
-	ErrorAccounts      int64 `json:"error_accounts"`
-	RatelimitAccounts  int64 `json:"ratelimit_accounts"`
-	OverloadAccounts   int64 `json:"overload_accounts"`
-	TotalRequests      int64 `json:"total_requests"`
-	Uptime             int64 `json:"uptime"`
-}
-
-func (c *Client) GetDashboardStats(ctx context.Context) (*DashboardStats, error) {
-	var out DashboardStats
-	if err := c.get(ctx, "/api/v1/admin/dashboard/stats", nil, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ----- accounts -----
-
-type Account struct {
-	ID                     int64      `json:"id"`
-	Name                   string     `json:"name"`
-	Platform               string     `json:"platform"`
-	Type                   string     `json:"type"`
-	Status                 string     `json:"status"`
-	ErrorMessage           string     `json:"error_message"`
-	Schedulable            bool       `json:"schedulable"`
-	RateLimitedAt          *time.Time `json:"rate_limited_at"`
-	RateLimitResetAt       *time.Time `json:"rate_limit_reset_at"`
-	OverloadUntil          *time.Time `json:"overload_until"`
-	TempUnschedulableUntil *time.Time `json:"temp_unschedulable_until"`
-	TempUnschedulableReason string    `json:"temp_unschedulable_reason"`
-}
-
-type PageMeta struct {
-	Total    int64 `json:"total"`
-	Page     int   `json:"page"`
-	PageSize int   `json:"page_size"`
-}
-
-type AccountList struct {
-	Items      []Account `json:"items"`
-	Total      int64     `json:"total"`
-	Page       int       `json:"page"`
-	PageSize   int       `json:"page_size"`
-	// alternate shapes
-	Data       []Account `json:"data"`
-	Pagination *PageMeta `json:"pagination"`
-}
-
-func (c *Client) ListAccounts(ctx context.Context, page, pageSize int, status string) ([]Account, int64, error) {
-	return c.listAccountsRaw(ctx, page, pageSize, status)
-}
-
-func (c *Client) listAccountsRaw(ctx context.Context, page, pageSize int, status string) ([]Account, int64, error) {
-	q := url.Values{}
-	q.Set("page", strconv.Itoa(page))
-	q.Set("page_size", strconv.Itoa(pageSize))
-	if status != "" {
-		q.Set("status", status)
-	}
-
-	// Use internal request returning body
-	body, err := c.getRaw(ctx, "/api/v1/admin/accounts", q)
-	if err != nil {
-		return nil, 0, err
-	}
-	return parseAccountList(body)
 }
 
 func (c *Client) getRaw(ctx context.Context, path string, query url.Values) ([]byte, error) {
@@ -222,7 +120,6 @@ func (c *Client) getRaw(ctx context.Context, path string, query url.Values) ([]b
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("GET %s: status %d body=%s", path, resp.StatusCode, truncate(string(body), 300))
 	}
-	// unwrap envelope if present
 	var env envelope
 	if err := json.Unmarshal(body, &env); err == nil && len(env.Data) > 0 && string(env.Data) != "null" {
 		return env.Data, nil
@@ -230,18 +127,94 @@ func (c *Client) getRaw(ctx context.Context, path string, query url.Values) ([]b
 	return body, nil
 }
 
+func (c *Client) Health(ctx context.Context) error {
+	u := c.baseURL + "/health"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("health status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+type DashboardStats struct {
+	TotalUsers        int64 `json:"total_users"`
+	TodayNewUsers     int64 `json:"today_new_users"`
+	ActiveUsers       int64 `json:"active_users"`
+	TotalAPIKeys      int64 `json:"total_api_keys"`
+	ActiveAPIKeys     int64 `json:"active_api_keys"`
+	TotalAccounts     int64 `json:"total_accounts"`
+	NormalAccounts    int64 `json:"normal_accounts"`
+	ErrorAccounts     int64 `json:"error_accounts"`
+	RatelimitAccounts int64 `json:"ratelimit_accounts"`
+	OverloadAccounts  int64 `json:"overload_accounts"`
+	TotalRequests     int64 `json:"total_requests"`
+	Uptime            int64 `json:"uptime"`
+}
+
+func (c *Client) GetDashboardStats(ctx context.Context) (*DashboardStats, error) {
+	var out DashboardStats
+	if err := c.get(ctx, "/api/v1/admin/dashboard/stats", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type Account struct {
+	ID                      int64      `json:"id"`
+	Name                    string     `json:"name"`
+	Platform                string     `json:"platform"`
+	Type                    string     `json:"type"`
+	Status                  string     `json:"status"`
+	ErrorMessage            string     `json:"error_message"`
+	Schedulable             bool       `json:"schedulable"`
+	RateLimitedAt           *time.Time `json:"rate_limited_at"`
+	RateLimitResetAt        *time.Time `json:"rate_limit_reset_at"`
+	OverloadUntil           *time.Time `json:"overload_until"`
+	TempUnschedulableUntil  *time.Time `json:"temp_unschedulable_until"`
+	TempUnschedulableReason string     `json:"temp_unschedulable_reason"`
+}
+
+type PageMeta struct {
+	Total    int64 `json:"total"`
+	Page     int   `json:"page"`
+	PageSize int   `json:"page_size"`
+}
+
+func (c *Client) ListAccounts(ctx context.Context, page, pageSize int, status string) ([]Account, int64, error) {
+	return c.listAccountsRaw(ctx, page, pageSize, status)
+}
+
+func (c *Client) listAccountsRaw(ctx context.Context, page, pageSize int, status string) ([]Account, int64, error) {
+	q := url.Values{}
+	q.Set("page", strconv.Itoa(page))
+	q.Set("page_size", strconv.Itoa(pageSize))
+	if status != "" {
+		q.Set("status", status)
+	}
+	body, err := c.getRaw(ctx, "/api/v1/admin/accounts", q)
+	if err != nil {
+		return nil, 0, err
+	}
+	return parseAccountList(body)
+}
+
 func parseAccountList(body []byte) ([]Account, int64, error) {
-	// shape A: {items:[], total, page, page_size}
 	var a struct {
-		Items    []Account `json:"items"`
-		Total    int64     `json:"total"`
-		Page     int       `json:"page"`
-		PageSize int       `json:"page_size"`
+		Items []Account `json:"items"`
+		Total int64     `json:"total"`
 	}
 	if err := json.Unmarshal(body, &a); err == nil && a.Items != nil {
 		return a.Items, a.Total, nil
 	}
-	// shape B: {data:[], pagination:{total,...}}
 	var b struct {
 		Data       []Account `json:"data"`
 		Pagination *PageMeta `json:"pagination"`
@@ -253,7 +226,6 @@ func parseAccountList(body []byte) ([]Account, int64, error) {
 		}
 		return b.Data, total, nil
 	}
-	// shape C: bare array
 	var arr []Account
 	if err := json.Unmarshal(body, &arr); err == nil {
 		return arr, int64(len(arr)), nil
@@ -261,7 +233,6 @@ func parseAccountList(body []byte) ([]Account, int64, error) {
 	return nil, 0, fmt.Errorf("unrecognized accounts list shape: %s", truncate(string(body), 200))
 }
 
-// ListAllAccounts pages through accounts.
 func (c *Client) ListAllAccounts(ctx context.Context, pageSize int, status string) ([]Account, error) {
 	if pageSize <= 0 {
 		pageSize = 100
@@ -278,23 +249,165 @@ func (c *Client) ListAllAccounts(ctx context.Context, pageSize int, status strin
 			break
 		}
 		page++
-		if page > 1000 { // safety
+		if page > 1000 {
 			break
 		}
 	}
 	return all, nil
 }
 
-// ----- availability -----
+func (c *Client) GetAccount(ctx context.Context, id int64) (*Account, error) {
+	var out Account
+	if err := c.get(ctx, fmt.Sprintf("/api/v1/admin/accounts/%d", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type UsageProgress struct {
+	Utilization      float64      `json:"utilization"`
+	ResetsAt         *time.Time   `json:"resets_at"`
+	RemainingSeconds int          `json:"remaining_seconds"`
+	UsedRequests     int64        `json:"used_requests,omitempty"`
+	LimitRequests    int64        `json:"limit_requests,omitempty"`
+	WindowStats      *WindowStats `json:"window_stats,omitempty"`
+}
+
+type WindowStats struct {
+	Requests     int64   `json:"requests"`
+	Tokens       int64   `json:"tokens"`
+	Cost         float64 `json:"cost"`
+	StandardCost float64 `json:"standard_cost"`
+	UserCost     float64 `json:"user_cost"`
+}
+
+type AntigravityModelQuota struct {
+	Utilization int    `json:"utilization"`
+	ResetTime   string `json:"reset_time"`
+}
+
+type UsageInfo struct {
+	Source            string                            `json:"source,omitempty"`
+	UpdatedAt         *time.Time                        `json:"updated_at,omitempty"`
+	FiveHour          *UsageProgress                    `json:"five_hour"`
+	SevenDay          *UsageProgress                    `json:"seven_day,omitempty"`
+	SevenDaySonnet    *UsageProgress                    `json:"seven_day_sonnet,omitempty"`
+	SevenDayFable     *UsageProgress                    `json:"seven_day_fable,omitempty"`
+	GeminiSharedDaily *UsageProgress                    `json:"gemini_shared_daily,omitempty"`
+	GeminiProDaily    *UsageProgress                    `json:"gemini_pro_daily,omitempty"`
+	GeminiFlashDaily  *UsageProgress                    `json:"gemini_flash_daily,omitempty"`
+	AntigravityQuota map[string]*AntigravityModelQuota `json:"antigravity_quota,omitempty"`
+	Error             string                            `json:"error,omitempty"`
+	ErrorCode         string                            `json:"error_code,omitempty"`
+}
+
+type WindowValue struct {
+	Window      string
+	Utilization float64
+	ResetsAt    *time.Time
+	Remaining   int
+	Stats       *WindowStats
+}
+
+func (u *UsageInfo) Windows() []WindowValue {
+	if u == nil {
+		return nil
+	}
+	out := make([]WindowValue, 0, 8)
+	add := func(name string, p *UsageProgress) {
+		if p == nil {
+			return
+		}
+		out = append(out, WindowValue{
+			Window:      name,
+			Utilization: p.Utilization,
+			ResetsAt:    p.ResetsAt,
+			Remaining:   p.RemainingSeconds,
+			Stats:       p.WindowStats,
+		})
+	}
+	add("five_hour", u.FiveHour)
+	add("seven_day", u.SevenDay)
+	add("seven_day_sonnet", u.SevenDaySonnet)
+	add("seven_day_fable", u.SevenDayFable)
+	add("gemini_shared_daily", u.GeminiSharedDaily)
+	add("gemini_pro_daily", u.GeminiProDaily)
+	add("gemini_flash_daily", u.GeminiFlashDaily)
+	for model, q := range u.AntigravityQuota {
+		if q == nil {
+			continue
+		}
+		out = append(out, WindowValue{
+			Window:      "antigravity:" + model,
+			Utilization: float64(q.Utilization),
+		})
+	}
+	return out
+}
+
+func (u *UsageInfo) Window(name string) (WindowValue, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return WindowValue{}, false
+	}
+	if name == "max" {
+		var best WindowValue
+		found := false
+		for _, w := range u.Windows() {
+			if !found || w.Utilization > best.Utilization {
+				best = w
+				found = true
+			}
+		}
+		if found {
+			best.Window = "max(" + best.Window + ")"
+		}
+		return best, found
+	}
+	for _, w := range u.Windows() {
+		if strings.EqualFold(w.Window, name) {
+			return w, true
+		}
+		if name == "5h" && w.Window == "five_hour" {
+			return w, true
+		}
+		if name == "7d" && w.Window == "seven_day" {
+			return w, true
+		}
+	}
+	return WindowValue{}, false
+}
+
+func (c *Client) GetAccountUsage(ctx context.Context, id int64, source string, force bool) (*UsageInfo, error) {
+	q := url.Values{}
+	if source != "" {
+		q.Set("source", source)
+	}
+	if force {
+		q.Set("force", "true")
+	}
+	var out UsageInfo
+	if err := c.get(ctx, fmt.Sprintf("/api/v1/admin/accounts/%d/usage", id), q, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetAccountTodayStats(ctx context.Context, id int64) (*WindowStats, error) {
+	var out WindowStats
+	if err := c.get(ctx, fmt.Sprintf("/api/v1/admin/accounts/%d/today-stats", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
 
 type AvailabilityBucket struct {
-	Total      int `json:"total"`
-	Available  int `json:"available"`
-	Error      int `json:"error"`
-	RateLimit  int `json:"rate_limit"`
-	Overload   int `json:"overload"`
-	Disabled   int `json:"disabled"`
-	// alternate field names
+	Total          int `json:"total"`
+	Available      int `json:"available"`
+	Error          int `json:"error"`
+	RateLimit      int `json:"rate_limit"`
+	Overload       int `json:"overload"`
+	Disabled       int `json:"disabled"`
 	AvailableCount int `json:"available_count"`
 	TotalCount     int `json:"total_count"`
 }
@@ -332,8 +445,6 @@ func (c *Client) GetAccountAvailability(ctx context.Context) (*AccountAvailabili
 	return &out, nil
 }
 
-// ----- ops alert events -----
-
 type AlertEvent struct {
 	ID         int64     `json:"id"`
 	RuleID     int64     `json:"rule_id"`
@@ -358,7 +469,6 @@ func (c *Client) ListAlertEvents(ctx context.Context, page, pageSize int) ([]Ale
 	if err != nil {
 		return nil, err
 	}
-	// flexible
 	var a struct {
 		Items []AlertEvent `json:"items"`
 		Data  []AlertEvent `json:"data"`
@@ -376,13 +486,10 @@ func (c *Client) ListAlertEvents(ctx context.Context, page, pageSize int) ([]Ale
 	return a.Data, nil
 }
 
-// ----- traffic -----
-
 type TrafficSummary struct {
 	Enabled bool    `json:"enabled"`
 	Window  string  `json:"window"`
 	QPS     float64 `json:"qps"`
-	// nested variants
 	Current struct {
 		QPS float64 `json:"qps"`
 		TPS float64 `json:"tps"`
