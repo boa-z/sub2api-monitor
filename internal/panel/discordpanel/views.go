@@ -2978,13 +2978,14 @@ func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, p
 			discord.Button(filterBtn("全部", status, "all"), "mgr_browse:all:0", 2),
 			discord.Button(filterBtn("active", status, "active"), "mgr_browse:active:0", 2),
 			discord.Button(filterBtn("error", status, "error"), "mgr_browse:error:0", 2),
+			discord.Button(filterBtn("汇总", status, "problem"), "mgr_browse:problem:0", 2),
 			discord.Button(filterBtn("限速", status, "rate_limited"), "mgr_browse:rate_limited:0", 2),
 		),
 		discord.ActionRow(
 			discord.Button(filterBtn("停调度", status, "unsched"), "mgr_browse:unsched:0", 2),
 			discord.Button(filterBtn("过载", status, "overload"), "mgr_browse:overload:0", 2),
 			discord.Button(filterBtn("openai", status, "plat:openai"), "mgr_browse:"+browse.Token("plat:openai")+":0", 2),
-			discord.Button(filterBtn("claude", status, "plat:anthropic"), "mgr_browse:"+browse.Token("plat:anthropic")+":0", 2),
+			discord.Button("异常", "ops_badacc:error:0", 2),
 			discord.Button("搜索", "mgr_search", 2),
 		),
 	}

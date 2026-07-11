@@ -203,6 +203,12 @@ func Title(status string) string {
 		return "过载"
 	case title == "problem":
 		return "异常汇总"
+	case title == "error":
+		return "异常"
+	case title == "active":
+		return "正常"
+	case title == "disabled":
+		return "已禁用"
 	default:
 		return title
 	}

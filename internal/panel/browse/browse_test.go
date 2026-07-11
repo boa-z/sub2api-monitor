@@ -160,3 +160,16 @@ func TestStatusFromBadKind(t *testing.T) {
 		}
 	}
 }
+
+func TestTitleProblem(t *testing.T) {
+	if Title("problem") != "异常汇总" {
+		t.Fatalf("title=%s", Title("problem"))
+	}
+	if Token("problem") != "problem" {
+		t.Fatalf("token=%s", Token("problem"))
+	}
+	st, pg := ParseCallback("problem:2")
+	if st != "problem" || pg != 2 {
+		t.Fatalf("parse %s %d", st, pg)
+	}
+}

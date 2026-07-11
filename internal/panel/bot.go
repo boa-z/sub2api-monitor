@@ -2484,6 +2484,7 @@ func helpText() string {
 /manage — 账号管理（调度/清错/一键修复/刷新/浏览）
 /search &lt;关键词&gt; — 搜索账号
 管理 → 实例用户 / 分组 — 搜索与只读详情
+• 批量操作优先使用当前「账号浏览 / 异常 tab」筛选范围
 /check — 立即拉取用量快照
 /id — 显示你的 Telegram ID
 /thresholds — 管理用量阈值

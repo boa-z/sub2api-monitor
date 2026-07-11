@@ -171,7 +171,9 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 			telegram.Btn(filterLabel("过载", status, "overload"), "mgr_browse:overload:0"),
 		},
 		{
+			telegram.Btn(filterLabel("异常汇总", status, "problem"), "mgr_browse:problem:0"),
 			telegram.Btn("🔎 搜索", "mgr_search"),
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
 		},
 		{
 			telegram.Btn(filterLabel("openai", status, "plat:openai"), "mgr_browse:plat|openai:0"),
