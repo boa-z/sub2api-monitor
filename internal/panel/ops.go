@@ -512,7 +512,7 @@ func (b *Bot) showAlerts(ctx context.Context, chatID, msgID, userID int64) error
 	bld.WriteString(telegram.Bold("内置告警事件") + "\n\n")
 	if len(events) == 0 {
 		bld.WriteString("暂无事件。")
-		return b.editOrSend(ctx, chatID, msgID, bld.String(), alertsKeyboard(nil, 0, 0))
+		return b.editOrSend(ctx, chatID, msgID, bld.String(), alertsKeyboard(nil, 0, 0, b.canOpsWrite(userID)))
 	}
 	// prefer firing first
 	sort.SliceStable(events, func(i, j int) bool {
@@ -524,7 +524,6 @@ func (b *Bot) showAlerts(ctx context.Context, chatID, msgID, userID int64) error
 		return events[i].FiredAt.After(events[j].FiredAt)
 	})
 	firingN, resolvedN := 0, 0
-	var idTexts []string
 	for _, ev := range events {
 		st := strings.ToLower(ev.Status)
 		switch {
@@ -533,7 +532,6 @@ func (b *Bot) showAlerts(ctx context.Context, chatID, msgID, userID int64) error
 		case st == "resolved" || st == "ok" || st == "closed":
 			resolvedN++
 		}
-		idTexts = append(idTexts, ev.DisplayTitle(), ev.DisplayMessage(), ev.MetricType, ev.Name)
 	}
 	fmt.Fprintf(&bld, "汇总: 🔴 触发 %s · 🟢 已恢复 %s · 共 %s\n\n",
 		telegram.Code(strconv.Itoa(firingN)),
@@ -571,12 +569,25 @@ func (b *Bot) showAlerts(ctx context.Context, chatID, msgID, userID int64) error
 		}
 		shown++
 	}
-	accIDs := extractAccountIDs(idTexts...)
+	// Prefer account IDs mentioned in firing events for triage actions.
+	var firingTexts, allTexts []string
+	for _, ev := range events {
+		blob := strings.Join([]string{ev.DisplayTitle(), ev.DisplayMessage(), ev.MetricType, ev.Name}, " ")
+		allTexts = append(allTexts, blob)
+		st := strings.ToLower(ev.Status)
+		if st == "firing" || st == "open" || st == "active" {
+			firingTexts = append(firingTexts, blob)
+		}
+	}
+	accIDs := extractAccountIDs(firingTexts...)
+	if len(accIDs) == 0 {
+		accIDs = extractAccountIDs(allTexts...)
+	}
 	b.setManageBack(userID, "ops_alerts")
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), alertsKeyboard(accIDs, firingN, resolvedN))
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), alertsKeyboard(accIDs, firingN, resolvedN, b.canOpsWrite(userID)))
 }
 
-func alertsKeyboard(accIDs []int64, firingN, resolvedN int) *telegram.InlineKeyboardMarkup {
+func alertsKeyboard(accIDs []int64, firingN, resolvedN int, canWrite bool) *telegram.InlineKeyboardMarkup {
 	rows := [][]telegram.InlineKeyboardButton{
 		{telegram.Btn("🔄 刷新", "ops_alerts"), telegram.Btn("« 运维菜单", "ops_menu")},
 	}
@@ -596,6 +607,19 @@ func alertsKeyboard(accIDs []int64, firingN, resolvedN int) *telegram.InlineKeyb
 			rows = append(rows, row)
 		}
 	}
+	if canWrite && (len(accIDs) > 0 || firingN > 0) {
+		if len(accIDs) > 0 {
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn(fmt.Sprintf("🛠 修复关联 %d", minInt(len(accIDs), 10)), "al:heal_related"),
+				telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
+			})
+		} else {
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
+				telegram.Btn("📚 异常汇总", "mgr_browse:problem:0"),
+			})
+		}
+	}
 	jump := []telegram.InlineKeyboardButton{
 		telegram.Btn("❌ 错误", "ops_errors:all:0"),
 		telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
@@ -608,6 +632,13 @@ func alertsKeyboard(accIDs []int64, firingN, resolvedN int) *telegram.InlineKeyb
 	rows = append(rows, jump)
 	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")})
 	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (b *Bot) showErrors(ctx context.Context, chatID, msgID, userID int64) error {
@@ -1342,20 +1373,57 @@ func (b *Bot) showChannelDetail(ctx context.Context, chatID, msgID, userID, chan
 	}
 	bld.WriteString("\n只读详情；触发/启停需上游 Admin 写接口支持后再开放。")
 
-	kb := &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn("🔄 刷新", fmt.Sprintf("ops_ch:%d", m.ID))},
-			{
-				telegram.Btn("« 渠道列表", "ops_channels:"+tab),
-				telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
-			},
-			{
-				telegram.Btn("📈 看板", "ops_dash"),
-				telegram.Btn("« 运维菜单", "ops_menu"),
-			},
-		},
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("🔄 刷新", fmt.Sprintf("ops_ch:%d", m.ID))},
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
+	if plat := channelProviderPlatform(m.Provider); plat != "" {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("🏷 浏览 "+plat, "mgr_browse:"+browse.Token("plat:"+plat)+":0"),
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+		})
+	} else {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("« 渠道列表", "ops_channels:"+tab),
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+		})
+	}
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("« 渠道列表", "ops_channels:"+tab),
+			telegram.Btn("📈 看板", "ops_dash"),
+		},
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("« 运维菜单", "ops_menu"),
+			telegram.Btn("« 主面板", "home"),
+		},
+	)
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+// channelProviderPlatform maps channel provider labels to account browser platforms.
+func channelProviderPlatform(provider string) string {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	switch {
+	case p == "":
+		return ""
+	case strings.Contains(p, "openai") || p == "gpt" || strings.Contains(p, "chatgpt"):
+		return "openai"
+	case strings.Contains(p, "anthropic") || strings.Contains(p, "claude"):
+		return "anthropic"
+	case strings.Contains(p, "gemini") || strings.Contains(p, "google"):
+		return "gemini"
+	case strings.Contains(p, "grok") || strings.Contains(p, "xai"):
+		return "grok"
+	case strings.Contains(p, "antigravity"):
+		return "antigravity"
+	default:
+		// allow exact known tokens
+		switch p {
+		case "openai", "anthropic", "gemini", "grok", "antigravity":
+			return p
+		}
+		return ""
+	}
 }
 
 func normalizeChannelTab(tab string) string {
@@ -1610,6 +1678,90 @@ func (b *Bot) healRelatedFromAvailability(ctx context.Context, chatID, msgID, us
 	rows := [][]telegram.InlineKeyboardButton{
 		{
 			telegram.Btn("🔄 可用性", "ops_avail"),
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+		},
+		{
+			telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
+			telegram.Btn("« 运维", "ops_menu"),
+		},
+		{telegram.Btn("« 主面板", "home")},
+	}
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+// collectAlertAccountIDs extracts account IDs from alert events, preferring firing ones.
+func collectAlertAccountIDs(events []sub2api.AlertEvent) []int64 {
+	var firing, all []string
+	for _, ev := range events {
+		blob := strings.Join([]string{ev.DisplayTitle(), ev.DisplayMessage(), ev.MetricType, ev.Name}, " ")
+		all = append(all, blob)
+		st := strings.ToLower(ev.Status)
+		if st == "firing" || st == "open" || st == "active" {
+			firing = append(firing, blob)
+		}
+	}
+	ids := extractAccountIDs(firing...)
+	if len(ids) == 0 {
+		ids = extractAccountIDs(all...)
+	}
+	return ids
+}
+
+// healRelatedFromAlerts heals accounts mentioned in current alert events (admin write).
+func (b *Bot) healRelatedFromAlerts(ctx context.Context, chatID, msgID, userID int64) error {
+	cli, _, err := b.userClient(userID, 45*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	events, err := cli.ListAlertEvents(ctx, 1, 30)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "告警失败: "+telegram.EscapeHTML(err.Error()), opsKeyboard())
+	}
+	ids := collectAlertAccountIDs(events)
+	if len(ids) == 0 {
+		return b.editOrSend(ctx, chatID, msgID,
+			"✅ 当前告警文本中未解析到关联账号。可改用批量一键修复或异常账号列表。",
+			alertsKeyboard(nil, 0, 0, true))
+	}
+	const maxOps = 10
+	if len(ids) > maxOps {
+		ids = ids[:maxOps]
+	}
+	b.setBrowseView(userID, "problem", 0)
+	_ = b.editOrSend(ctx, chatID, msgID,
+		fmt.Sprintf("%s\n\n⏳ 修复告警关联账号 0/%d …", telegram.Bold("告警关联一键修复"), len(ids)), nil)
+
+	okN, failN := 0, 0
+	var fails []string
+	for i, id := range ids {
+		msg := b.healAccount(ctx, cli, id)
+		if strings.HasPrefix(msg, "❌") {
+			failN++
+			if len(fails) < 5 {
+				fails = append(fails, fmt.Sprintf("#%d %s", id, truncateRunes(strings.TrimPrefix(msg, "❌ "), 40)))
+			}
+		} else {
+			okN++
+		}
+		if (i+1)%3 == 0 || i+1 == len(ids) {
+			_ = b.editOrSend(ctx, chatID, msgID,
+				fmt.Sprintf("%s\n\n⏳ 处理中 %d/%d\n✅ %d · ❌ %d",
+					telegram.Bold("告警关联一键修复"), i+1, len(ids), okN, failN), nil)
+		}
+	}
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold("告警关联一键修复结果") + "\n\n")
+	fmt.Fprintf(&bld, "关联账号 %s 个\n", telegram.Code(strconv.Itoa(len(ids))))
+	fmt.Fprintf(&bld, "✅ 成功 %s · ❌ 失败 %s\n", telegram.Code(strconv.Itoa(okN)), telegram.Code(strconv.Itoa(failN)))
+	if len(fails) > 0 {
+		bld.WriteString("\n失败样例:\n")
+		for _, f := range fails {
+			bld.WriteString("• " + telegram.EscapeHTML(f) + "\n")
+		}
+	}
+	rows := [][]telegram.InlineKeyboardButton{
+		{
+			telegram.Btn("🔄 告警", "ops_alerts"),
 			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
 		},
 		{

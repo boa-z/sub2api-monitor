@@ -672,7 +672,7 @@ func TestExtractAccountIDs(t *testing.T) {
 }
 
 func TestAlertsKeyboardJumps(t *testing.T) {
-	kb := alertsKeyboard([]int64{11, 22}, 2, 1)
+	kb := alertsKeyboard([]int64{11, 22}, 2, 1, true)
 	joined := ""
 	for _, row := range kb.InlineKeyboard {
 		for _, btn := range row {
@@ -688,7 +688,7 @@ func TestAlertsKeyboardJumps(t *testing.T) {
 	if !strings.Contains(joined, "ops_dash") {
 		t.Fatalf("firing should offer dash: %s", joined)
 	}
-	kb2 := alertsKeyboard(nil, 0, 0)
+	kb2 := alertsKeyboard(nil, 0, 0, false)
 	joined2 := ""
 	for _, row := range kb2.InlineKeyboard {
 		for _, btn := range row {
@@ -1402,5 +1402,69 @@ func TestOpsKeyboardOverloadTriage(t *testing.T) {
 	}
 	if !foundData || !foundHeal {
 		t.Fatalf("ops kb ol=%v heal=%v kb=%v", foundData, foundHeal, kb)
+	}
+}
+
+func TestAlertsKeyboardHeal(t *testing.T) {
+	kb := alertsKeyboard([]int64{3, 4}, 1, 0, true)
+	joined := ""
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined, "al:heal_related") || !strings.Contains(joined, "mgr_bulk_heal") {
+		t.Fatalf("admin with acc ids should offer heal: %s", joined)
+	}
+	kb2 := alertsKeyboard(nil, 2, 0, true)
+	joined2 := ""
+	for _, row := range kb2.InlineKeyboard {
+		for _, btn := range row {
+			joined2 += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined2, "mgr_bulk_heal") || strings.Contains(joined2, "al:heal_related") {
+		t.Fatalf("firing without ids should bulk heal only: %s", joined2)
+	}
+	kb3 := alertsKeyboard([]int64{9}, 1, 0, false)
+	joined3 := ""
+	for _, row := range kb3.InlineKeyboard {
+		for _, btn := range row {
+			joined3 += btn.CallbackData + ","
+		}
+	}
+	if strings.Contains(joined3, "al:heal_related") || strings.Contains(joined3, "mgr_bulk_heal") {
+		t.Fatalf("viewer must not heal: %s", joined3)
+	}
+}
+
+func TestChannelProviderPlatform(t *testing.T) {
+	if channelProviderPlatform("OpenAI Compatible") != "openai" {
+		t.Fatal("openai")
+	}
+	if channelProviderPlatform("claude-proxy") != "anthropic" {
+		t.Fatal("anthropic")
+	}
+	if channelProviderPlatform("unknown-xyz") != "" {
+		t.Fatal("unknown")
+	}
+}
+
+func TestCollectAlertAccountIDs(t *testing.T) {
+	events := []sub2api.AlertEvent{
+		{Status: "resolved", Message: "account_id=99 old"},
+		{Status: "firing", Message: "账号 #42 限速", Title: "rl"},
+		{Status: "firing", Description: "account_id=42 again"},
+	}
+	ids := collectAlertAccountIDs(events)
+	if len(ids) != 1 || ids[0] != 42 {
+		t.Fatalf("prefer firing only when present: %v", ids)
+	}
+	events2 := []sub2api.AlertEvent{
+		{Status: "resolved", Message: "account_id=7"},
+	}
+	ids2 := collectAlertAccountIDs(events2)
+	if len(ids2) != 1 || ids2[0] != 7 {
+		t.Fatalf("fallback all: %v", ids2)
 	}
 }

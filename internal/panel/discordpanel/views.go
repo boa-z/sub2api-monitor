@@ -2094,7 +2094,7 @@ func (b *Bot) showAlertsView(ctx context.Context, userID int64) (string, []disco
 	var bld strings.Builder
 	bld.WriteString("**内置告警**\n\n")
 	if len(events) == 0 {
-		return bld.String() + "无事件。", alertsComponents(nil, 0)
+		return bld.String() + "无事件。", alertsComponents(nil, 0, b.canOpsWrite(userID))
 	}
 	sort.SliceStable(events, func(i, j int) bool {
 		si, sj := strings.ToLower(events[i].Status), strings.ToLower(events[j].Status)
@@ -2105,7 +2105,6 @@ func (b *Bot) showAlertsView(ctx context.Context, userID int64) (string, []disco
 		return events[i].FiredAt.After(events[j].FiredAt)
 	})
 	firingN, resolvedN := 0, 0
-	var idTexts []string
 	for _, ev := range events {
 		st := strings.ToLower(ev.Status)
 		switch {
@@ -2114,7 +2113,6 @@ func (b *Bot) showAlertsView(ctx context.Context, userID int64) (string, []disco
 		case st == "resolved" || st == "ok" || st == "closed":
 			resolvedN++
 		}
-		idTexts = append(idTexts, ev.DisplayTitle(), ev.DisplayMessage(), ev.MetricType, ev.Name)
 	}
 	fmt.Fprintf(&bld, "汇总: 🔴 触发 `%d` · 🟢 已恢复 `%d` · 共 `%d`\n\n", firingN, resolvedN, len(events))
 	for i, e := range events {
@@ -2130,12 +2128,12 @@ func (b *Bot) showAlertsView(ctx context.Context, userID int64) (string, []disco
 			fmt.Fprintf(&bld, "  %s\n", truncate(msg, 80))
 		}
 	}
-	accIDs := panelExtractAccountIDs(idTexts...)
+	accIDs := collectAlertAccountIDs(events)
 	b.setManageBack(userID, "ops_alerts")
-	return bld.String(), alertsComponents(accIDs, firingN)
+	return bld.String(), alertsComponents(accIDs, firingN, b.canOpsWrite(userID))
 }
 
-func alertsComponents(accIDs []int64, firingN int) []discord.Component {
+func alertsComponents(accIDs []int64, firingN int, canWrite bool) []discord.Component {
 	comps := []discord.Component{
 		discord.ActionRow(
 			discord.Button("刷新", "ops_alerts", 2),
@@ -2146,17 +2144,30 @@ func alertsComponents(accIDs []int64, firingN int) []discord.Component {
 	if len(accIDs) > 0 {
 		row := []discord.Component{}
 		for i, id := range accIDs {
-			if i >= 4 {
+			if i >= 2 {
 				break
 			}
 			row = append(row, discord.Button(fmt.Sprintf("管理 #%d", id), fmt.Sprintf("mgr_acc:%d", id), 1))
-			if len(row) == 2 {
-				comps = append(comps, discord.ActionRow(row...))
-				row = nil
-			}
 		}
 		if len(row) > 0 {
 			comps = append(comps, discord.ActionRow(row...))
+		}
+	}
+	if canWrite && (len(accIDs) > 0 || firingN > 0) {
+		if len(accIDs) > 0 {
+			n := len(accIDs)
+			if n > 10 {
+				n = 10
+			}
+			comps = append(comps, discord.ActionRow(
+				discord.Button(fmt.Sprintf("修复关联 %d", n), "al:heal_related", 1),
+				discord.Button("批量修复", "mgr_bulk_heal", 1),
+			))
+		} else {
+			comps = append(comps, discord.ActionRow(
+				discord.Button("批量修复", "mgr_bulk_heal", 1),
+				discord.Button("异常汇总", "mgr_browse:problem:0", 2),
+			))
 		}
 	}
 	jump := []discord.Component{
@@ -2169,6 +2180,9 @@ func alertsComponents(accIDs []int64, firingN int) []discord.Component {
 		jump = append(jump, discord.Button("可用性", "ops_avail", 2))
 	}
 	comps = append(comps, discord.ActionRow(jump...))
+	if len(comps) > 5 {
+		comps = comps[:5]
+	}
 	return comps
 }
 
@@ -2566,15 +2580,26 @@ func (b *Bot) showChannelDetailView(ctx context.Context, userID, channelID int64
 	bld.WriteString("\n只读详情；触发/启停需上游 Admin 写接口支持后再开放。")
 	comps := []discord.Component{
 		discord.ActionRow(
-			discord.Button("🔄 刷新", fmt.Sprintf("ops_ch:%d", m.ID), 2),
+			discord.Button("刷新", fmt.Sprintf("ops_ch:%d", m.ID), 2),
 			discord.Button("« 渠道列表", "ops_channels:"+tab, 2),
 		),
-		discord.ActionRow(
+	}
+	if plat := channelProviderPlatform(m.Provider); plat != "" {
+		comps = append(comps, discord.ActionRow(
+			discord.Button("🏷 浏览 "+plat, "mgr_browse:"+browse.Token("plat:"+plat)+":0", 2),
+			discord.Button("异常账号", "ops_badacc:error:0", 2),
+		))
+	} else {
+		comps = append(comps, discord.ActionRow(
 			discord.Button("异常账号", "ops_badacc:error:0", 2),
 			discord.Button("看板", "ops_dash", 2),
-			discord.Button("« 运维", "ops_menu", 2),
-		),
+		))
 	}
+	comps = append(comps, discord.ActionRow(
+		discord.Button("看板", "ops_dash", 2),
+		discord.Button("« 运维", "ops_menu", 2),
+		discord.Button("« 主面板", "home", 2),
+	))
 	return bld.String(), comps
 }
 

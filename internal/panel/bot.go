@@ -492,6 +492,11 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return nil
 		}
 		return b.healRelatedFromAvailability(ctx, chatID, msgID, cq.From.ID)
+	case data == "al:heal_related":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.healRelatedFromAlerts(ctx, chatID, msgID, cq.From.ID)
 	case strings.HasPrefix(data, "oe:r:"):
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil

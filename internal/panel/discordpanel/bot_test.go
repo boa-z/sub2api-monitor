@@ -346,7 +346,7 @@ func TestChannelIsBad(t *testing.T) {
 }
 
 func TestAlertsComponents(t *testing.T) {
-	comps := alertsComponents([]int64{5}, 1)
+	comps := alertsComponents([]int64{5}, 1, true)
 	if !containsCustomID(comps, "mgr_acc:5") {
 		t.Fatal("missing manage")
 	}
@@ -964,6 +964,36 @@ func TestCollectUnavailableAccountIDsDiscord(t *testing.T) {
 		{AccountID: 8, IsAvailable: false},
 	})
 	if len(ids) != 2 || ids[0] != 9 || ids[1] != 8 {
+		t.Fatalf("%v", ids)
+	}
+}
+
+func TestAlertsComponentsHeal(t *testing.T) {
+	comps := alertsComponents([]int64{5, 6}, 1, true)
+	if !containsCustomID(comps, "al:heal_related") || !containsCustomID(comps, "mgr_bulk_heal") {
+		t.Fatalf("%+v", comps)
+	}
+	if len(comps) > 5 {
+		t.Fatalf("rows %d", len(comps))
+	}
+	comps2 := alertsComponents([]int64{5}, 1, false)
+	if containsCustomID(comps2, "al:heal_related") || containsCustomID(comps2, "mgr_bulk_heal") {
+		t.Fatalf("viewer: %+v", comps2)
+	}
+}
+
+func TestChannelProviderPlatformDiscord(t *testing.T) {
+	if channelProviderPlatform("anthropic-proxy") != "anthropic" {
+		t.Fatal()
+	}
+}
+
+func TestCollectAlertAccountIDsDiscord(t *testing.T) {
+	ids := collectAlertAccountIDs([]sub2api.AlertEvent{
+		{Status: "firing", Message: "account_id=12"},
+		{Status: "resolved", Message: "account_id=99"},
+	})
+	if len(ids) != 1 || ids[0] != 12 {
 		t.Fatalf("%v", ids)
 	}
 }
