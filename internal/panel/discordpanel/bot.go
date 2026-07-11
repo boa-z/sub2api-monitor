@@ -104,6 +104,15 @@ func (b *Bot) Run(ctx context.Context) error {
 				{Type: 4, Name: "id", Description: "账号数字 ID", Required: true},
 			},
 		},
+		{
+			Name:         "search",
+			Description:  "搜索账号（管理员）",
+			Type:         1,
+			DMPermission: &dmTrue,
+			Options: []discord.ApplicationCommandOption{
+				{Type: 3, Name: "q", Description: "名称/关键词", Required: true},
+			},
+		},
 	}
 	if err := b.dc.RegisterCommands(ctx, cmds); err != nil {
 		b.logger.Warn("discord register commands", "err", err)
@@ -182,6 +191,16 @@ func (b *Bot) handleCommand(ctx context.Context, it *discord.Interaction, uid in
 		id := optionInt(it, "id")
 		msg := b.addAccount(ctx, uid, strconv.FormatInt(id, 10))
 		return b.respond(ctx, it, msg, b.accountsComponents(uid), false)
+	case "search":
+		if !b.isAdmin(uid) {
+			return b.respond(ctx, it, "⛔ 搜索账号仅管理员可用。", b.homeComponents(uid), true)
+		}
+		q := strings.TrimSpace(optionString(it, "q"))
+		if q == "" {
+			return b.respond(ctx, it, "请提供关键词，例如 `/search q:openai`", manageComponents(), true)
+		}
+		text, comps := b.accountBrowser(ctx, uid, "search:"+q, 0)
+		return b.respond(ctx, it, text, comps, false)
 	default:
 		return b.respond(ctx, it, "未知命令", nil, true)
 	}
@@ -464,6 +483,55 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
 		text, comps := b.bulkAccountActionExecute(ctx, uid, "heal")
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_search":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		return b.update(ctx, it, "请使用 `/search q:<关键词>` 搜索账号（名称片段）。", manageComponents())
+	case data == "pnl_users" || strings.HasPrefix(data, "pnl_users:"):
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		page := 0
+		if strings.HasPrefix(data, "pnl_users:") {
+			page, _ = strconv.Atoi(strings.TrimPrefix(data, "pnl_users:"))
+		}
+		text, comps := b.showPanelUsers(uid, page, "")
+		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "pnl_user:"):
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "pnl_user:"), 10, 64)
+		text, comps := b.showPanelUserDetail(uid, id, "")
+		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "pnl_role:"):
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		rest := strings.TrimPrefix(data, "pnl_role:")
+		role, idStr, ok := strings.Cut(rest, ":")
+		if !ok {
+			text, comps := b.showPanelUsers(uid, 0, "")
+			return b.update(ctx, it, text, comps)
+		}
+		tid, _ := strconv.ParseInt(idStr, 10, 64)
+		text, comps := b.setPanelUserRole(uid, tid, role)
+		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "pnl_mon:"):
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		tid, _ := strconv.ParseInt(strings.TrimPrefix(data, "pnl_mon:"), 10, 64)
+		text, comps := b.togglePanelUserMonitor(uid, tid)
+		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "pnl_src:"):
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		tid, _ := strconv.ParseInt(strings.TrimPrefix(data, "pnl_src:"), 10, 64)
+		text, comps := b.togglePanelUserSource(uid, tid)
 		return b.update(ctx, it, text, comps)
 	case data == "thr_add":
 		return b.update(ctx, it, "选择窗口后使用固定阈值，或之后可在配置中细化：", thrWindowComponents())

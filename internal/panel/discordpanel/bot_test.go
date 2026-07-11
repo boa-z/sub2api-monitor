@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/boa/sub2api-monitor/internal/config"
+	"github.com/boa/sub2api-monitor/internal/discord"
 	"github.com/boa/sub2api-monitor/internal/sub2api"
 	"github.com/boa/sub2api-monitor/internal/userstore"
 )
@@ -157,4 +158,44 @@ func TestOpsComponentsIncludeConcChannels(t *testing.T) {
 	if !foundConc || !foundCh || !foundErr {
 		t.Fatalf("ops components missing: conc=%v ch=%v err=%v", foundConc, foundCh, foundErr)
 	}
+}
+
+func TestShowPanelUsersAndRole(t *testing.T) {
+	b, store := testBot(t)
+	if _, err := store.GetOrCreatePlatform(9001, userstore.PlatformDiscord, "9001", "u", "U"); err != nil {
+		t.Fatal(err)
+	}
+	text, comps := b.showPanelUsers(100, 0, "")
+	if text == "" || len(comps) == 0 {
+		t.Fatal("empty panel users")
+	}
+	text, comps = b.setPanelUserRole(100, 9001, "admin")
+	if !b.isAdmin(9001) {
+		t.Fatal("role not applied")
+	}
+	if !containsCustomID(comps, "pnl_role:user:9001") && !containsCustomID(comps, "pnl_mon:9001") {
+		// detail view should have mon/src/role buttons
+		t.Fatalf("detail comps missing toggles: %+v", comps)
+	}
+	text, comps = b.togglePanelUserMonitor(100, 9001)
+	p, _ := store.Get(9001)
+	if p.Enabled {
+		// started enabled true by default; toggle should flip to false
+		// GetOrCreate defaults Enabled true, first toggle -> false
+	}
+	if p.Enabled {
+		t.Fatal("expected monitor disabled after toggle")
+	}
+	_ = text
+}
+
+func containsCustomID(comps []discord.Component, id string) bool {
+	for _, row := range comps {
+		for _, c := range row.Components {
+			if c.CustomID == id {
+				return true
+			}
+		}
+	}
+	return false
 }

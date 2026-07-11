@@ -320,11 +320,12 @@ func (b *Bot) showErrors(ctx context.Context, chatID, msgID, userID int64) error
 }
 
 func (b *Bot) showErrorsNotice(ctx context.Context, chatID, msgID, userID int64, notice string) error {
-	return b.showErrorsView(ctx, chatID, msgID, userID, "all", 0, notice)
+	kind, page := b.getOpsErrorView(userID)
+	return b.showErrorsView(ctx, chatID, msgID, userID, kind, page, notice)
 }
 
-func (b *Bot) showErrorsNoticeKind(ctx context.Context, chatID, msgID, userID int64, kind, notice string) error {
-	return b.showErrorsView(ctx, chatID, msgID, userID, kind, 0, notice)
+func (b *Bot) showErrorsNoticeKind(ctx context.Context, chatID, msgID, userID int64, kind string, page int, notice string) error {
+	return b.showErrorsView(ctx, chatID, msgID, userID, kind, page, notice)
 }
 
 // showErrorsView renders ops errors.
@@ -341,6 +342,7 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 	if kind != "u" && kind != "r" {
 		kind = "all"
 	}
+	b.setOpsErrorView(userID, kind, page)
 
 	var bld strings.Builder
 	if notice != "" {
@@ -530,10 +532,15 @@ func (b *Bot) resolveOpsError(ctx context.Context, chatID, msgID, userID int64, 
 	if tab != "u" && tab != "r" {
 		tab = "all"
 	}
-	if err := cli.ResolveOpsError(ctx, apiKind, errorID); err != nil {
-		return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab, "❌ 标记失败: "+telegram.EscapeHTML(err.Error()))
+	memKind, memPage := b.getOpsErrorView(userID)
+	page := 0
+	if memKind == tab {
+		page = memPage
 	}
-	return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab, fmt.Sprintf("✅ 已标记错误 #%d 为已解决", errorID))
+	if err := cli.ResolveOpsError(ctx, apiKind, errorID); err != nil {
+		return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab, page, "❌ 标记失败: "+telegram.EscapeHTML(err.Error()))
+	}
+	return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab, page, fmt.Sprintf("✅ 已标记错误 #%d 为已解决", errorID))
 }
 
 // resolveAllUpstreamErrors resolves up to N unresolved upstream errors.
@@ -564,8 +571,13 @@ func (b *Bot) resolveAllOpsErrors(ctx context.Context, chatID, msgID, userID int
 	if apiKind == "request" {
 		tab = "r"
 	}
+	memKind, memPage := b.getOpsErrorView(userID)
+	pageNo := 0
+	if memKind == tab {
+		pageNo = memPage
+	}
 	if err != nil {
-		return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab, "❌ 拉取失败: "+telegram.EscapeHTML(err.Error()))
+		return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab, pageNo, "❌ 拉取失败: "+telegram.EscapeHTML(err.Error()))
 	}
 	okN, failN, n := 0, 0, 0
 	const maxOps = 15
@@ -584,9 +596,9 @@ func (b *Bot) resolveAllOpsErrors(ctx context.Context, chatID, msgID, userID int
 		}
 	}
 	if n == 0 {
-		return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab, "✅ 没有未解决的"+label+"错误。")
+		return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab, pageNo, "✅ 没有未解决的"+label+"错误。")
 	}
-	return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab,
+	return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab, pageNo,
 		fmt.Sprintf("✅ 批量标记%s错误：成功 %d · 失败 %d", label, okN, failN))
 }
 
@@ -700,20 +712,64 @@ func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64) err
 }
 
 func (b *Bot) showBadAccounts(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.showBadAccountsView(ctx, chatID, msgID, userID, "error", "")
+}
+
+func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int64, kind, notice string) error {
 	cli, _, err := b.userClient(userID, 15*time.Second)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
 	}
-	// list error accounts; also try rate-limited if supported by filter
-	items, total, err := cli.ListAccounts(ctx, 1, 30, "error")
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind != "rl" && kind != "unsched" && kind != "all" {
+		kind = "error"
+	}
+
+	var items []sub2api.Account
+	var total int64
+	var title, scope string
+	switch kind {
+	case "rl":
+		title, scope = "限速/过载账号", "rate_limited"
+		items, total, err = listBrowserAccounts(ctx, cli, "rate_limited", 0, 30)
+	case "unsched":
+		title, scope = "停调度账号", "unsched"
+		items, total, err = listBrowserAccounts(ctx, cli, "unsched", 0, 30)
+	case "all":
+		title, scope = "异常汇总", "error+rl+unsched"
+		errItems, _, e1 := listBrowserAccounts(ctx, cli, "error", 0, 20)
+		rlItems, _, e2 := listBrowserAccounts(ctx, cli, "rate_limited", 0, 15)
+		unItems, _, e3 := listBrowserAccounts(ctx, cli, "unsched", 0, 15)
+		if e1 != nil && e2 != nil && e3 != nil {
+			err = e1
+		} else {
+			err = nil
+			seen := map[int64]struct{}{}
+			for _, a := range append(append(errItems, rlItems...), unItems...) {
+				if _, ok := seen[a.ID]; ok {
+					continue
+				}
+				seen[a.ID] = struct{}{}
+				items = append(items, a)
+			}
+			total = int64(len(items))
+		}
+	default:
+		title, scope = "异常账号 (status=error)", "error"
+		items, total, err = cli.ListAccounts(ctx, 1, 30, "error")
+	}
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "账号列表失败: "+telegram.EscapeHTML(err.Error()), opsKeyboard())
 	}
+
 	var bld strings.Builder
-	bld.WriteString(telegram.Bold("异常账号 (status=error)") + "\n")
-	fmt.Fprintf(&bld, "共 %s 个\n\n", telegram.Code(itoa(total)))
+	if notice != "" {
+		bld.WriteString(notice + "\n\n")
+	}
+	bld.WriteString(telegram.Bold(title) + "\n")
+	fmt.Fprintf(&bld, "范围: %s · 共约 %s\n\n", telegram.Code(scope), telegram.Code(itoa(total)))
 	if len(items) == 0 {
-		bld.WriteString("当前无 error 状态账号。")
+		bld.WriteString("当前无匹配账号。")
 	}
 	for i, a := range items {
 		if i >= 15 {
@@ -724,15 +780,24 @@ func (b *Bot) showBadAccounts(ctx context.Context, chatID, msgID, userID int64) 
 		if msg == "" {
 			msg = a.Status
 		}
-		fmt.Fprintf(&bld, "• #%d %s [%s]\n  %s\n",
+		fmt.Fprintf(&bld, "• #%d %s [%s/%s] %s\n  %s\n",
 			a.ID,
-			telegram.EscapeHTML(truncateRunes(a.Name, 18)),
+			telegram.EscapeHTML(truncateRunes(a.Name, 16)),
 			telegram.EscapeHTML(a.Platform),
-			telegram.EscapeHTML(truncateRunes(msg, 80)),
+			telegram.EscapeHTML(a.Status),
+			schedLabel(a.Schedulable),
+			telegram.EscapeHTML(truncateRunes(msg, 70)),
 		)
 	}
-	rows := [][]telegram.InlineKeyboardButton{}
-	// direct manage buttons for first few error accounts
+
+	rows := [][]telegram.InlineKeyboardButton{
+		{
+			telegram.Btn(errorTabLabel("error", kind, "error"), "ops_badacc:error"),
+			telegram.Btn(errorTabLabel("限速", kind, "rl"), "ops_badacc:rl"),
+			telegram.Btn(errorTabLabel("停调度", kind, "unsched"), "ops_badacc:unsched"),
+		},
+		{telegram.Btn(errorTabLabel("汇总", kind, "all"), "ops_badacc:all")},
+	}
 	for i, a := range items {
 		if i >= 8 {
 			break
@@ -742,25 +807,42 @@ func (b *Bot) showBadAccounts(ctx context.Context, chatID, msgID, userID int64) 
 			telegram.Btn(label, fmt.Sprintf("mgr_acc:%d", a.ID)),
 		})
 	}
+	// context bulk
+	switch kind {
+	case "rl":
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("⏱ 批量清限速", "mgr_bulk_clear_rl"),
+			telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
+		})
+	case "unsched":
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+		})
+	default:
+		rows = append(rows,
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("🧹 批量清错", "mgr_bulk_clear"),
+				telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+			},
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
+				telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+			},
+		)
+	}
 	rows = append(rows,
 		[]telegram.InlineKeyboardButton{
-			telegram.Btn("🧹 批量清错", "mgr_bulk_clear"),
-			telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+			telegram.Btn("➕ 一键监控 error", "ops_watch_errors"),
 		},
 		[]telegram.InlineKeyboardButton{
-			telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
-			telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
-		},
-		[]telegram.InlineKeyboardButton{
-			telegram.Btn("➕ 一键监控", "ops_watch_errors"),
-		},
-		[]telegram.InlineKeyboardButton{
+			telegram.Btn("🔄 刷新", "ops_badacc:"+kind),
 			telegram.Btn("« 运维菜单", "ops_menu"),
+		},
+		[]telegram.InlineKeyboardButton{
 			telegram.Btn("« 主面板", "home"),
 		},
 	)
-	kb := &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
 func (b *Bot) watchErrorAccounts(ctx context.Context, chatID, msgID, userID int64) error {

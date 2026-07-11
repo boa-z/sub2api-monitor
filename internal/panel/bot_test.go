@@ -480,3 +480,31 @@ func TestSetPanelUserRole(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestOpsErrorViewMemory(t *testing.T) {
+	b, _ := testBot(t)
+	kind, page := b.getOpsErrorView(42)
+	if kind != "all" || page != 0 {
+		t.Fatalf("default %s %d", kind, page)
+	}
+	b.setOpsErrorView(42, "u", 3)
+	kind, page = b.getOpsErrorView(42)
+	if kind != "u" || page != 3 {
+		t.Fatalf("got %s %d", kind, page)
+	}
+	// setAwait should not wipe ops memory
+	b.setAwait(42, awaitSearch, 0, "")
+	kind, page = b.getOpsErrorView(42)
+	if kind != "u" || page != 3 {
+		t.Fatalf("after setAwait %s %d", kind, page)
+	}
+}
+
+func TestBadAccountTabLabels(t *testing.T) {
+	if errorTabLabel("限速", "rl", "rl") != "• 限速" {
+		t.Fatal(errorTabLabel("限速", "rl", "rl"))
+	}
+	if errorTabLabel("error", "rl", "error") != "error" {
+		t.Fatal(errorTabLabel("error", "rl", "error"))
+	}
+}

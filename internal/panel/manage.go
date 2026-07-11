@@ -975,6 +975,14 @@ func (b *Bot) showPanelUserDetail(ctx context.Context, chatID, msgID, adminID, t
 	}
 	bld.WriteString("\n\n角色覆盖仅影响本 Bot 面板权限，不改 Sub2API 权限。")
 
+	monBtn := "⏸ 关闭监控"
+	if !p.Enabled {
+		monBtn = "▶️ 开启监控"
+	}
+	srcBtn := "数据源→active"
+	if p.EffectiveSource() == "active" {
+		srcBtn = "数据源→passive"
+	}
 	kb := &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{
@@ -983,6 +991,10 @@ func (b *Bot) showPanelUserDetail(ctx context.Context, chatID, msgID, adminID, t
 			},
 			{
 				telegram.Btn("清除角色覆盖", fmt.Sprintf("pnl_role:clear:%d", targetID)),
+			},
+			{
+				telegram.Btn(monBtn, fmt.Sprintf("pnl_mon:%d", targetID)),
+				telegram.Btn(srcBtn, fmt.Sprintf("pnl_src:%d", targetID)),
 			},
 			{
 				telegram.Btn("« 面板用户", "pnl_users"),
@@ -1021,6 +1033,40 @@ func (b *Bot) setPanelUserRole(ctx context.Context, chatID, msgID, adminID, targ
 	}
 	return b.showPanelUserDetail(ctx, chatID, msgID, adminID, targetID,
 		fmt.Sprintf("✅ 已更新角色为 %s", telegram.Code(label)))
+}
+
+func (b *Bot) togglePanelUserMonitor(ctx context.Context, chatID, msgID, adminID, targetID int64) error {
+	var enabled bool
+	if _, err := b.users.Update(targetID, func(p *userstore.Profile) error {
+		p.Enabled = !p.Enabled
+		enabled = p.Enabled
+		return nil
+	}); err != nil {
+		return b.showPanelUserDetail(ctx, chatID, msgID, adminID, targetID, "❌ 切换监控失败: "+telegram.EscapeHTML(err.Error()))
+	}
+	state := "关闭"
+	if enabled {
+		state = "开启"
+	}
+	return b.showPanelUserDetail(ctx, chatID, msgID, adminID, targetID,
+		fmt.Sprintf("✅ 监控已%s", telegram.Code(state)))
+}
+
+func (b *Bot) togglePanelUserSource(ctx context.Context, chatID, msgID, adminID, targetID int64) error {
+	var src string
+	if _, err := b.users.Update(targetID, func(p *userstore.Profile) error {
+		if p.EffectiveSource() == "active" {
+			p.Source = "passive"
+		} else {
+			p.Source = "active"
+		}
+		src = p.EffectiveSource()
+		return nil
+	}); err != nil {
+		return b.showPanelUserDetail(ctx, chatID, msgID, adminID, targetID, "❌ 切换数据源失败: "+telegram.EscapeHTML(err.Error()))
+	}
+	return b.showPanelUserDetail(ctx, chatID, msgID, adminID, targetID,
+		fmt.Sprintf("✅ 数据源已设为 %s", telegram.Code(src)))
 }
 
 func schedLabel(v bool) string {

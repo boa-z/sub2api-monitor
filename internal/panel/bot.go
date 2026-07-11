@@ -32,6 +32,9 @@ type session struct {
 	AccountID int64
 	Window    string
 	Page      int
+	// OpsErrorKind/Page remember last errors view for resolve refresh.
+	OpsErrorKind string
+	OpsErrorPage int
 }
 
 // Bot is the interactive Telegram control panel.
@@ -317,11 +320,15 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return nil
 		}
 		return b.showChannels(ctx, chatID, msgID, cq.From.ID)
-	case data == "ops_badacc":
+	case data == "ops_badacc" || strings.HasPrefix(data, "ops_badacc:"):
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
-		return b.showBadAccounts(ctx, chatID, msgID, cq.From.ID)
+		kind := "error"
+		if strings.HasPrefix(data, "ops_badacc:") {
+			kind = strings.TrimPrefix(data, "ops_badacc:")
+		}
+		return b.showBadAccountsView(ctx, chatID, msgID, cq.From.ID, kind, "")
 	case data == "ops_watch_errors":
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
@@ -497,6 +504,18 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		}
 		tid, _ := strconv.ParseInt(idStr, 10, 64)
 		return b.setPanelUserRole(ctx, chatID, msgID, cq.From.ID, tid, role)
+	case strings.HasPrefix(data, "pnl_mon:"):
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		tid, _ := strconv.ParseInt(strings.TrimPrefix(data, "pnl_mon:"), 10, 64)
+		return b.togglePanelUserMonitor(ctx, chatID, msgID, cq.From.ID, tid)
+	case strings.HasPrefix(data, "pnl_src:"):
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		tid, _ := strconv.ParseInt(strings.TrimPrefix(data, "pnl_src:"), 10, 64)
+		return b.togglePanelUserSource(ctx, chatID, msgID, cq.From.ID, tid)
 	case data == "set_base":
 		b.setAwait(cq.From.ID, awaitBaseURL, 0, "")
 		return b.editOrSend(ctx, chatID, msgID, "请发送 Base URL（如 <code>http://host:8080</code>）\n/cancel 取消", cancelKeyboard())
@@ -1514,7 +1533,7 @@ func helpText() string {
 ` + telegram.Bold("说明") + `
 • 每位用户独立保存 base_url / key / 账号 / 阈值
 • <b>普通用户</b>：自助连接 / 监控账号 / 阈值 / 立即检查
-• <b>管理员</b>：运维视图 + 账号管理（调度/启停/清错/一键修复/临时停调度/重置额度/批量/搜索/错误分页解决/面板用户角色）
+• <b>管理员</b>：运维视图 + 账号管理（调度/启停/清错/一键修复/临时停调度/重置额度/批量/搜索/错误分页保留页码/异常账号分标签/面板用户角色与监控）
 • 管理员入口由 admin_user_ids 或 profile.role=admin 控制；菜单对普通用户隐藏
 • 用量达到阈值时 Bot 会私聊提醒你（Telegram / Discord 按平台投递）
 • 支持 passive（轻量缓存）与 active（刷新上游）数据源
@@ -1604,12 +1623,46 @@ func (b *Bot) denyIfNotAdmin(ctx context.Context, chatID, msgID, userID int64, c
 func (b *Bot) setAwait(userID int64, kind string, accountID int64, window string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.sessions[userID] = &session{
-		Await:     kind,
-		UpdatedAt: time.Now(),
-		AccountID: accountID,
-		Window:    window,
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
 	}
+	s.Await = kind
+	s.UpdatedAt = time.Now()
+	s.AccountID = accountID
+	s.Window = window
+}
+
+func (b *Bot) setOpsErrorView(userID int64, kind string, page int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.OpsErrorKind = kind
+	s.OpsErrorPage = page
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getOpsErrorView(userID int64) (kind string, page int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return "all", 0
+	}
+	kind = s.OpsErrorKind
+	page = s.OpsErrorPage
+	if kind == "" {
+		kind = "all"
+	}
+	if page < 0 {
+		page = 0
+	}
+	return kind, page
 }
 
 func (b *Bot) getSession(userID int64) *session {

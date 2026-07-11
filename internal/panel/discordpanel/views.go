@@ -19,7 +19,7 @@ func helpText() string {
 	return `**Sub2API Discord 面板**
 
 • **普通用户**：连接 / 监控账号 / 阈值 / 立即检查
-• **管理员**：运维视图 + 账号管理（调度/清错/恢复/批量/错误分页/一键修复/临时停调度）
+• **管理员**：运维视图 + 账号管理（调度/清错/恢复/批量/错误分页/一键修复/临时停调度/搜索/面板用户）
 • 管理员由 admin_user_ids 或 profile.role=admin 控制
 • 配置按用户隔离，存于 users.json（可与 Telegram 共享）
 • 斜杠命令：` + "`/panel` `/status` `/check` `/setbase` `/setkey` `/addaccount` `/ops` `/manage`"
@@ -262,7 +262,7 @@ func opsViewComponents(refresh string) []discord.Component {
 }
 
 func manageMenuText() string {
-	return "**账号管理**\n\n浏览（状态/平台/停调度/限速）、切换调度、清错/恢复/一键修复、临时停调度、批量处理（Admin API，需确认）。"
+	return "**账号管理**\n\n浏览（状态/平台/停调度/限速）、搜索、切换调度、清错/恢复/一键修复、临时停调度、批量处理、面板用户角色（Admin API / Bot 权限）。"
 }
 
 func manageComponents() []discord.Component {
@@ -285,6 +285,10 @@ func manageComponents() []discord.Component {
 		discord.ActionRow(
 			discord.Button("批量清限速", "mgr_bulk_clear_rl", 2),
 			discord.Button("一键修复", "mgr_bulk_heal", 1),
+			discord.Button("搜索", "mgr_search", 2),
+		),
+		discord.ActionRow(
+			discord.Button("面板用户", "pnl_users", 2),
 			discord.Button("« 主面板", "home", 2),
 		),
 	}
@@ -1616,4 +1620,211 @@ func (b *Bot) healAccount(ctx context.Context, cli *sub2api.Client, accountID in
 		msg += "\n⚠️ 部分失败: " + strings.Join(fail, "; ")
 	}
 	return msg
+}
+
+func (b *Bot) showPanelUsers(userID int64, page int, notice string) (string, []discord.Component) {
+	if page < 0 {
+		page = 0
+	}
+	const pageSize = 8
+	all := b.users.ListAll()
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].UserID() < all[j].UserID()
+	})
+	total := len(all)
+	start := page * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	pageItems := all[start:end]
+
+	var bld strings.Builder
+	if notice != "" {
+		bld.WriteString(notice + "\n\n")
+	}
+	bld.WriteString("**面板用户**（Bot 侧，非 Sub2API 用户）\n")
+	fmt.Fprintf(&bld, "第 %d 页 · 共 %d\n\n", page+1, total)
+	if len(pageItems) == 0 {
+		bld.WriteString("暂无面板用户。")
+	}
+	opts := make([]discord.SelectOpt, 0, len(pageItems))
+	for _, p := range pageItems {
+		role := p.EffectiveRole()
+		if role == "" {
+			if b.isAdmin(p.UserID()) {
+				role = "admin*"
+			} else {
+				role = "user*"
+			}
+		}
+		name := p.DisplayName
+		if name == "" {
+			name = p.Username
+		}
+		if name == "" {
+			name = strconv.FormatInt(p.UserID(), 10)
+		}
+		conn := "未连接"
+		if p.HasConnection() {
+			conn = "已连接"
+		}
+		mon := "关"
+		if p.Enabled {
+			mon = "开"
+		}
+		fmt.Fprintf(&bld, "• `%d` %s [%s/%s]\n  %s · 监控%s · 账号%d\n",
+			p.UserID(), truncate(name, 14), role, p.EffectivePlatform(), conn, mon, len(p.Accounts))
+		opts = append(opts, discord.SelectOption(
+			fmt.Sprintf("#%d %s", p.UserID(), truncate(name, 12)),
+			fmt.Sprintf("pnl_user:%d", p.UserID()),
+			fmt.Sprintf("%s · %s", role, p.EffectivePlatform()),
+		))
+	}
+	comps := []discord.Component{}
+	if len(opts) > 0 {
+		comps = append(comps, discord.ActionRow(discord.StringSelect("select:pnl_user", "选择用户…", opts...)))
+	}
+	nav := []discord.Component{}
+	if page > 0 {
+		nav = append(nav, discord.Button("« 上页", fmt.Sprintf("pnl_users:%d", page-1), 2))
+	}
+	if end < total {
+		nav = append(nav, discord.Button("下页 »", fmt.Sprintf("pnl_users:%d", page+1), 2))
+	}
+	if len(nav) > 0 {
+		comps = append(comps, discord.ActionRow(nav...))
+	}
+	comps = append(comps, discord.ActionRow(
+		discord.Button("« 管理菜单", "mgr_menu", 2),
+		discord.Button("« 主面板", "home", 2),
+	))
+	return bld.String(), comps
+}
+
+func (b *Bot) showPanelUserDetail(adminID, targetID int64, notice string) (string, []discord.Component) {
+	p, ok := b.users.Get(targetID)
+	if !ok {
+		return b.showPanelUsers(adminID, 0, "❌ 用户不存在")
+	}
+	var bld strings.Builder
+	if notice != "" {
+		bld.WriteString(notice + "\n\n")
+	}
+	fmt.Fprintf(&bld, "**面板用户 #%d**\n\n", targetID)
+	name := p.DisplayName
+	if name == "" {
+		name = p.Username
+	}
+	fmt.Fprintf(&bld, "名称: `%s`\n", truncate(name, 24))
+	fmt.Fprintf(&bld, "平台: `%s` · Chat: `%s`\n", p.EffectivePlatform(), p.ChatID)
+	roleStored := strings.TrimSpace(p.Role)
+	if roleStored == "" {
+		roleStored = "(继承配置)"
+	}
+	fmt.Fprintf(&bld, "存储角色: `%s`\n", roleStored)
+	fmt.Fprintf(&bld, "生效角色: `%s`\n", b.roleLabel(targetID))
+	base := p.BaseURL
+	if base == "" {
+		base = "(未设置)"
+	}
+	fmt.Fprintf(&bld, "Base URL: `%s`\n", truncate(base, 40))
+	fmt.Fprintf(&bld, "API Key: `%s`\n", userstore.MaskKey(p.AdminAPIKey))
+	mon := "关闭"
+	if p.Enabled {
+		mon = "开启"
+	}
+	fmt.Fprintf(&bld, "监控: `%s` · 数据源: `%s` · 账号: `%d`\n", mon, p.EffectiveSource(), len(p.Accounts))
+	if targetID == adminID {
+		bld.WriteString("\n⚠️ 这是你自己的账号。")
+	}
+	bld.WriteString("\n\n角色覆盖仅影响本 Bot 面板权限，不改 Sub2API 权限。")
+
+	monBtn := "关闭监控"
+	if !p.Enabled {
+		monBtn = "开启监控"
+	}
+	srcBtn := "源→active"
+	if p.EffectiveSource() == "active" {
+		srcBtn = "源→passive"
+	}
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button("设为管理员", fmt.Sprintf("pnl_role:admin:%d", targetID), 1),
+			discord.Button("设为用户", fmt.Sprintf("pnl_role:user:%d", targetID), 2),
+		),
+		discord.ActionRow(
+			discord.Button("清除角色覆盖", fmt.Sprintf("pnl_role:clear:%d", targetID), 2),
+		),
+		discord.ActionRow(
+			discord.Button(monBtn, fmt.Sprintf("pnl_mon:%d", targetID), 2),
+			discord.Button(srcBtn, fmt.Sprintf("pnl_src:%d", targetID), 2),
+		),
+		discord.ActionRow(
+			discord.Button("« 面板用户", "pnl_users", 2),
+			discord.Button("« 管理", "mgr_menu", 2),
+		),
+	}
+	return bld.String(), comps
+}
+
+func (b *Bot) setPanelUserRole(adminID, targetID int64, role string) (string, []discord.Component) {
+	role = strings.ToLower(strings.TrimSpace(role))
+	var storeRole string
+	switch role {
+	case "admin":
+		storeRole = userstore.RoleAdmin
+	case "user":
+		storeRole = userstore.RoleUser
+	case "clear", "inherit", "default", "":
+		storeRole = ""
+	default:
+		return b.showPanelUserDetail(adminID, targetID, "❌ 无效角色")
+	}
+	if _, err := b.users.Update(targetID, func(p *userstore.Profile) error {
+		p.Role = storeRole
+		return nil
+	}); err != nil {
+		return b.showPanelUserDetail(adminID, targetID, "❌ 保存失败: "+err.Error())
+	}
+	label := storeRole
+	if label == "" {
+		label = "继承配置"
+	}
+	return b.showPanelUserDetail(adminID, targetID, "✅ 已更新角色为 `"+label+"`")
+}
+
+func (b *Bot) togglePanelUserMonitor(adminID, targetID int64) (string, []discord.Component) {
+	var enabled bool
+	if _, err := b.users.Update(targetID, func(p *userstore.Profile) error {
+		p.Enabled = !p.Enabled
+		enabled = p.Enabled
+		return nil
+	}); err != nil {
+		return b.showPanelUserDetail(adminID, targetID, "❌ 切换监控失败: "+err.Error())
+	}
+	state := "关闭"
+	if enabled {
+		state = "开启"
+	}
+	return b.showPanelUserDetail(adminID, targetID, "✅ 监控已`"+state+"`")
+}
+
+func (b *Bot) togglePanelUserSource(adminID, targetID int64) (string, []discord.Component) {
+	var src string
+	if _, err := b.users.Update(targetID, func(p *userstore.Profile) error {
+		if p.EffectiveSource() == "active" {
+			p.Source = "passive"
+		} else {
+			p.Source = "active"
+		}
+		src = p.EffectiveSource()
+		return nil
+	}); err != nil {
+		return b.showPanelUserDetail(adminID, targetID, "❌ 切换数据源失败: "+err.Error())
+	}
+	return b.showPanelUserDetail(adminID, targetID, "✅ 数据源已设为 `"+src+"`")
 }
