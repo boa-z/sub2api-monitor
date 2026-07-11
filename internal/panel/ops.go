@@ -178,11 +178,21 @@ func (b *Bot) opsMenuText(ctx context.Context, userID int64) string {
 					telegram.Code(fmt.Sprintf("%.2f", rt.ErrorRate)))
 			}
 			if traf, err := cli.GetRealtimeTraffic(ctx, "5min"); err == nil && traf != nil && traf.Enabled {
-				fmt.Fprintf(&bld, "流量(5min): QPS %s", telegram.Code(fmt.Sprintf("%.3f", traf.CurrentQPS())))
+				qps, peak := traf.CurrentQPS(), traf.PeakQPS()
+				fmt.Fprintf(&bld, "流量(5min): QPS %s", telegram.Code(fmt.Sprintf("%.3f", qps)))
 				if traf.CurrentTPS() > 0 {
 					fmt.Fprintf(&bld, " · TPS %s", telegram.Code(fmt.Sprintf("%.3f", traf.CurrentTPS())))
 				}
+				if peak > 0 {
+					fmt.Fprintf(&bld, " · 峰值 %s", telegram.Code(fmt.Sprintf("%.3f", peak)))
+				}
 				bld.WriteString("\n")
+				if browse.TrafficIsDropped(qps, peak) {
+					fmt.Fprintf(&bld, "⚠ 流量骤降约 %s%%（当前 ≤ 峰值 × %.0f%%）\n",
+						telegram.Code(strconv.Itoa(browse.TrafficDropPercent(qps, peak))),
+						browse.TrafficDropRatio*100,
+					)
+				}
 			}
 			bld.WriteString("\n")
 		}

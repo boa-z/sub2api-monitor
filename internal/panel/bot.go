@@ -1620,6 +1620,28 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 			if line, issues := adminHealthSnapshot(ctx, cli); line != "" {
 				bld.WriteString(telegram.Bold("实例健康") + "\n")
 				bld.WriteString(line + "\n")
+				if traf, err := cli.GetRealtimeTraffic(ctx, "5min"); err == nil && traf != nil && traf.Enabled {
+					qps, peak := traf.CurrentQPS(), traf.PeakQPS()
+					if browse.TrafficIsDropped(qps, peak) {
+						fmt.Fprintf(&bld, "流量: ⚠ 相对峰值下降约 %s%%（QPS %s / 峰值 %s）\n",
+							telegram.Code(strconv.Itoa(browse.TrafficDropPercent(qps, peak))),
+							telegram.Code(fmt.Sprintf("%.2f", qps)),
+							telegram.Code(fmt.Sprintf("%.2f", peak)),
+						)
+						issues = true
+					}
+				}
+				if rt, err := cli.GetRealtimeDashboard(ctx); err == nil && rt != nil {
+					fmt.Fprintf(&bld, "实时: 活跃 %s · RPM %s · 错误率 %s%%\n",
+						telegram.Code(itoa(rt.ActiveRequests)),
+						telegram.Code(fmt.Sprintf("%.1f", rt.RequestsPerMinute)),
+						telegram.Code(fmt.Sprintf("%.2f", rt.ErrorRate)),
+					)
+					// ErrorRate is already percentage-like (e.g. 2.5 = 2.5%)
+					if rt.ErrorRate >= 5 || (rt.ActiveRequests > 0 && rt.ErrorRate >= 2) {
+						issues = true
+					}
+				}
 				if issues {
 					bld.WriteString("可从下方运维入口查看异常（写操作需管理员）。\n")
 				}

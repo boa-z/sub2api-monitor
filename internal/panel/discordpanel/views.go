@@ -193,7 +193,24 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 				bld.WriteString("**实例健康**\n")
 				fmt.Fprintf(&bld, "正常 `%v` · 异常 `%v` · 限速 `%v` · 过载 `%v`\n",
 					st.NormalAccounts, st.ErrorAccounts, st.RatelimitAccounts, st.OverloadAccounts)
-				if st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 {
+				issues := st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 || st.OverloadAccounts > 0
+				if traf, err := cli.GetRealtimeTraffic(ctx, "5min"); err == nil && traf != nil && traf.Enabled {
+					qps, peak := traf.CurrentQPS(), traf.PeakQPS()
+					if browse.TrafficIsDropped(qps, peak) {
+						fmt.Fprintf(&bld, "流量: ⚠ 相对峰值下降约 `%d%%`（QPS `%.2f` / 峰值 `%.2f`）\n",
+							browse.TrafficDropPercent(qps, peak), qps, peak)
+						issues = true
+					}
+				}
+				if rt, err := cli.GetRealtimeDashboard(ctx); err == nil && rt != nil {
+					fmt.Fprintf(&bld, "实时: 活跃 `%d` · RPM `%.1f` · 错误率 `%.2f%%`\n",
+						rt.ActiveRequests, rt.RequestsPerMinute, rt.ErrorRate)
+					// ErrorRate is already percentage-like (e.g. 2.5 = 2.5%)
+					if rt.ErrorRate >= 5 || (rt.ActiveRequests > 0 && rt.ErrorRate >= 2) {
+						issues = true
+					}
+				}
+				if issues {
 					bld.WriteString("可从下方运维入口处理异常。\n")
 				}
 				bld.WriteString("\n")
@@ -950,11 +967,19 @@ func (b *Bot) opsMenuText(ctx context.Context, userID int64) string {
 				fmt.Fprintf(&bld, "实时: 活跃 `%v` · 错误率 `%.2f%%`\n", rt.ActiveRequests, rt.ErrorRate)
 			}
 			if traf, err := cli.GetRealtimeTraffic(ctx, "5min"); err == nil && traf != nil && traf.Enabled {
-				line := fmt.Sprintf("流量(5min): QPS `%.3f`", traf.CurrentQPS())
+				qps, peak := traf.CurrentQPS(), traf.PeakQPS()
+				line := fmt.Sprintf("流量(5min): QPS `%.3f`", qps)
 				if traf.CurrentTPS() > 0 {
 					line += fmt.Sprintf(" · TPS `%.3f`", traf.CurrentTPS())
 				}
+				if peak > 0 {
+					line += fmt.Sprintf(" · 峰值 `%.3f`", peak)
+				}
 				bld.WriteString(line + "\n")
+				if browse.TrafficIsDropped(qps, peak) {
+					fmt.Fprintf(&bld, "⚠ 流量骤降约 `%d%%`（当前 ≤ 峰值 × %.0f%%）\n",
+						browse.TrafficDropPercent(qps, peak), browse.TrafficDropRatio*100)
+				}
 			}
 			bld.WriteString("\n")
 		}
