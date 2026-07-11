@@ -120,7 +120,8 @@ func opsViewKeyboard(refreshData string) *telegram.InlineKeyboardMarkup {
 }
 
 // dashboardKeyboard builds contextual shortcuts from live stats.
-func dashboardKeyboard(stats *sub2api.DashboardStats) *telegram.InlineKeyboardMarkup {
+func dashboardKeyboard(stats *sub2api.DashboardStats, stress ...bool) *telegram.InlineKeyboardMarkup {
+	needStress := len(stress) > 0 && stress[0]
 	rows := [][]telegram.InlineKeyboardButton{
 		{telegram.Btn("🔄 刷新", "ops_dash"), telegram.Btn("« 运维菜单", "ops_menu")},
 	}
@@ -140,18 +141,31 @@ func dashboardKeyboard(stats *sub2api.DashboardStats) *telegram.InlineKeyboardMa
 		jump = append(jump, telegram.Btn("📋 异常账号", "ops_badacc:error:0"))
 	}
 	rows = append(rows, jump)
-	rows = append(rows,
-		[]telegram.InlineKeyboardButton{
-			telegram.Btn("❌ 错误列表", "ops_errors:all:0"),
-			telegram.Btn("🧰 账号管理", "mgr_menu"),
-		},
-		[]telegram.InlineKeyboardButton{
-			telegram.Btn("✅ 可用性", "ops_avail"),
+	if needStress {
+		rows = append(rows, []telegram.InlineKeyboardButton{
 			telegram.Btn("📉 流量", "ops_traf"),
+			telegram.Btn("⚙️ 并发", "ops_conc"),
+			telegram.Btn("❌ 错误", "ops_errors:all:0"),
+		})
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("✅ 可用性", "ops_avail"),
 			telegram.Btn("🚨 告警", "ops_alerts"),
-		},
-		[]telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")},
-	)
+			telegram.Btn("🧰 账号管理", "mgr_menu"),
+		})
+	} else {
+		rows = append(rows,
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("❌ 错误列表", "ops_errors:all:0"),
+				telegram.Btn("🧰 账号管理", "mgr_menu"),
+			},
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("✅ 可用性", "ops_avail"),
+				telegram.Btn("📉 流量", "ops_traf"),
+				telegram.Btn("🚨 告警", "ops_alerts"),
+			},
+		)
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")})
 	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
@@ -269,6 +283,11 @@ func (b *Bot) showDashboard(ctx context.Context, chatID, msgID, userID int64) er
 			telegram.Code(fmt.Sprintf("%.2f", rt.RequestsPerMinute)),
 			telegram.Code(fmt.Sprintf("%.2f", rt.ErrorRate)))
 	}
+	trafficDropped := false
+	highErrorRate := false
+	if rt != nil && (rt.ErrorRate >= 5 || (rt.ActiveRequests > 0 && rt.ErrorRate >= 2)) {
+		highErrorRate = true
+	}
 	if traf != nil {
 		qps := traf.CurrentQPS()
 		tps := traf.CurrentTPS()
@@ -283,8 +302,22 @@ func (b *Bot) showDashboard(ctx context.Context, chatID, msgID, userID int64) er
 			line += " · 峰值QPS " + telegram.Code(fmt.Sprintf("%.3f", peak))
 		}
 		bld.WriteString(line + "\n")
+		if browse.TrafficIsDropped(qps, peak) {
+			trafficDropped = true
+			fmt.Fprintf(&bld, "⚠ 流量骤降约 %s%%（当前 ≤ 峰值 × %.0f%%）\n",
+				telegram.Code(strconv.Itoa(browse.TrafficDropPercent(qps, peak))),
+				browse.TrafficDropRatio*100,
+			)
+		}
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), dashboardKeyboard(stats))
+	if highErrorRate {
+		fmt.Fprintf(&bld, "⚠ 实时错误率偏高（%s%%），建议查错误/异常账号。\n",
+			telegram.Code(fmt.Sprintf("%.2f", rt.ErrorRate)))
+	}
+	if trafficDropped || highErrorRate || (stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0 || stats.OverloadAccounts > 0)) {
+		bld.WriteString("\n下方可快速跳转到异常/流量/并发排查。")
+	}
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), dashboardKeyboard(stats, trafficDropped || highErrorRate))
 }
 
 func (b *Bot) showAvailability(ctx context.Context, chatID, msgID, userID int64) error {

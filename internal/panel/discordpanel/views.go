@@ -1879,9 +1879,16 @@ func (b *Bot) showDashboardView(ctx context.Context, userID int64) (string, []di
 	if st.RPM > 0 || st.TPM > 0 {
 		fmt.Fprintf(&bld, "RPM/TPM: `%.2f` / `%.0f`\n", st.RPM, st.TPM)
 	}
+	trafficDropped := false
+	highErrorRate := false
+	var rtErr float64
 	if rt, err := cli.GetRealtimeDashboard(ctx); err == nil && rt != nil {
 		fmt.Fprintf(&bld, "实时: 活跃 `%v` · RPM `%.2f` · 错误率 `%.2f%%`\n",
 			rt.ActiveRequests, rt.RequestsPerMinute, rt.ErrorRate)
+		if rt.ErrorRate >= 5 || (rt.ActiveRequests > 0 && rt.ErrorRate >= 2) {
+			highErrorRate = true
+			rtErr = rt.ErrorRate
+		}
 	}
 	if traf, err := cli.GetRealtimeTraffic(ctx, "5min"); err == nil && traf != nil {
 		qps, tps, peak := traf.CurrentQPS(), traf.CurrentTPS(), traf.PeakQPS()
@@ -1893,11 +1900,23 @@ func (b *Bot) showDashboardView(ctx context.Context, userID int64) (string, []di
 			line += fmt.Sprintf(" · 峰值QPS `%.3f`", peak)
 		}
 		bld.WriteString(line + "\n")
+		if browse.TrafficIsDropped(qps, peak) {
+			trafficDropped = true
+			fmt.Fprintf(&bld, "⚠ 流量骤降约 `%d%%`（当前 ≤ 峰值 × %.0f%%）\n",
+				browse.TrafficDropPercent(qps, peak), browse.TrafficDropRatio*100)
+		}
 	}
-	return bld.String(), dashboardComponents(st)
+	if highErrorRate {
+		fmt.Fprintf(&bld, "⚠ 实时错误率偏高（`%.2f%%`），建议查错误/异常账号。\n", rtErr)
+	}
+	if trafficDropped || highErrorRate || (st != nil && (st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 || st.OverloadAccounts > 0)) {
+		bld.WriteString("\n下方可快速跳转到异常/流量/并发排查。")
+	}
+	return bld.String(), dashboardComponents(st, trafficDropped || highErrorRate)
 }
 
-func dashboardComponents(st *sub2api.DashboardStats) []discord.Component {
+func dashboardComponents(st *sub2api.DashboardStats, stress ...bool) []discord.Component {
+	needStress := len(stress) > 0 && stress[0]
 	jump := []discord.Component{}
 	if st != nil {
 		if st.ErrorAccounts > 0 {
@@ -1919,19 +1938,36 @@ func dashboardComponents(st *sub2api.DashboardStats) []discord.Component {
 	if len(jump) < 3 {
 		jump = append(jump, discord.Button("管理", "mgr_menu", 2))
 	}
-	return []discord.Component{
+	rows := []discord.Component{
 		discord.ActionRow(
 			discord.Button("刷新", "ops_dash", 2),
 			discord.Button("« 运维", "ops_menu", 2),
 			discord.Button("« 主面板", "home", 2),
 		),
 		discord.ActionRow(jump...),
-		discord.ActionRow(
+	}
+	if needStress {
+		rows = append(rows, discord.ActionRow(
+			discord.Button("流量", "ops_traf", 2),
+			discord.Button("并发", "ops_conc", 2),
+			discord.Button("错误", "ops_errors:all:0", 2),
+		))
+		rows = append(rows, discord.ActionRow(
+			discord.Button("可用性", "ops_avail", 2),
+			discord.Button("告警", "ops_alerts", 2),
+			discord.Button("管理", "mgr_menu", 2),
+		))
+	} else {
+		rows = append(rows, discord.ActionRow(
 			discord.Button("可用性", "ops_avail", 2),
 			discord.Button("流量", "ops_traf", 2),
 			discord.Button("并发", "ops_conc", 2),
-		),
+		))
 	}
+	if len(rows) > 5 {
+		rows = rows[:5]
+	}
+	return rows
 }
 
 func (b *Bot) showAvailability(ctx context.Context, userID int64) string {
