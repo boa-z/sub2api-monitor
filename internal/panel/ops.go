@@ -1803,59 +1803,20 @@ func (b *Bot) showAccountLiveWithNotice(ctx context.Context, chatID, msgID, user
 		if liveAcc != nil {
 			kind = browse.AccountIssueKind(*liveAcc)
 		}
-		switch kind {
-		case browse.IssueError:
-			rows = append(rows,
-				[]telegram.InlineKeyboardButton{
-					telegram.Btn("🛠 一键修复", fmt.Sprintf("live_act:heal:%d", accountID)),
-					telegram.Btn("🧹 清错误", fmt.Sprintf("live_act:clear_err:%d", accountID)),
-				},
-				[]telegram.InlineKeyboardButton{
-					telegram.Btn("♻️ 恢复", fmt.Sprintf("live_act:recover:%d", accountID)),
-					telegram.Btn("▶️ 开调度", fmt.Sprintf("live_act:sched:%d", accountID)),
-				},
-			)
-		case browse.IssueRL, browse.IssueOverload:
-			rows = append(rows,
-				[]telegram.InlineKeyboardButton{
-					telegram.Btn("⏱ 清限速", fmt.Sprintf("live_act:clear_rl:%d", accountID)),
-					telegram.Btn("🛠 一键修复", fmt.Sprintf("live_act:heal:%d", accountID)),
-				},
-				[]telegram.InlineKeyboardButton{
-					telegram.Btn("▶️ 开调度", fmt.Sprintf("live_act:sched:%d", accountID)),
-					telegram.Btn("🧹 清错误", fmt.Sprintf("live_act:clear_err:%d", accountID)),
-				},
-			)
-		case browse.IssueUnsched, browse.IssueTemp:
-			rows = append(rows,
-				[]telegram.InlineKeyboardButton{
-					telegram.Btn("▶️ 开调度", fmt.Sprintf("live_act:sched:%d", accountID)),
-					telegram.Btn("🛠 一键修复", fmt.Sprintf("live_act:heal:%d", accountID)),
-				},
-				[]telegram.InlineKeyboardButton{
-					telegram.Btn("⏱ 清限速", fmt.Sprintf("live_act:clear_rl:%d", accountID)),
-					telegram.Btn("♻️ 恢复", fmt.Sprintf("live_act:recover:%d", accountID)),
-				},
-			)
-		default:
-			rows = append(rows,
-				[]telegram.InlineKeyboardButton{
-					telegram.Btn("🛠 一键修复", fmt.Sprintf("live_act:heal:%d", accountID)),
-					telegram.Btn("🧹 清错误", fmt.Sprintf("live_act:clear_err:%d", accountID)),
-				},
-				[]telegram.InlineKeyboardButton{
-					telegram.Btn("⏱ 清限速", fmt.Sprintf("live_act:clear_rl:%d", accountID)),
-					telegram.Btn("♻️ 恢复", fmt.Sprintf("live_act:recover:%d", accountID)),
-				},
-				[]telegram.InlineKeyboardButton{
-					telegram.Btn("▶️ 开调度", fmt.Sprintf("live_act:sched:%d", accountID)),
-					telegram.Btn("🔄 刷新凭据", fmt.Sprintf("live_act:refresh:%d", accountID)),
-				},
-			)
+		plan := browse.LiveActionPlanFor(kind)
+		for _, row := range plan.Rows {
+			btns := make([]telegram.InlineKeyboardButton, 0, len(row))
+			for _, act := range row {
+				label := liveActionTGLabel(act)
+				btns = append(btns, telegram.Btn(label, fmt.Sprintf("live_act:%s:%d", act, accountID)))
+			}
+			if len(btns) > 0 {
+				rows = append(rows, btns)
+			}
 		}
-		if kind != browse.IssueOK {
+		if plan.AppendRefreshWithManage {
 			rows = append(rows, []telegram.InlineKeyboardButton{
-				telegram.Btn("🔄 刷新凭据", fmt.Sprintf("live_act:refresh:%d", accountID)),
+				telegram.Btn(liveActionTGLabel(browse.LiveRefresh), fmt.Sprintf("live_act:%s:%d", browse.LiveRefresh, accountID)),
 				telegram.Btn("🧰 完整管理", fmt.Sprintf("mgr_acc:%d", accountID)),
 			})
 		} else {
@@ -1875,4 +1836,24 @@ func (b *Bot) showAccountLiveWithNotice(ctx context.Context, chatID, msgID, user
 		},
 	)
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+// liveActionTGLabel maps shared live action tokens to Telegram button labels (with emoji).
+func liveActionTGLabel(action string) string {
+	switch action {
+	case browse.LiveHeal:
+		return "🛠 一键修复"
+	case browse.LiveClearErr:
+		return "🧹 清错误"
+	case browse.LiveClearRL:
+		return "⏱ 清限速"
+	case browse.LiveRecover:
+		return "♻️ 恢复"
+	case browse.LiveSched:
+		return "▶️ 开调度"
+	case browse.LiveRefresh:
+		return "🔄 刷新凭据"
+	default:
+		return browse.LiveActionLabel(action)
+	}
 }

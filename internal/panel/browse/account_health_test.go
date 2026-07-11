@@ -38,3 +38,36 @@ func TestAccountIssueLabel(t *testing.T) {
 		t.Fatal(AccountIssueLabel(IssueOK))
 	}
 }
+
+func TestLiveActionPlanFor(t *testing.T) {
+	p := LiveActionPlanFor(IssueError)
+	if len(p.Rows) != 2 || p.Rows[0][0] != LiveHeal || !p.AppendRefreshWithManage {
+		t.Fatalf("error plan: %+v", p)
+	}
+	p = LiveActionPlanFor(IssueRL)
+	if p.Rows[0][0] != LiveClearRL || !p.AppendRefreshWithManage {
+		t.Fatalf("rl plan: %+v", p)
+	}
+	p = LiveActionPlanFor(IssueUnsched)
+	if p.Rows[0][0] != LiveSched {
+		t.Fatalf("unsched plan: %+v", p)
+	}
+	p = LiveActionPlanFor(IssueOK)
+	if p.AppendRefreshWithManage || len(p.Rows) != 3 {
+		t.Fatalf("ok plan: %+v", p)
+	}
+	// disabled should still offer useful recovery actions
+	p = LiveActionPlanFor(IssueDisabled)
+	if len(p.Rows) < 1 || !p.AppendRefreshWithManage {
+		t.Fatalf("disabled plan: %+v", p)
+	}
+}
+
+func TestLiveActionLabel(t *testing.T) {
+	if LiveActionLabel(LiveHeal) != "一键修复" {
+		t.Fatal(LiveActionLabel(LiveHeal))
+	}
+	if LiveActionLabel("x") != "x" {
+		t.Fatal(LiveActionLabel("x"))
+	}
+}

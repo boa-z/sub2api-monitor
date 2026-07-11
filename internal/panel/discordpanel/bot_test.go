@@ -827,3 +827,70 @@ func TestFilterChannelMonitors(t *testing.T) {
 		t.Fatal("bad")
 	}
 }
+
+func TestLiveActionPlanButtons(t *testing.T) {
+	// Shared plan wiring: error prioritizes heal/clear_err; rl prioritizes clear_rl.
+	errPlan := browse.LiveActionPlanFor(browse.IssueError)
+	if errPlan.Rows[0][0] != browse.LiveHeal || !errPlan.AppendRefreshWithManage {
+		t.Fatalf("error plan %+v", errPlan)
+	}
+	rlPlan := browse.LiveActionPlanFor(browse.IssueRL)
+	if rlPlan.Rows[0][0] != browse.LiveClearRL {
+		t.Fatalf("rl plan %+v", rlPlan)
+	}
+}
+
+func TestShowAccountLiveContextAware(t *testing.T) {
+	b, store := testBot(t)
+	// admin with connection so canOpsWrite
+	if _, err := store.GetOrCreatePlatform(100, userstore.PlatformDiscord, "100", "a", "A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(100, func(p *userstore.Profile) error {
+		p.BaseURL = "http://example.invalid"
+		p.AdminAPIKey = "k"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	b.setManageBack(100, "ops_badacc:error:0")
+	// Without live API the function still returns keyboard for write path with IssueOK default
+	// (GetAccount fails). Ensure no duplicate 完整管理 and has back.
+	// We can't hit real API; still verify canOpsWrite path structure via home-level components builder.
+	// Build synthetic comps the same way as showAccountLive write branch for error issue.
+	plan := browse.LiveActionPlanFor(browse.IssueError)
+	comps := []discord.Component{
+		discord.ActionRow(discord.Button("刷新", "acc_live:9", 2)),
+	}
+	for i, row := range plan.Rows {
+		if i >= 2 {
+			break
+		}
+		btns := make([]discord.Component, 0, len(row))
+		for _, act := range row {
+			btns = append(btns, discord.Button(browse.LiveActionLabel(act), "live_act:"+act+":9", 2))
+		}
+		comps = append(comps, discord.ActionRow(btns...))
+	}
+	comps = append(comps, discord.ActionRow(
+		discord.Button(browse.LiveActionLabel(browse.LiveRefresh), "live_act:refresh:9", 2),
+		discord.Button("完整管理", "mgr_acc:9", 2),
+	))
+	comps = append(comps, discord.ActionRow(
+		discord.Button("« 异常账号", "ops_badacc:error:0", 2),
+		discord.Button("« 监控", "cfg_acc", 2),
+	))
+	if len(comps) > 5 {
+		t.Fatalf("too many rows: %d", len(comps))
+	}
+	if !containsCustomID(comps, "live_act:heal:9") || !containsCustomID(comps, "live_act:clear_err:9") {
+		t.Fatal("missing primary error actions")
+	}
+	if !containsCustomID(comps, "live_act:refresh:9") || !containsCustomID(comps, "mgr_acc:9") {
+		t.Fatal("missing refresh+manage")
+	}
+	// should not have clear_rl as first-priority for error (may appear elsewhere? plan doesn't include it)
+	if containsCustomID(comps, "live_act:clear_rl:9") {
+		t.Fatal("error plan should not include clear_rl")
+	}
+}

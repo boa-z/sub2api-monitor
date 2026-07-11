@@ -71,3 +71,90 @@ func AccountNeedsHeal(a sub2api.Account) bool {
 		return false
 	}
 }
+
+// Live quick-action tokens shared by Telegram / Discord live views.
+const (
+	LiveHeal     = "heal"
+	LiveClearErr = "clear_err"
+	LiveClearRL  = "clear_rl"
+	LiveRecover  = "recover"
+	LiveSched    = "sched"
+	LiveRefresh  = "refresh"
+)
+
+// LiveActionPlan describes prioritized live-view action buttons for an issue kind.
+// Rows hold action tokens only (not navigation / manage). When AppendRefreshWithManage
+// is true, the UI should place "refresh" next to "完整管理" instead of in Rows.
+type LiveActionPlan struct {
+	Rows                    [][]string
+	AppendRefreshWithManage bool
+}
+
+// LiveActionPlanFor returns a context-aware action layout for the account issue kind.
+// Mirrors triage priority used by the Telegram live keyboard.
+func LiveActionPlanFor(kind string) LiveActionPlan {
+	switch kind {
+	case IssueError:
+		return LiveActionPlan{
+			Rows: [][]string{
+				{LiveHeal, LiveClearErr},
+				{LiveRecover, LiveSched},
+			},
+			AppendRefreshWithManage: true,
+		}
+	case IssueRL, IssueOverload:
+		return LiveActionPlan{
+			Rows: [][]string{
+				{LiveClearRL, LiveHeal},
+				{LiveSched, LiveClearErr},
+			},
+			AppendRefreshWithManage: true,
+		}
+	case IssueUnsched, IssueTemp:
+		return LiveActionPlan{
+			Rows: [][]string{
+				{LiveSched, LiveHeal},
+				{LiveClearRL, LiveRecover},
+			},
+			AppendRefreshWithManage: true,
+		}
+	case IssueDisabled:
+		// Live has no "enable"; keep recover/sched/heal useful and push refresh to manage row.
+		return LiveActionPlan{
+			Rows: [][]string{
+				{LiveRecover, LiveSched},
+				{LiveHeal, LiveClearErr},
+			},
+			AppendRefreshWithManage: true,
+		}
+	default:
+		return LiveActionPlan{
+			Rows: [][]string{
+				{LiveHeal, LiveClearErr},
+				{LiveClearRL, LiveRecover},
+				{LiveSched, LiveRefresh},
+			},
+			AppendRefreshWithManage: false,
+		}
+	}
+}
+
+// LiveActionLabel is a short Chinese label for a live action token.
+func LiveActionLabel(action string) string {
+	switch action {
+	case LiveHeal:
+		return "一键修复"
+	case LiveClearErr:
+		return "清错误"
+	case LiveClearRL:
+		return "清限速"
+	case LiveRecover:
+		return "恢复"
+	case LiveSched:
+		return "开调度"
+	case LiveRefresh:
+		return "刷新凭据"
+	default:
+		return action
+	}
+}

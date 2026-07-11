@@ -2586,8 +2586,15 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 			bld.WriteString("无\n")
 			return
 		}
+		items := append([]sub2api.OpsError(nil), pageData.Items...)
+		sort.SliceStable(items, func(i, j int) bool {
+			if items[i].Resolved != items[j].Resolved {
+				return !items[i].Resolved && items[j].Resolved
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
 		shown := 0
-		for _, e := range pageData.Items {
+		for _, e := range items {
 			if e.Resolved {
 				continue
 			}
@@ -2605,8 +2612,17 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 			if !e.CreatedAt.IsZero() {
 				when = " · " + e.CreatedAt.Local().Format("01-02 15:04")
 			}
-			fmt.Fprintf(&bld, "• #%d [%s] %d %s%s\n  %s\n",
+			model := e.Model
+			if model == "" {
+				model = e.RequestedModel
+			}
+			plat := e.Platform
+			if plat == "" {
+				plat = "-"
+			}
+			fmt.Fprintf(&bld, "• #%d [%s] %d %s%s\n  %s · %s\n  %s\n",
 				e.ID, e.Severity, e.StatusCode, truncate(name, 14), when,
+				truncate(plat, 12), truncate(model, 18),
 				truncate(e.Message, 70))
 			resolveIDs = append(resolveIDs, struct {
 				kind      string
@@ -3521,11 +3537,26 @@ func (b *Bot) showAccountLive(ctx context.Context, userID, accountID int64, noti
 		bld.WriteString(notice + "\n\n")
 	}
 	fmt.Fprintf(&bld, "**账号 #%d 实时**\n\n", accountID)
+
+	var liveAcc *sub2api.Account
 	if acc, err := cli.GetAccount(ctx, accountID); err == nil && acc != nil {
+		liveAcc = acc
 		fmt.Fprintf(&bld, "名称: `%s`\n平台/类型: `%s` / `%s`\n状态: `%s` · 可调度: `%v`\n",
 			acc.Name, acc.Platform, acc.Type, acc.Status, acc.Schedulable)
+		if kind := browse.AccountIssueKind(*acc); kind != browse.IssueOK {
+			fmt.Fprintf(&bld, "诊断: **%s**\n", browse.AccountIssueLabel(kind))
+		}
 		if acc.ErrorMessage != "" {
 			fmt.Fprintf(&bld, "错误: %s\n", truncate(acc.ErrorMessage, 120))
+		}
+		if acc.RateLimitResetAt != nil {
+			fmt.Fprintf(&bld, "限速重置: `%s`\n", acc.RateLimitResetAt.Local().Format(time.RFC3339))
+		}
+		if acc.OverloadUntil != nil {
+			fmt.Fprintf(&bld, "过载至: `%s`\n", acc.OverloadUntil.Local().Format(time.RFC3339))
+		}
+		if acc.TempUnschedulableUntil != nil {
+			fmt.Fprintf(&bld, "临时停调度至: `%s`\n", acc.TempUnschedulableUntil.Local().Format(time.RFC3339))
 		}
 	} else if err != nil {
 		fmt.Fprintf(&bld, "账号详情失败: %s\n", err.Error())
@@ -3590,35 +3621,74 @@ func (b *Bot) showAccountLive(ctx context.Context, userID, accountID int64, noti
 			}
 		}
 	}
+
+	// Discord max 5 action rows: refresh + up to 2 triage rows + manage + back.
 	comps := []discord.Component{
 		discord.ActionRow(discord.Button("刷新", fmt.Sprintf("acc_live:%d", accountID), 2)),
 	}
 	if b.canOpsWrite(userID) {
-		comps = append(comps,
-			discord.ActionRow(
-				discord.Button("一键修复", fmt.Sprintf("live_act:heal:%d", accountID), 1),
-				discord.Button("清错误", fmt.Sprintf("live_act:clear_err:%d", accountID), 2),
-				discord.Button("清限速", fmt.Sprintf("live_act:clear_rl:%d", accountID), 2),
-			),
-			discord.ActionRow(
-				discord.Button("恢复", fmt.Sprintf("live_act:recover:%d", accountID), 2),
-				discord.Button("开调度", fmt.Sprintf("live_act:sched:%d", accountID), 2),
-				discord.Button("刷新凭据", fmt.Sprintf("live_act:refresh:%d", accountID), 2),
-			),
-			discord.ActionRow(
-				discord.Button("完整管理", fmt.Sprintf("mgr_acc:%d", accountID), 2),
-			),
-		)
+		kind := browse.IssueOK
+		if liveAcc != nil {
+			kind = browse.AccountIssueKind(*liveAcc)
+		}
+		plan := browse.LiveActionPlanFor(kind)
+		// Prefer primary triage rows; keep room for manage + back (max 5 total).
+		maxActionRows := 2
+		if !plan.AppendRefreshWithManage {
+			// healthy path has 3 action rows in plan but Discord budget is tight:
+			// keep heal/clear + clear_rl/recover, fold sched into manage row with refresh.
+			maxActionRows = 2
+		}
+		for i, row := range plan.Rows {
+			if i >= maxActionRows {
+				break
+			}
+			btns := make([]discord.Component, 0, len(row))
+			for _, act := range row {
+				style := 2
+				if act == browse.LiveHeal || act == browse.LiveSched {
+					style = 1
+				}
+				btns = append(btns, discord.Button(
+					browse.LiveActionLabel(act),
+					fmt.Sprintf("live_act:%s:%d", act, accountID),
+					style,
+				))
+			}
+			if len(btns) > 0 {
+				comps = append(comps, discord.ActionRow(btns...))
+			}
+		}
+		manageRow := []discord.Component{
+			discord.Button("完整管理", fmt.Sprintf("mgr_acc:%d", accountID), 2),
+		}
+		if plan.AppendRefreshWithManage {
+			// put refresh credentials next to manage (TG parity)
+			manageRow = append([]discord.Component{
+				discord.Button(browse.LiveActionLabel(browse.LiveRefresh), fmt.Sprintf("live_act:%s:%d", browse.LiveRefresh, accountID), 2),
+			}, manageRow...)
+		} else {
+			// healthy: offer open-sched if not already in shown rows
+			manageRow = append([]discord.Component{
+				discord.Button(browse.LiveActionLabel(browse.LiveSched), fmt.Sprintf("live_act:%s:%d", browse.LiveSched, accountID), 1),
+				discord.Button(browse.LiveActionLabel(browse.LiveRefresh), fmt.Sprintf("live_act:%s:%d", browse.LiveRefresh, accountID), 2),
+			}, manageRow...)
+		}
+		comps = append(comps, discord.ActionRow(manageRow...))
 	} else if b.canOpsRead(userID) {
 		comps = append(comps, discord.ActionRow(
 			discord.Button("账号详情", fmt.Sprintf("mgr_acc:%d", accountID), 2),
 		))
 	}
 	backLabel, backData := b.manageBackLabel(userID)
+	// Avoid duplicate "完整管理" — only back + watched-accounts list.
 	comps = append(comps, discord.ActionRow(
 		discord.Button(backLabel, backData, 2),
-		discord.Button("完整管理", fmt.Sprintf("mgr_acc:%d", accountID), 2),
+		discord.Button("« 监控", "cfg_acc", 2),
 	))
+	if len(comps) > 5 {
+		comps = comps[:5]
+	}
 	return bld.String(), comps
 }
 
