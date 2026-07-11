@@ -687,7 +687,7 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		text, comps := b.bulkActionPrompt(ctx, uid, "heal", "批量一键修复", "mgr_bulk_heal_go")
+		text, comps := b.bulkActionPrompt(ctx, uid, "heal", "批量一键修复(清错+清限速+清临时停+恢复+启用+开调度)", "mgr_bulk_heal_go")
 		return b.update(ctx, it, text, comps)
 	case data == "mgr_bulk_heal_go":
 		if !b.isAdmin(uid) {

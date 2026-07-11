@@ -43,7 +43,7 @@ func (b *Bot) homeText(userID int64) string {
 				bld.WriteString("**运维快照**\n")
 				fmt.Fprintf(&bld, "正常 `%v` · 异常 `%v` · 限速 `%v` · 过载 `%v`\n",
 					st.NormalAccounts, st.ErrorAccounts, st.RatelimitAccounts, st.OverloadAccounts)
-				if st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 {
+				if st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 || st.OverloadAccounts > 0 {
 					bld.WriteString("可从下方运维/看板快速处理异常。\n")
 				}
 				bld.WriteString("\n")

@@ -1119,7 +1119,7 @@ func (b *Bot) bulkClearRLPrompt(ctx context.Context, chatID, msgID, userID int64
 }
 
 func (b *Bot) bulkHealPrompt(ctx context.Context, chatID, msgID, userID int64) error {
-	return b.bulkAccountActionPrompt(ctx, chatID, msgID, userID, "一键修复(清错+清限速+恢复+开调度)", "批量一键修复确认", "mgr_bulk_heal_go")
+	return b.bulkAccountActionPrompt(ctx, chatID, msgID, userID, "一键修复(清错+清限速+清临时停+恢复+启用+开调度)", "批量一键修复确认", "mgr_bulk_heal_go")
 }
 
 func (b *Bot) bulkEnablePrompt(ctx context.Context, chatID, msgID, userID int64) error {

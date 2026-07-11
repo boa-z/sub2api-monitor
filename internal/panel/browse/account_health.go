@@ -173,8 +173,10 @@ func LiveActionLabel(action string) string {
 	}
 }
 
-// HealAccount runs clear error + clear rate limit + recover + enable schedulable.
+// HealAccount runs a recovery pipeline:
+// clear error → clear rate limit → clear temp unsched → recover → enable (active) → enable schedulable.
 // Returns a human-readable summary (no HTML/markdown escaping).
+// Individual step failures are collected so partially-healed accounts still report progress.
 func HealAccount(ctx context.Context, cli *sub2api.Client, accountID int64, truncateFn func(string, int) string) string {
 	if truncateFn == nil {
 		truncateFn = func(s string, n int) string {
@@ -194,7 +196,9 @@ func HealAccount(ctx context.Context, cli *sub2api.Client, accountID int64, trun
 	}{
 		{"清错误", func() error { _, err := cli.ClearAccountError(ctx, accountID); return err }},
 		{"清限速", func() error { _, err := cli.ClearAccountRateLimit(ctx, accountID); return err }},
+		{"清临时停", func() error { return cli.ClearTempUnschedulable(ctx, accountID) }},
 		{"恢复", func() error { _, err := cli.RecoverAccountState(ctx, accountID); return err }},
+		{"启用", func() error { _, err := cli.SetAccountStatus(ctx, accountID, "active"); return err }},
 		{"开调度", func() error { _, err := cli.SetSchedulable(ctx, accountID, true); return err }},
 	}
 	var ok, fail []string
