@@ -137,6 +137,64 @@ make build
 docker compose up -d
 ```
 
+## Telegram 用户态面板
+
+开启后，用户可在 **私聊 Bot** 中自助配置自己的监控，无需改服务器 YAML：
+
+```yaml
+telegram:
+  bot_token: "..."
+  chat_id: "管理员ID"        # 仍用于全局运维告警
+  panel:
+    enabled: true
+    allow_user_ids: [123456789]       # 白名单（你的 Telegram 数字 ID）；或 open_registration/allow_all
+
+    users_path: "./data/users.json"
+    check_interval: 5m
+    cooldown: 2h
+```
+
+### 用户操作
+
+1. 私聊 Bot 发送 `/start`
+2. **连接配置** → 设置 Base URL、Admin API Key → 测试连接
+3. **监控账号** → 添加 Sub2API 账号 ID
+4. 保持「监控开启」；后台按 `check_interval` 拉用量，超阈值私聊提醒
+5. **立即检查** 可手动看当前各窗口使用率
+
+常用命令：`/start` `/status` `/setbase` `/setkey` `/addaccount` `/delaccount` `/check` `/help`
+
+### 数据模型
+
+```
+data/users.json
+└─ users[]
+   ├─ telegram_user_id / chat_id
+   ├─ base_url / admin_api_key   # 每用户独立连接
+   ├─ enabled / source
+   └─ accounts[{id, name, thresholds?, enabled?}]
+```
+
+- 与全局 `checks.account_usage`（YAML 写死账号）可并存
+- 面板用户告警只发给该用户 `chat_id`，互不干扰
+- `users.json` 含密钥，已由 `data/` 目录 gitignore
+
+### 架构
+
+```
+Telegram 用户 ──getUpdates──► panel.Bot
+                                │ 读写
+                                ▼
+                           userstore (users.json)
+                                │
+                     UserUsageCollector 定时轮询
+                                │ 每用户独立 Admin API
+                                ▼
+                           Sub2API instances
+                                │
+                     alerter ──► telegram.Client ──► 该用户私聊
+```
+
 ## 配置说明
 
 见 [`config.example.yaml`](config.example.yaml)。
@@ -175,7 +233,8 @@ checks:
     accounts:
       - id: 42
         name: claude-main
-        chat_ids: ["1951951866"]   # 可推给特定用户/群
+        chat_ids: ["123456789"]        # 可推给特定用户/群
+
         thresholds:                # 可选，覆盖 default
           - window: five_hour
             utilization_gte: 70

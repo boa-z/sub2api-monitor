@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,68 @@ type Message struct {
 	Text                string
 	ParseMode           string
 	DisableNotification bool
+	ReplyMarkup         any // InlineKeyboardMarkup or nil
+}
+
+// InlineKeyboardButton is a single button.
+type InlineKeyboardButton struct {
+	Text         string `json:"text"`
+	CallbackData string `json:"callback_data,omitempty"`
+	URL          string `json:"url,omitempty"`
+}
+
+// InlineKeyboardMarkup is a grid of buttons.
+type InlineKeyboardMarkup struct {
+	InlineKeyboard [][]InlineKeyboardButton `json:"inline_keyboard"`
+}
+
+// Row builds a single-row keyboard.
+func Row(buttons ...InlineKeyboardButton) []InlineKeyboardButton {
+	return buttons
+}
+
+// Btn creates a callback button.
+func Btn(text, data string) InlineKeyboardButton {
+	return InlineKeyboardButton{Text: text, CallbackData: data}
+}
+
+// ----- inbound update types (subset) -----
+
+type User struct {
+	ID        int64  `json:"id"`
+	IsBot     bool   `json:"is_bot"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Username  string `json:"username"`
+}
+
+type Chat struct {
+	ID        int64  `json:"id"`
+	Type      string `json:"type"`
+	Title     string `json:"title"`
+	Username  string `json:"username"`
+	FirstName string `json:"first_name"`
+}
+
+type InMessage struct {
+	MessageID int64  `json:"message_id"`
+	From      *User  `json:"from"`
+	Chat      Chat   `json:"chat"`
+	Date      int64  `json:"date"`
+	Text      string `json:"text"`
+}
+
+type CallbackQuery struct {
+	ID      string     `json:"id"`
+	From    *User      `json:"from"`
+	Message *InMessage `json:"message"`
+	Data    string     `json:"data"`
+}
+
+type Update struct {
+	UpdateID      int64          `json:"update_id"`
+	Message       *InMessage     `json:"message"`
+	CallbackQuery *CallbackQuery `json:"callback_query"`
 }
 
 // Client talks to the Telegram Bot API with multi-chat support and basic rate limiting.
@@ -33,14 +97,11 @@ type Client struct {
 	apiBase             string
 	http                *http.Client
 
-	// simple global rate limit: min interval between sendMessage calls
 	mu       sync.Mutex
 	lastSend time.Time
 	minGap   time.Duration
 }
 
-// New creates a Telegram client. bot_token is required; default chat_id is recommended
-// but optional if every alert supplies its own chat_ids.
 func New(cfg config.TelegramConfig) (*Client, error) {
 	if strings.TrimSpace(cfg.BotToken) == "" {
 		return nil, fmt.Errorf("telegram.bot_token is required")
@@ -55,7 +116,7 @@ func New(cfg config.TelegramConfig) (*Client, error) {
 	}
 	minGap := cfg.MinSendInterval
 	if minGap <= 0 {
-		minGap = 50 * time.Millisecond // ~20 msg/s soft limit; Telegram allows ~30/s to different chats
+		minGap = 50 * time.Millisecond
 	}
 	return &Client{
 		token:               cfg.BotToken,
@@ -64,17 +125,14 @@ func New(cfg config.TelegramConfig) (*Client, error) {
 		parseMode:           parseMode,
 		disableNotification: cfg.DisableNotification,
 		apiBase:             base,
-		http:                &http.Client{Timeout: 20 * time.Second},
+		http:                &http.Client{Timeout: 60 * time.Second},
 		minGap:              minGap,
 	}, nil
 }
 
-// DefaultChatID returns the primary chat.
 func (c *Client) DefaultChatID() string { return c.defaultChatID }
+func (c *Client) ParseMode() string     { return c.parseMode }
 
-// ResolveChatIDs merges per-event chat overrides with defaults.
-// If overrides is empty, returns default + extra.
-// Deduplicates while preserving order.
 func (c *Client) ResolveChatIDs(overrides []string) []string {
 	if len(overrides) > 0 {
 		return normalizeChatIDs(overrides)
@@ -87,17 +145,14 @@ func (c *Client) ResolveChatIDs(overrides []string) []string {
 	return normalizeChatIDs(out)
 }
 
-// Send sends text to the default recipient set (default + extra).
 func (c *Client) Send(ctx context.Context, text string) error {
 	return c.SendTo(ctx, nil, text, c.disableNotification)
 }
 
-// SendSilent sends a quiet notification to the default recipient set.
 func (c *Client) SendSilent(ctx context.Context, text string) error {
 	return c.SendTo(ctx, nil, text, true)
 }
 
-// SendTo delivers text to the given chat IDs (or defaults when empty).
 func (c *Client) SendTo(ctx context.Context, chatIDs []string, text string, silent bool) error {
 	targets := c.ResolveChatIDs(chatIDs)
 	if len(targets) == 0 {
@@ -107,7 +162,7 @@ func (c *Client) SendTo(ctx context.Context, chatIDs []string, text string, sile
 	var firstErr error
 	for _, chatID := range targets {
 		for _, chunk := range chunks {
-			if err := c.sendOne(ctx, chatID, chunk, silent); err != nil {
+			if err := c.sendOne(ctx, chatID, chunk, silent, nil); err != nil {
 				if firstErr == nil {
 					firstErr = fmt.Errorf("chat %s: %w", chatID, err)
 				}
@@ -117,7 +172,97 @@ func (c *Client) SendTo(ctx context.Context, chatIDs []string, text string, sile
 	return firstErr
 }
 
-// SendMessage sends a pre-built Message (single chat).
+// SendChat sends text to a single chat (by int64 or string id).
+func (c *Client) SendChat(ctx context.Context, chatID any, text string, markup *InlineKeyboardMarkup) error {
+	id := chatIDString(chatID)
+	if id == "" {
+		return fmt.Errorf("empty chat id")
+	}
+	chunks := splitRunes(text, 4000)
+	for i, chunk := range chunks {
+		var m *InlineKeyboardMarkup
+		if i == len(chunks)-1 {
+			m = markup
+		}
+		if err := c.sendOne(ctx, id, chunk, c.disableNotification, m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// EditMessage edits an existing message text + optional markup.
+func (c *Client) EditMessage(ctx context.Context, chatID any, messageID int64, text string, markup *InlineKeyboardMarkup) error {
+	c.throttle(ctx)
+	payload := map[string]any{
+		"chat_id":                  chatIDString(chatID),
+		"message_id":               messageID,
+		"text":                     text,
+		"parse_mode":               c.parseMode,
+		"disable_web_page_preview": true,
+	}
+	if markup != nil {
+		payload["reply_markup"] = markup
+	}
+	return c.apiCall(ctx, "editMessageText", payload, nil)
+}
+
+// AnswerCallback answers a callback query (dismiss loading spinner).
+func (c *Client) AnswerCallback(ctx context.Context, callbackID, text string, showAlert bool) error {
+	payload := map[string]any{
+		"callback_query_id": callbackID,
+	}
+	if text != "" {
+		payload["text"] = text
+		payload["show_alert"] = showAlert
+	}
+	return c.apiCall(ctx, "answerCallbackQuery", payload, nil)
+}
+
+// GetUpdates long-polls for updates.
+func (c *Client) GetUpdates(ctx context.Context, offset int64, timeoutSec int) ([]Update, error) {
+	if timeoutSec <= 0 {
+		timeoutSec = 30
+	}
+	q := url.Values{}
+	q.Set("offset", strconv.FormatInt(offset, 10))
+	q.Set("timeout", strconv.Itoa(timeoutSec))
+	q.Set("allowed_updates", `["message","callback_query"]`)
+
+	// Use longer HTTP timeout than long-poll
+	u := fmt.Sprintf("%s/bot%s/getUpdates?%s", c.apiBase, c.token, q.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	var ar struct {
+		OK          bool     `json:"ok"`
+		Description string   `json:"description"`
+		Result      []Update `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &ar); err != nil {
+		return nil, fmt.Errorf("getUpdates decode: %w", err)
+	}
+	if !ar.OK {
+		return nil, fmt.Errorf("getUpdates: %s", ar.Description)
+	}
+	return ar.Result, nil
+}
+
+// DeleteWebhook clears any webhook so getUpdates works.
+func (c *Client) DeleteWebhook(ctx context.Context) error {
+	return c.apiCall(ctx, "deleteWebhook", map[string]any{"drop_pending_updates": false}, nil)
+}
+
 func (c *Client) SendMessage(ctx context.Context, msg Message) error {
 	chatID := strings.TrimSpace(msg.ChatID)
 	if chatID == "" {
@@ -130,62 +275,55 @@ func (c *Client) SendMessage(ctx context.Context, msg Message) error {
 	if mode == "" {
 		mode = c.parseMode
 	}
+	_ = mode
 	silent := msg.DisableNotification
+	var markup *InlineKeyboardMarkup
+	if m, ok := msg.ReplyMarkup.(*InlineKeyboardMarkup); ok {
+		markup = m
+	}
 	chunks := splitRunes(msg.Text, 4000)
-	for _, chunk := range chunks {
-		if err := c.sendOneWithMode(ctx, chatID, chunk, mode, silent); err != nil {
+	for i, chunk := range chunks {
+		var m *InlineKeyboardMarkup
+		if i == len(chunks)-1 {
+			m = markup
+		}
+		if err := c.sendOneWithMode(ctx, chatID, chunk, c.parseMode, silent, m); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-type sendMessageReq struct {
-	ChatID                string `json:"chat_id"`
-	Text                  string `json:"text"`
-	ParseMode             string `json:"parse_mode,omitempty"`
-	DisableNotification   bool   `json:"disable_notification,omitempty"`
-	DisableWebPagePreview bool   `json:"disable_web_page_preview"`
+func (c *Client) sendOne(ctx context.Context, chatID, text string, silent bool, markup *InlineKeyboardMarkup) error {
+	return c.sendOneWithMode(ctx, chatID, text, c.parseMode, silent, markup)
 }
 
-type apiResp struct {
-	OK          bool            `json:"ok"`
-	Description string          `json:"description"`
-	Result      json.RawMessage `json:"result"`
-	// Parameters may include retry_after on 429
-	Parameters *struct {
-		RetryAfter int `json:"retry_after"`
-	} `json:"parameters"`
-}
-
-func (c *Client) sendOne(ctx context.Context, chatID, text string, silent bool) error {
-	return c.sendOneWithMode(ctx, chatID, text, c.parseMode, silent)
-}
-
-func (c *Client) sendOneWithMode(ctx context.Context, chatID, text, parseMode string, silent bool) error {
+func (c *Client) sendOneWithMode(ctx context.Context, chatID, text, parseMode string, silent bool, markup *InlineKeyboardMarkup) error {
 	c.throttle(ctx)
-
-	payload := sendMessageReq{
-		ChatID:                chatID,
-		Text:                  text,
-		ParseMode:             parseMode,
-		DisableNotification:   silent,
-		DisableWebPagePreview: true,
+	payload := map[string]any{
+		"chat_id":                  chatID,
+		"text":                     text,
+		"disable_notification":     silent,
+		"disable_web_page_preview": true,
 	}
-	if err := c.postSend(ctx, payload); err != nil {
-		// retry without parse_mode on parse errors
+	if parseMode != "" {
+		payload["parse_mode"] = parseMode
+	}
+	if markup != nil {
+		payload["reply_markup"] = markup
+	}
+	if err := c.apiCall(ctx, "sendMessage", payload, nil); err != nil {
 		if parseMode != "" && strings.Contains(strings.ToLower(err.Error()), "parse") {
-			payload.ParseMode = ""
-			return c.postSend(ctx, payload)
+			delete(payload, "parse_mode")
+			return c.apiCall(ctx, "sendMessage", payload, nil)
 		}
-		// retry_after handling
 		if ra, ok := asRetryAfter(err); ok && ra > 0 {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-time.After(time.Duration(ra) * time.Second):
 			}
-			return c.postSend(ctx, payload)
+			return c.apiCall(ctx, "sendMessage", payload, nil)
 		}
 		return err
 	}
@@ -206,25 +344,33 @@ func asRetryAfter(err error) (int, bool) {
 	return 0, false
 }
 
-func (c *Client) postSend(ctx context.Context, payload sendMessageReq) error {
-	body, _ := json.Marshal(payload)
-	url := fmt.Sprintf("%s/bot%s/sendMessage", c.apiBase, c.token)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+func (c *Client) apiCall(ctx context.Context, method string, payload any, result any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	u := fmt.Sprintf("%s/bot%s/%s", c.apiBase, c.token, method)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-
-	var ar apiResp
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	var ar struct {
+		OK          bool            `json:"ok"`
+		Description string          `json:"description"`
+		Result      json.RawMessage `json:"result"`
+		Parameters  *struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
+	}
 	if err := json.Unmarshal(raw, &ar); err != nil {
-		return fmt.Errorf("telegram decode: %w body=%s", err, string(raw))
+		return fmt.Errorf("telegram %s decode: %w body=%s", method, err, string(raw))
 	}
 	if !ar.OK {
 		if resp.StatusCode == 429 || strings.Contains(strings.ToLower(ar.Description), "too many") {
@@ -234,7 +380,14 @@ func (c *Client) postSend(ctx context.Context, payload sendMessageReq) error {
 			}
 			return &retryAfterError{seconds: ra, msg: ar.Description}
 		}
-		return fmt.Errorf("telegram: %s", ar.Description)
+		// editMessage "message is not modified" is benign
+		if strings.Contains(strings.ToLower(ar.Description), "message is not modified") {
+			return nil
+		}
+		return fmt.Errorf("telegram %s: %s", method, ar.Description)
+	}
+	if result != nil && len(ar.Result) > 0 {
+		return json.Unmarshal(ar.Result, result)
 	}
 	return nil
 }
@@ -250,6 +403,21 @@ func (c *Client) throttle(ctx context.Context) {
 		}
 	}
 	c.lastSend = time.Now()
+}
+
+func chatIDString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case int:
+		return strconv.Itoa(t)
+	case json.Number:
+		return t.String()
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 func normalizeChatIDs(ids []string) []string {
@@ -291,7 +459,6 @@ func splitRunes(s string, max int) []string {
 	return out
 }
 
-// EscapeHTML escapes text for Telegram HTML parse mode.
 func EscapeHTML(s string) string {
 	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")
@@ -299,12 +466,10 @@ func EscapeHTML(s string) string {
 	return s
 }
 
-// Code wraps s as <code>…</code> with escaping.
 func Code(s string) string {
 	return "<code>" + EscapeHTML(s) + "</code>"
 }
 
-// Bold wraps s as <b>…</b> with escaping.
 func Bold(s string) string {
 	return "<b>" + EscapeHTML(s) + "</b>"
 }

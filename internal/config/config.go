@@ -37,6 +37,25 @@ type TelegramConfig struct {
 	APIBase             string        `yaml:"api_base"`
 	SendStartupMessage  bool          `yaml:"send_startup_message"`
 	MinSendInterval     time.Duration `yaml:"min_send_interval"`
+	// Panel is the interactive user control panel (Telegram private chat).
+	Panel PanelConfig `yaml:"panel"`
+}
+
+// PanelConfig controls the Telegram user-facing configuration UI.
+type PanelConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// AllowUserIDs restricts who can use the panel. Empty + OpenRegistration/AllowAll controls open access.
+	AllowUserIDs []int64 `yaml:"allow_user_ids"`
+	// AllowAll lets any Telegram user configure their own profile (still isolated).
+	AllowAll bool `yaml:"allow_all"`
+	// OpenRegistration is alias behavior: when allow list empty, allow anyone (default true if panel enabled and list empty — set explicitly).
+	OpenRegistration bool `yaml:"open_registration"`
+	// UsersPath is where per-user profiles are stored (JSON).
+	UsersPath string `yaml:"users_path"`
+	// CheckInterval for per-user usage polling.
+	CheckInterval time.Duration `yaml:"check_interval"`
+	// Cooldown for per-user usage alerts.
+	Cooldown time.Duration `yaml:"cooldown"`
 }
 
 type PollConfig struct {
@@ -213,6 +232,13 @@ func defaultConfig() *Config {
 			APIBase:            "https://api.telegram.org",
 			SendStartupMessage: true,
 			MinSendInterval:    50 * time.Millisecond,
+				Panel: PanelConfig{
+					Enabled:          false,
+					OpenRegistration: true,
+					UsersPath:        "./data/users.json",
+					CheckInterval:    5 * time.Minute,
+					Cooldown:         2 * time.Hour,
+				},
 		},
 		Poll: PollConfig{
 			Interval: 30 * time.Second,
@@ -299,20 +325,21 @@ func applyEnv(cfg *Config) {
 }
 
 func (c *Config) Validate() error {
-	if strings.TrimSpace(c.Sub2API.BaseURL) == "" {
+	// When panel is enabled, global sub2api can be optional (users bring their own).
+	panelOn := c.Telegram.Panel.Enabled
+
+	if strings.TrimSpace(c.Sub2API.BaseURL) == "" && !panelOn {
 		return fmt.Errorf("sub2api.base_url is required")
 	}
 	c.Sub2API.BaseURL = strings.TrimRight(c.Sub2API.BaseURL, "/")
-	if c.Sub2API.AdminAPIKey == "" && c.Sub2API.JWT == "" {
+	if c.Sub2API.AdminAPIKey == "" && c.Sub2API.JWT == "" && !panelOn {
 		return fmt.Errorf("sub2api.admin_api_key or sub2api.jwt is required")
 	}
 	if strings.TrimSpace(c.Telegram.BotToken) == "" {
 		return fmt.Errorf("telegram.bot_token is required")
 	}
-	// default chat can be empty only if extra chats exist or per-account chat_ids will be used
-	if c.Telegram.ChatID == "" && len(c.Telegram.ExtraChatIDs) == 0 {
-		// still allow if account_usage targets all specify chat_ids — warn via soft check later
-		// require at least one global recipient for ops alerts
+	// default chat can be empty only if panel enabled or account_usage has per-target chats
+	if c.Telegram.ChatID == "" && len(c.Telegram.ExtraChatIDs) == 0 && !panelOn {
 		if !c.Checks.AccountUsage.Enabled || len(c.Checks.AccountUsage.Accounts) == 0 {
 			return fmt.Errorf("telegram.chat_id is required")
 		}
@@ -348,6 +375,23 @@ func (c *Config) Validate() error {
 	}
 	if c.Checks.Health.FailThreshold <= 0 {
 		c.Checks.Health.FailThreshold = 1
+	}
+
+	// panel defaults
+	if panelOn {
+		if c.Telegram.Panel.UsersPath == "" {
+			c.Telegram.Panel.UsersPath = "./data/users.json"
+		}
+		if c.Telegram.Panel.CheckInterval <= 0 {
+			c.Telegram.Panel.CheckInterval = 5 * time.Minute
+		}
+		if c.Telegram.Panel.Cooldown <= 0 {
+			c.Telegram.Panel.Cooldown = 2 * time.Hour
+		}
+		// If neither allow list nor allow_all/open_registration, default open_registration=true
+		if len(c.Telegram.Panel.AllowUserIDs) == 0 && !c.Telegram.Panel.AllowAll && !c.Telegram.Panel.OpenRegistration {
+			c.Telegram.Panel.OpenRegistration = true
+		}
 	}
 
 	// account usage validation

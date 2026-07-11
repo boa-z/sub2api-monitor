@@ -21,6 +21,20 @@ telegram:
   min_send_interval: 50ms # 全局限速，避免 Telegram 429
   # api_base: "https://api.telegram.org"  # 可选代理镜像
 
+  # ---------- Telegram 用户态面板 ----------
+  # 用户私聊 Bot 可自助配置 base_url / api_key / 监控账号
+  # 每位用户数据隔离，存于 users_path（默认 ./data/users.json）
+  panel:
+    enabled: false # true 开启交互面板 + 按用户轮询用量
+    # allow_user_ids:           # 白名单（Telegram 数字 ID）；非空时仅列表内用户可用
+    #   - 123456789                 # 替换为你的 Telegram 用户 ID
+
+    allow_all: false # true = 任意用户可用（仍互相隔离）
+    open_registration: true # allow 列表为空时是否开放注册（默认 true）
+    users_path: "./data/users.json" # 用户配置持久化路径
+    check_interval: 5m # 用户监控账号的检查间隔
+    cooldown: 2h # 用户用量告警冷却
+
 poll:
   interval: 30s # 主循环间隔（各探针也可单独设 interval）
   jitter: 3s # 防惊群抖动
@@ -133,7 +147,8 @@ checks:
       # - id: 42                  # 必填：Sub2API 账号 ID
       #   name: "claude-main"     # 仅展示用；不填则用后台账号名
       #   chat_ids:               # 不填则用 telegram.chat_id (+ extra_chat_ids)
-      #     - "1951951866"
+      #     - "123456789"             # 替换为接收提醒的 chat_id
+
       #   # source: active        # 覆盖全局 source
       #   # disable_usage: false  # 只关用量窗口、保留 today
       #   # disable_today: false  # 只关 today 统计

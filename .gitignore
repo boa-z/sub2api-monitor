@@ -17,6 +17,7 @@ data/
 *.db
 *.db-journal
 *.log
+users.json
 
 # IDE / OS
 .idea/
