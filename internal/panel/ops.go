@@ -1179,8 +1179,17 @@ func (b *Bot) showTraffic(ctx context.Context, chatID, msgID, userID int64, wind
 	if !traf.Timestamp.IsZero() {
 		fmt.Fprintf(&bld, "采样时间: %s\n", telegram.Code(traf.Timestamp.Local().Format("01-02 15:04:05")))
 	}
-	bld.WriteString("\n切换下方窗口可对比不同时间尺度；QPS 骤降可结合看板/异常账号排查。")
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), trafficKeyboard(window))
+	dropped := browse.TrafficIsDropped(qps, peak)
+	if dropped {
+		fmt.Fprintf(&bld, "\n%s 相对峰值下降约 %s%%（当前 ≤ 峰值 × %.0f%%）。建议检查并发/异常账号。\n",
+			telegram.Bold("⚠ 流量骤降"),
+			telegram.Code(strconv.Itoa(browse.TrafficDropPercent(qps, peak))),
+			browse.TrafficDropRatio*100,
+		)
+	} else {
+		bld.WriteString("\n切换下方窗口可对比不同时间尺度；QPS 骤降可结合看板/异常账号排查。")
+	}
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), trafficKeyboard(window, dropped))
 }
 
 func trafficWindows() []string {
@@ -1205,8 +1214,9 @@ func normalizeTrafficWindow(w string) string {
 	}
 }
 
-func trafficKeyboard(window string) *telegram.InlineKeyboardMarkup {
+func trafficKeyboard(window string, dropped ...bool) *telegram.InlineKeyboardMarkup {
 	window = normalizeTrafficWindow(window)
+	isDrop := len(dropped) > 0 && dropped[0]
 	var winRow []telegram.InlineKeyboardButton
 	for _, w := range trafficWindows() {
 		label := w
@@ -1215,14 +1225,36 @@ func trafficKeyboard(window string) *telegram.InlineKeyboardMarkup {
 		}
 		winRow = append(winRow, telegram.Btn(label, "ops_traf:"+w))
 	}
-	return &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			winRow,
-			{telegram.Btn("🔄 刷新", "ops_traf:"+window), telegram.Btn("« 运维菜单", "ops_menu")},
-			{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn("⚙️ 并发", "ops_conc"), telegram.Btn("📋 异常账号", "ops_badacc:error:0")},
-			{telegram.Btn("« 主面板", "home")},
-		},
+	rows := [][]telegram.InlineKeyboardButton{
+		winRow,
+		{telegram.Btn("🔄 刷新", "ops_traf:"+window), telegram.Btn("« 运维菜单", "ops_menu")},
 	}
+	if isDrop {
+		rows = append(rows,
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("⚙️ 并发", "ops_conc"),
+				telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			},
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("❌ 错误", "ops_errors:all:0"),
+				telegram.Btn("✅ 可用性", "ops_avail"),
+			},
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("📈 看板", "ops_dash"),
+				telegram.Btn("« 主面板", "home"),
+			},
+		)
+	} else {
+		rows = append(rows,
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("📈 看板", "ops_dash"),
+				telegram.Btn("⚙️ 并发", "ops_conc"),
+				telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			},
+			[]telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")},
+		)
+	}
+	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64, tab string) error {

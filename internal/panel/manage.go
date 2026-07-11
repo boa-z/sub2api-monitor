@@ -1442,16 +1442,101 @@ func (b *Bot) showGroupDetail(ctx context.Context, chatID, msgID, userID, groupI
 	if strings.TrimSpace(g.Description) != "" {
 		fmt.Fprintf(&bld, "描述: %s\n", telegram.EscapeHTML(truncateRunes(g.Description, 160)))
 	}
-	bld.WriteString("\n只读详情。")
+	// best-effort live load / availability for this group or its platform
+	plat := strings.ToLower(strings.TrimSpace(g.Platform))
+	hot := false
+	if snap, err := cli.GetConcurrency(ctx); err == nil && snap != nil && snap.Enabled {
+		var bucket *sub2api.ConcurrencyBucket
+		for _, v := range snap.Group {
+			if v.GroupID == g.ID {
+				mm := v
+				bucket = &mm
+				break
+			}
+		}
+		if bucket != nil {
+			fmt.Fprintf(&bld, "并发: %s/%s (%.0f%%) wait=%s\n",
+				telegram.Code(strconv.Itoa(bucket.CurrentInUse)),
+				telegram.Code(strconv.Itoa(bucket.MaxCapacity)),
+				bucket.LoadPercentage,
+				telegram.Code(strconv.Itoa(bucket.WaitingInQueue)),
+			)
+			hot = browse.IsHotLoad(bucket.LoadPercentage, bucket.WaitingInQueue)
+		} else if plat != "" {
+			for k, v := range snap.Platform {
+				name := strings.ToLower(k)
+				if v.Platform != "" {
+					name = strings.ToLower(v.Platform)
+				}
+				if name == plat {
+					fmt.Fprintf(&bld, "平台并发(%s): %s/%s (%.0f%%) wait=%s\n",
+						telegram.EscapeHTML(plat),
+						telegram.Code(strconv.Itoa(v.CurrentInUse)),
+						telegram.Code(strconv.Itoa(v.MaxCapacity)),
+						v.LoadPercentage,
+						telegram.Code(strconv.Itoa(v.WaitingInQueue)),
+					)
+					hot = browse.IsHotLoad(v.LoadPercentage, v.WaitingInQueue)
+					break
+				}
+			}
+		}
+	}
+	if av, err := cli.GetAccountAvailability(ctx); err == nil && av != nil && av.Enabled && plat != "" {
+		for k, bucket := range av.Platform {
+			if strings.EqualFold(k, plat) || strings.EqualFold(bucket.Platform, plat) {
+				tot := bucket.TotalNum()
+				avn := bucket.AvailableNum()
+				rate := 0.0
+				if tot > 0 {
+					rate = float64(avn) / float64(tot) * 100
+				}
+				fmt.Fprintf(&bld, "可用性(%s): %s/%s (%.0f%%) err=%s rl=%s\n",
+					telegram.EscapeHTML(plat),
+					telegram.Code(strconv.Itoa(avn)),
+					telegram.Code(strconv.Itoa(tot)),
+					rate,
+					telegram.Code(strconv.Itoa(bucket.ErrorNum())),
+					telegram.Code(strconv.Itoa(bucket.RateLimitNum())),
+				)
+				if bucket.ErrorNum() > 0 || bucket.RateLimitNum() > 0 || rate < 80 {
+					hot = true
+				}
+				break
+			}
+		}
+	}
+	if hot {
+		bld.WriteString("\n⚠ 该分组/平台当前偏热或可用性偏低，可下方快速跳转。\n")
+	}
+	bld.WriteString("\n只读详情（分组本身无写接口）。")
 	back := groupsCallback(0, b.getGroupSearch(userID))
 	rows := [][]telegram.InlineKeyboardButton{
-		{telegram.Btn("🔄 刷新", fmt.Sprintf("mgr_group:%d", g.ID))},
+		{telegram.Btn("🔄 刷新", fmt.Sprintf("mgr_group:%d", g.ID)), telegram.Btn("⚙️ 并发", "ops_conc")},
 	}
-	plat := strings.ToLower(strings.TrimSpace(g.Platform))
 	if plat != "" {
 		tok := browseToken("plat:" + plat)
+		// scope subsequent bulk actions to this platform when browsing
+		b.setBrowseView(userID, "plat:"+plat, 0)
 		rows = append(rows, []telegram.InlineKeyboardButton{
-			telegram.Btn("📚 浏览 "+truncateRunes(plat, 12)+" 账号", fmt.Sprintf("mgr_browse:%s:0", tok)),
+			telegram.Btn("📚 浏览 "+truncateRunes(plat, 10), fmt.Sprintf("mgr_browse:%s:0", tok)),
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+		})
+	} else {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("📚 全部账号", "mgr_browse"),
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+		})
+	}
+	if b.canOpsWrite(userID) {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
+			telegram.Btn("📚 异常汇总", "mgr_browse:problem:0"),
+		})
+	} else {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("📚 异常汇总", "mgr_browse:problem:0"),
+			telegram.Btn("✅ 可用性", "ops_avail"),
 		})
 	}
 	rows = append(rows,
@@ -1460,8 +1545,8 @@ func (b *Bot) showGroupDetail(ctx context.Context, chatID, msgID, userID, groupI
 			telegram.Btn("👥 实例用户", "mgr_users"),
 		},
 		[]telegram.InlineKeyboardButton{
-			telegram.Btn("📚 全部账号", "mgr_browse"),
 			telegram.Btn("« 管理菜单", "mgr_menu"),
+			telegram.Btn("« 主面板", "home"),
 		},
 	)
 	kb := &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}

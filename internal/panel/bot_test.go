@@ -1489,3 +1489,26 @@ func TestHotConcurrencyHelpersWired(t *testing.T) {
 		t.Fatalf("%v", plats)
 	}
 }
+
+func TestTrafficKeyboardDrop(t *testing.T) {
+	kb := trafficKeyboard("5min", true)
+	joined := ""
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined, "ops_conc") || !strings.Contains(joined, "ops_errors:all:0") || !strings.Contains(joined, "ops_avail") {
+		t.Fatalf("drop kb: %s", joined)
+	}
+	kb2 := trafficKeyboard("1min")
+	joined2 := ""
+	for _, row := range kb2.InlineKeyboard {
+		for _, btn := range row {
+			joined2 += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined2, "ops_conc") || strings.Contains(joined2, "ops_errors:all:0") {
+		t.Fatalf("normal kb should not force errors jump: %s", joined2)
+	}
+}

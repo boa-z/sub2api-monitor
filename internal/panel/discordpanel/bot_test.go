@@ -1014,3 +1014,17 @@ func TestHotConcurrencyHelpersDiscord(t *testing.T) {
 		t.Fatal("acc")
 	}
 }
+
+func TestTrafficComponentsDrop(t *testing.T) {
+	comps := trafficComponents("5min", true)
+	if !containsCustomID(comps, "ops_conc") || !containsCustomID(comps, "ops_errors:all:0") || !containsCustomID(comps, "ops_avail") {
+		t.Fatalf("%+v", comps)
+	}
+	if len(comps) > 5 {
+		t.Fatalf("rows %d", len(comps))
+	}
+	comps2 := trafficComponents("1min")
+	if containsCustomID(comps2, "ops_errors:all:0") {
+		t.Fatalf("normal should not emphasize errors: %+v", comps2)
+	}
+}

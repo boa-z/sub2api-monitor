@@ -2381,8 +2381,14 @@ func (b *Bot) showTrafficView(ctx context.Context, userID int64, window string) 
 	if !traf.Timestamp.IsZero() {
 		fmt.Fprintf(&bld, "采样时间: `%s`\n", traf.Timestamp.Local().Format("01-02 15:04:05"))
 	}
-	bld.WriteString("\n切换下方窗口可对比不同时间尺度；QPS 骤降可结合看板/异常账号排查。")
-	return bld.String(), trafficComponents(window)
+	dropped := browse.TrafficIsDropped(qps, peak)
+	if dropped {
+		fmt.Fprintf(&bld, "\n⚠ **流量骤降** 相对峰值下降约 `%d%%`（当前 ≤ 峰值 × %.0f%%）。建议检查并发/异常账号。\n",
+			browse.TrafficDropPercent(qps, peak), browse.TrafficDropRatio*100)
+	} else {
+		bld.WriteString("\n切换下方窗口可对比不同时间尺度；QPS 骤降可结合看板/异常账号排查。")
+	}
+	return bld.String(), trafficComponents(window, dropped)
 }
 
 func normalizeTrafficWindow(w string) string {
@@ -2403,8 +2409,9 @@ func normalizeTrafficWindow(w string) string {
 	}
 }
 
-func trafficComponents(window string) []discord.Component {
+func trafficComponents(window string, dropped ...bool) []discord.Component {
 	window = normalizeTrafficWindow(window)
+	isDrop := len(dropped) > 0 && dropped[0]
 	wins := []string{"1min", "5min", "15min", "1h"}
 	var row []discord.Component
 	for _, w := range wins {
@@ -2421,11 +2428,28 @@ func trafficComponents(window string) []discord.Component {
 			discord.Button("« 运维", "ops_menu", 2),
 			discord.Button("« 主面板", "home", 2),
 		),
-		discord.ActionRow(
+	}
+	if isDrop {
+		comps = append(comps,
+			discord.ActionRow(
+				discord.Button("并发", "ops_conc", 2),
+				discord.Button("异常账号", "ops_badacc:error:0", 2),
+				discord.Button("错误", "ops_errors:all:0", 2),
+			),
+			discord.ActionRow(
+				discord.Button("可用性", "ops_avail", 2),
+				discord.Button("看板", "ops_dash", 2),
+			),
+		)
+	} else {
+		comps = append(comps, discord.ActionRow(
 			discord.Button("看板", "ops_dash", 2),
 			discord.Button("并发", "ops_conc", 2),
 			discord.Button("异常账号", "ops_badacc:error:0", 2),
-		),
+		))
+	}
+	if len(comps) > 5 {
+		comps = comps[:5]
 	}
 	return comps
 }
@@ -4588,29 +4612,94 @@ func (b *Bot) showGroupDetailView(ctx context.Context, userID, groupID int64) (s
 	if strings.TrimSpace(g.Description) != "" {
 		fmt.Fprintf(&bld, "描述: %s\n", truncate(g.Description, 160))
 	}
-	bld.WriteString("\n只读详情。")
+	plat := strings.ToLower(strings.TrimSpace(g.Platform))
+	hot := false
+	if snap, err := cli.GetConcurrency(ctx); err == nil && snap != nil && snap.Enabled {
+		var bucket *sub2api.ConcurrencyBucket
+		for _, v := range snap.Group {
+			if v.GroupID == g.ID {
+				mm := v
+				bucket = &mm
+				break
+			}
+		}
+		if bucket != nil {
+			fmt.Fprintf(&bld, "并发: `%d/%d` (%.0f%%) wait=`%d`\n",
+				bucket.CurrentInUse, bucket.MaxCapacity, bucket.LoadPercentage, bucket.WaitingInQueue)
+			hot = browse.IsHotLoad(bucket.LoadPercentage, bucket.WaitingInQueue)
+		} else if plat != "" {
+			for k, v := range snap.Platform {
+				name := strings.ToLower(k)
+				if v.Platform != "" {
+					name = strings.ToLower(v.Platform)
+				}
+				if name == plat {
+					fmt.Fprintf(&bld, "平台并发(%s): `%d/%d` (%.0f%%) wait=`%d`\n",
+						plat, v.CurrentInUse, v.MaxCapacity, v.LoadPercentage, v.WaitingInQueue)
+					hot = browse.IsHotLoad(v.LoadPercentage, v.WaitingInQueue)
+					break
+				}
+			}
+		}
+	}
+	if av, err := cli.GetAccountAvailability(ctx); err == nil && av != nil && av.Enabled && plat != "" {
+		for k, bucket := range av.Platform {
+			if strings.EqualFold(k, plat) || strings.EqualFold(bucket.Platform, plat) {
+				tot := bucket.TotalNum()
+				avn := bucket.AvailableNum()
+				rate := 0.0
+				if tot > 0 {
+					rate = float64(avn) / float64(tot) * 100
+				}
+				fmt.Fprintf(&bld, "可用性(%s): `%d/%d` (%.0f%%) err=`%d` rl=`%d`\n",
+					plat, avn, tot, rate, bucket.ErrorNum(), bucket.RateLimitNum())
+				if bucket.ErrorNum() > 0 || bucket.RateLimitNum() > 0 || rate < 80 {
+					hot = true
+				}
+				break
+			}
+		}
+	}
+	if hot {
+		bld.WriteString("\n⚠ 该分组/平台当前偏热或可用性偏低，可下方快速跳转。\n")
+	}
+	bld.WriteString("\n只读详情（分组本身无写接口）。")
 	back := groupsCallback(0, b.getGroupSearch(userID))
 	rows := []discord.Component{
 		discord.ActionRow(
-			discord.Button("🔄 刷新", fmt.Sprintf("mgr_group:%d", g.ID), 2),
-			discord.Button("« 分组列表", back, 2),
+			discord.Button("刷新", fmt.Sprintf("mgr_group:%d", g.ID), 2),
+			discord.Button("并发", "ops_conc", 2),
+			discord.Button("« 分组", back, 2),
 		),
 	}
-	plat := strings.ToLower(strings.TrimSpace(g.Platform))
 	if plat != "" {
 		tok := browse.Token("plat:" + plat)
+		b.setBrowseView(userID, "plat:"+plat, 0)
 		rows = append(rows, discord.ActionRow(
-			discord.Button("浏览 "+truncate(plat, 10)+" 账号", fmt.Sprintf("mgr_browse:%s:0", tok), 2),
-			discord.Button("全部账号", "mgr_browse:all:0", 2),
+			discord.Button("浏览 "+truncate(plat, 10), fmt.Sprintf("mgr_browse:%s:0", tok), 2),
+			discord.Button("异常账号", "ops_badacc:error:0", 2),
 		))
 	} else {
 		rows = append(rows, discord.ActionRow(
 			discord.Button("浏览账号", "mgr_browse:all:0", 2),
+			discord.Button("异常账号", "ops_badacc:error:0", 2),
+		))
+	}
+	if b.canOpsWrite(userID) {
+		rows = append(rows, discord.ActionRow(
+			discord.Button("批量修复", "mgr_bulk_heal", 1),
+			discord.Button("异常汇总", "mgr_browse:problem:0", 2),
+		))
+	} else {
+		rows = append(rows, discord.ActionRow(
+			discord.Button("异常汇总", "mgr_browse:problem:0", 2),
+			discord.Button("可用性", "ops_avail", 2),
 		))
 	}
 	rows = append(rows, discord.ActionRow(
 		discord.Button("实例用户", "mgr_users", 2),
 		discord.Button("« 管理", "mgr_menu", 2),
+		discord.Button("« 主面板", "home", 2),
 	))
 	if len(rows) > 5 {
 		rows = rows[:5]
