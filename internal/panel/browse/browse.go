@@ -321,11 +321,11 @@ func bulkScopeCompatible(action, status string) bool {
 	}
 }
 
-// NormalizeBadKind maps callback kind tokens to error|rl|ol|unsched|all.
+// NormalizeBadKind maps callback kind tokens to error|rl|ol|unsched|temp|disabled|all.
 func NormalizeBadKind(kind string) string {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	switch kind {
-	case "rl", "ol", "unsched", "all":
+	case "rl", "ol", "unsched", "all", "temp", "disabled":
 		return kind
 	default:
 		return "error"
@@ -343,6 +343,10 @@ func StatusFromBadKind(kind string) string {
 		return "overload"
 	case "unsched":
 		return "unsched"
+	case "temp":
+		return "temp"
+	case "disabled":
+		return "disabled"
 	case "all":
 		return "problem"
 	default:
@@ -350,8 +354,9 @@ func StatusFromBadKind(kind string) string {
 	}
 }
 
-// ListProblemAccounts merges error + rate_limited + overload + unsched accounts
+// ListProblemAccounts merges error + rate_limited + overload + unsched + temp accounts
 // (unique by ID, capped scan) and returns one page for bulk/summary views.
+// Disabled accounts stay on their own tab (bulk enable) and are not merged here.
 func ListProblemAccounts(ctx context.Context, cli *sub2api.Client, page, pageSize int) ([]sub2api.Account, int64, error) {
 	if page < 0 {
 		page = 0
@@ -363,12 +368,13 @@ func ListProblemAccounts(ctx context.Context, cli *sub2api.Client, page, pageSiz
 	rlItems, _, e2 := ListAccounts(ctx, cli, "rate_limited", 0, 40)
 	olItems, _, e4 := ListAccounts(ctx, cli, "overload", 0, 40)
 	unItems, _, e3 := ListAccounts(ctx, cli, "unsched", 0, 40)
-	if e1 != nil && e2 != nil && e3 != nil && e4 != nil {
+	tempItems, _, e5 := ListAccounts(ctx, cli, "temp", 0, 40)
+	if e1 != nil && e2 != nil && e3 != nil && e4 != nil && e5 != nil {
 		return nil, 0, e1
 	}
 	seen := map[int64]struct{}{}
 	var merged []sub2api.Account
-	for _, a := range append(append(append(errItems, rlItems...), olItems...), unItems...) {
+	for _, a := range append(append(append(append(errItems, rlItems...), olItems...), unItems...), tempItems...) {
 		if _, ok := seen[a.ID]; ok {
 			continue
 		}
@@ -407,9 +413,15 @@ func LoadBadAccountsPage(ctx context.Context, cli *sub2api.Client, kind string, 
 	case "unsched":
 		items, total, err = ListAccounts(ctx, cli, "unsched", page, pageSize)
 		return items, total, "停调度账号", "unsched", err
+	case "temp":
+		items, total, err = ListAccounts(ctx, cli, "temp", page, pageSize)
+		return items, total, "临时停调度账号", "temp", err
+	case "disabled":
+		items, total, err = ListAccounts(ctx, cli, "disabled", page, pageSize)
+		return items, total, "已禁用账号", "disabled", err
 	case "all":
 		items, total, err = ListProblemAccounts(ctx, cli, page, pageSize)
-		return items, total, "异常汇总", "error+rl+ol+unsched", err
+		return items, total, "异常汇总", "error+rl+ol+unsched+temp", err
 	default:
 		items, total, err = ListAccounts(ctx, cli, "error", page, pageSize)
 		return items, total, "异常账号 (status=error)", "error", err

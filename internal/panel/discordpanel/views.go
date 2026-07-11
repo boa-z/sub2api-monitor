@@ -21,7 +21,8 @@ func helpText() string {
 
 • **普通用户**：连接 / 监控账号 / 阈值 / 立即检查
 • **只读运维**：运维视图 / 看板 / 异常账号等只读（不可修复/调度/改角色）
-• **管理员**：运维写操作 + 账号管理（调度/清错/恢复/批量/一键修复/临时停调度/账号与用户搜索/面板用户）
+• **管理员**：运维写操作 + 账号管理（调度/清错/恢复/批量/一键修复/临时停调度/启用/账号与用户搜索/面板用户）
+• 异常账号支持 tab：error / 限速 / 过载 / 停调度 / 临时停 / 禁用 / 汇总
 • 批量操作优先使用当前「账号浏览 / 异常 tab」筛选范围
 • 角色由 admin_user_ids 或 profile.role=admin|viewer|user 控制
 • 配置按用户隔离，存于 users.json（可与 Telegram 共享）
@@ -998,12 +999,16 @@ func opsComponentsFor(stats *sub2api.DashboardStats, canWrite bool) []discord.Co
 	if !canWrite {
 		mgrLabel = "账号浏览"
 	}
+	olLabel := "过载"
 	if stats != nil {
 		if stats.ErrorAccounts > 0 {
 			badLabel = fmt.Sprintf("异常 %v", stats.ErrorAccounts)
 		}
 		if stats.RatelimitAccounts > 0 {
 			rlLabel = fmt.Sprintf("限速 %v", stats.RatelimitAccounts)
+		}
+		if stats.OverloadAccounts > 0 {
+			olLabel = fmt.Sprintf("过载 %v", stats.OverloadAccounts)
 		}
 	}
 	comps := []discord.Component{
@@ -1019,15 +1024,28 @@ func opsComponentsFor(stats *sub2api.DashboardStats, canWrite bool) []discord.Co
 			discord.Button("渠道", "ops_channels", 2),
 		),
 	}
-	if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
+	hasIssues := stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0 || stats.OverloadAccounts > 0)
+	if hasIssues {
 		row := []discord.Component{
 			discord.Button(badLabel, "ops_badacc:error:0", 1),
-			discord.Button(rlLabel, "ops_badacc:rl:0", 2),
+		}
+		if stats.RatelimitAccounts > 0 {
+			row = append(row, discord.Button(rlLabel, "ops_badacc:rl:0", 2))
+		}
+		if stats.OverloadAccounts > 0 && len(row) < 3 {
+			row = append(row, discord.Button(olLabel, "ops_badacc:ol:0", 2))
+		}
+		if stats.RatelimitAccounts == 0 && stats.OverloadAccounts == 0 {
+			row = append(row, discord.Button(rlLabel, "ops_badacc:rl:0", 2))
 		}
 		if canWrite {
 			row = append(row, discord.Button("一键修复", "mgr_bulk_heal", 1))
 		} else {
 			row = append(row, discord.Button(mgrLabel, "mgr_menu", 2))
+		}
+		// Discord max 5 buttons/row
+		if len(row) > 5 {
+			row = row[:5]
 		}
 		comps = append(comps, discord.ActionRow(row...))
 		if canWrite {
@@ -1843,8 +1861,8 @@ func dashboardComponents(st *sub2api.DashboardStats) []discord.Component {
 		if st.RatelimitAccounts > 0 {
 			jump = append(jump, discord.Button(fmt.Sprintf("限速 %v", st.RatelimitAccounts), "ops_badacc:rl:0", 2))
 		}
-		if st.OverloadAccounts > 0 && st.RatelimitAccounts == 0 {
-			jump = append(jump, discord.Button(fmt.Sprintf("过载 %v", st.OverloadAccounts), "ops_badacc:rl:0", 2))
+		if st.OverloadAccounts > 0 && len(jump) < 3 {
+			jump = append(jump, discord.Button(fmt.Sprintf("过载 %v", st.OverloadAccounts), "ops_badacc:ol:0", 2))
 		}
 	}
 	if len(jump) == 0 {
@@ -2871,7 +2889,7 @@ func (b *Bot) showBadAccounts(ctx context.Context, userID int64) (string, []disc
 }
 
 // showBadAccountsView lists problematic accounts.
-// kind: error|rl|unsched|all; page is 0-based.
+// kind: error|rl|ol|unsched|temp|disabled|all; page is 0-based.
 // Layout is capped at Discord's 5 action-row limit (tabs + select + bulk + nav).
 func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string, page int, notice string) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
@@ -2924,6 +2942,8 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 	}
 	tabB := []discord.Component{
 		discord.Button(errorTabLabel("停调度", kind, "unsched"), "ops_badacc:unsched:0", 2),
+		discord.Button(errorTabLabel("临时停", kind, "temp"), "ops_badacc:temp:0", 2),
+		discord.Button(errorTabLabel("禁用", kind, "disabled"), "ops_badacc:disabled:0", 2),
 		discord.Button(errorTabLabel("汇总", kind, "all"), "ops_badacc:all:0", 2),
 	}
 	if canWrite {
@@ -2935,10 +2955,17 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 			watchLabel, watchData = "监控过载", "ops_watch:ol"
 		case "unsched":
 			watchLabel, watchData = "监控停调度", "ops_watch:unsched"
+		case "temp":
+			watchLabel, watchData = "监控临时停", "ops_watch:temp"
+		case "disabled":
+			watchLabel, watchData = "监控禁用", "ops_watch:disabled"
 		case "all":
 			watchLabel, watchData = "监控本页", "ops_watch:all"
 		}
-		tabB = append(tabB, discord.SuccessButton(watchLabel, watchData))
+		// Discord max 5 buttons/row: tabs already use 4; append watch when room.
+		if len(tabB) < 5 {
+			tabB = append(tabB, discord.SuccessButton(watchLabel, watchData))
+		}
 	}
 	comps = append(comps, discord.ActionRow(tabB...))
 
@@ -2972,6 +2999,15 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 		case "unsched":
 			comps = append(comps, discord.ActionRow(
 				discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+			))
+		case "temp":
+			comps = append(comps, discord.ActionRow(
+				discord.Button("清临时停", "mgr_bulk_clear_temp", 2),
+				discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+			))
+		case "disabled":
+			comps = append(comps, discord.ActionRow(
+				discord.SuccessButton("批量启用", "mgr_bulk_enable"),
 			))
 		default:
 			comps = append(comps, discord.ActionRow(

@@ -48,12 +48,16 @@ func opsKeyboardFor(stats *sub2api.DashboardStats, canWrite bool) *telegram.Inli
 	if !canWrite {
 		mgrLabel = "🧰 账号浏览"
 	}
+	olLabel := "过载"
 	if stats != nil {
 		if stats.ErrorAccounts > 0 {
 			badLabel = fmt.Sprintf("📋 异常 %v", stats.ErrorAccounts)
 		}
 		if stats.RatelimitAccounts > 0 {
 			rlLabel = fmt.Sprintf("⏱ 限速 %v", stats.RatelimitAccounts)
+		}
+		if stats.OverloadAccounts > 0 {
+			olLabel = fmt.Sprintf("过载 %v", stats.OverloadAccounts)
 		}
 	}
 	rows := [][]telegram.InlineKeyboardButton{
@@ -62,12 +66,23 @@ func opsKeyboardFor(stats *sub2api.DashboardStats, canWrite bool) *telegram.Inli
 		{telegram.Btn("⚙️ 并发", "ops_conc"), telegram.Btn("📉 流量", "ops_traf")},
 		{telegram.Btn("📡 渠道探测", "ops_channels")},
 	}
-	// health-aware second action row
-	if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
-		rows = append(rows, []telegram.InlineKeyboardButton{
+	// health-aware action rows when any watched failure mode is present
+	hasIssues := stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0 || stats.OverloadAccounts > 0)
+	if hasIssues {
+		row := []telegram.InlineKeyboardButton{
 			telegram.Btn(badLabel, "ops_badacc:error:0"),
-			telegram.Btn(rlLabel, "ops_badacc:rl:0"),
-		})
+		}
+		if stats.RatelimitAccounts > 0 {
+			row = append(row, telegram.Btn(rlLabel, "ops_badacc:rl:0"))
+		}
+		if stats.OverloadAccounts > 0 && len(row) < 3 {
+			row = append(row, telegram.Btn(olLabel, "ops_badacc:ol:0"))
+		}
+		if stats.RatelimitAccounts == 0 && stats.OverloadAccounts == 0 {
+			// keep a second triage shortcut even when only error counts exist
+			row = append(row, telegram.Btn(rlLabel, "ops_badacc:rl:0"))
+		}
+		rows = append(rows, row)
 		if canWrite {
 			rows = append(rows, []telegram.InlineKeyboardButton{
 				telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
@@ -1422,6 +1437,10 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 		},
 		{
 			telegram.Btn(errorTabLabel("停调度", kind, "unsched"), "ops_badacc:unsched:0"),
+			telegram.Btn(errorTabLabel("临时停", kind, "temp"), "ops_badacc:temp:0"),
+			telegram.Btn(errorTabLabel("禁用", kind, "disabled"), "ops_badacc:disabled:0"),
+		},
+		{
 			telegram.Btn(errorTabLabel("汇总", kind, "all"), "ops_badacc:all:0"),
 		},
 	}
@@ -1439,6 +1458,12 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 			} else if kind == "unsched" {
 				quick = "开调度"
 				quickData = fmt.Sprintf("live_act:sched:%d", a.ID)
+			} else if kind == "temp" {
+				quick = "清临时停"
+				quickData = fmt.Sprintf("live_act:clear_temp:%d", a.ID)
+			} else if kind == "disabled" {
+				quick = "启用"
+				quickData = fmt.Sprintf("live_act:enable:%d", a.ID)
 			}
 			row = append(row, telegram.Btn(quick, quickData))
 		}
@@ -1466,6 +1491,15 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 			rows = append(rows, []telegram.InlineKeyboardButton{
 				telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
 			})
+		case "temp":
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn("🚫 批量清临时停", "mgr_bulk_clear_temp"),
+				telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+			})
+		case "disabled":
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn("✅ 批量启用", "mgr_bulk_enable"),
+			})
 		default:
 			rows = append(rows,
 				[]telegram.InlineKeyboardButton{
@@ -1487,6 +1521,10 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 			watchLabel, watchData = "➕ 一键监控过载", "ops_watch:ol"
 		case "unsched":
 			watchLabel, watchData = "➕ 一键监控停调度", "ops_watch:unsched"
+		case "temp":
+			watchLabel, watchData = "➕ 一键监控临时停", "ops_watch:temp"
+		case "disabled":
+			watchLabel, watchData = "➕ 一键监控禁用", "ops_watch:disabled"
 		case "all":
 			watchLabel, watchData = "➕ 一键监控本页异常", "ops_watch:all"
 		}
@@ -1511,7 +1549,7 @@ func (b *Bot) watchErrorAccounts(ctx context.Context, chatID, msgID, userID int6
 }
 
 // watchAccountsByScope bulk-adds accounts from a bad-account scope into the watch list.
-// scope: error|rl|ol|unsched|all (same tokens as ops_badacc).
+// scope: error|rl|ol|unsched|temp|disabled|all (same tokens as ops_badacc).
 func (b *Bot) watchAccountsByScope(ctx context.Context, chatID, msgID, userID int64, scope string) error {
 	cli, _, err := b.userClient(userID, 20*time.Second)
 	if err != nil {

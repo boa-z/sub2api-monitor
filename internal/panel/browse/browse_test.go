@@ -210,3 +210,18 @@ func TestIsTempUnschedulable(t *testing.T) {
 		t.Fatal("empty")
 	}
 }
+
+func TestNormalizeBadKindTempDisabled(t *testing.T) {
+	if NormalizeBadKind("temp") != "temp" {
+		t.Fatal(NormalizeBadKind("temp"))
+	}
+	if NormalizeBadKind("disabled") != "disabled" {
+		t.Fatal(NormalizeBadKind("disabled"))
+	}
+	if StatusFromBadKind("temp") != "temp" || StatusFromBadKind("disabled") != "disabled" {
+		t.Fatal(StatusFromBadKind("temp"), StatusFromBadKind("disabled"))
+	}
+	if StatusFromBadKind("all") != "problem" {
+		t.Fatal(StatusFromBadKind("all"))
+	}
+}
