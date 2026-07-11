@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/boa/sub2api-monitor/internal/config"
+	"github.com/boa/sub2api-monitor/internal/panel/browse"
 	"github.com/boa/sub2api-monitor/internal/sub2api"
+	"github.com/boa/sub2api-monitor/internal/telegram"
 	"github.com/boa/sub2api-monitor/internal/userstore"
 )
 
@@ -506,5 +508,45 @@ func TestBadAccountTabLabels(t *testing.T) {
 	}
 	if errorTabLabel("error", "rl", "error") != "error" {
 		t.Fatal(errorTabLabel("error", "rl", "error"))
+	}
+}
+
+func TestParseBadAccCallback(t *testing.T) {
+	kind, page := browse.ParseBadAccCallback("")
+	if kind != "error" || page != 0 {
+		t.Fatalf("empty %s %d", kind, page)
+	}
+	kind, page = browse.ParseBadAccCallback("rl:2")
+	if kind != "rl" || page != 2 {
+		t.Fatalf("rl:2 got %s %d", kind, page)
+	}
+	kind, page = browse.ParseBadAccCallback("unsched")
+	if kind != "unsched" || page != 0 {
+		t.Fatalf("unsched %s %d", kind, page)
+	}
+	kind, page = browse.ParseBadAccCallback("weird:1")
+	if kind != "error" || page != 1 {
+		t.Fatalf("weird %s %d", kind, page)
+	}
+}
+
+func TestWriteErrorItemsLiveHealButtons(t *testing.T) {
+	page := &sub2api.OpsErrorPage{Items: []sub2api.OpsError{
+		{ID: 9, AccountID: 42, Message: "boom", Severity: "error", StatusCode: 500},
+	}}
+	var bld strings.Builder
+	var rows [][]telegram.InlineKeyboardButton
+	writeErrorItems(&bld, page, "u", 8, &rows)
+	if len(rows) != 1 {
+		t.Fatalf("rows %d", len(rows))
+	}
+	ids := map[string]bool{}
+	for _, btn := range rows[0] {
+		ids[btn.CallbackData] = true
+	}
+	for _, want := range []string{"oe:r:u:9", "live_act:heal:42", "acc_live:42", "mgr_acc:42"} {
+		if !ids[want] {
+			t.Fatalf("missing %s in %+v", want, ids)
+		}
 	}
 }

@@ -206,3 +206,85 @@ func LoadBulkTargets(ctx context.Context, cli *sub2api.Client, action string, ma
 		return items, total, "status=error 账号", err
 	}
 }
+
+// NormalizeBadKind maps callback kind tokens to error|rl|unsched|all.
+func NormalizeBadKind(kind string) string {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	switch kind {
+	case "rl", "unsched", "all":
+		return kind
+	default:
+		return "error"
+	}
+}
+
+// LoadBadAccountsPage returns one page of problematic accounts.
+// kind: error|rl|unsched|all (page is 0-based).
+func LoadBadAccountsPage(ctx context.Context, cli *sub2api.Client, kind string, page, pageSize int) (items []sub2api.Account, total int64, title, scope string, err error) {
+	if page < 0 {
+		page = 0
+	}
+	if pageSize <= 0 {
+		pageSize = 8
+	}
+	kind = NormalizeBadKind(kind)
+	switch kind {
+	case "rl":
+		items, total, err = ListAccounts(ctx, cli, "rate_limited", page, pageSize)
+		return items, total, "限速/过载账号", "rate_limited", err
+	case "unsched":
+		items, total, err = ListAccounts(ctx, cli, "unsched", page, pageSize)
+		return items, total, "停调度账号", "unsched", err
+	case "all":
+		// merge unique error+rl+unsched (capped scan), then slice page
+		errItems, _, e1 := ListAccounts(ctx, cli, "error", 0, 40)
+		rlItems, _, e2 := ListAccounts(ctx, cli, "rate_limited", 0, 40)
+		unItems, _, e3 := ListAccounts(ctx, cli, "unsched", 0, 40)
+		if e1 != nil && e2 != nil && e3 != nil {
+			return nil, 0, "异常汇总", "error+rl+unsched", e1
+		}
+		seen := map[int64]struct{}{}
+		var merged []sub2api.Account
+		for _, a := range append(append(errItems, rlItems...), unItems...) {
+			if _, ok := seen[a.ID]; ok {
+				continue
+			}
+			seen[a.ID] = struct{}{}
+			merged = append(merged, a)
+		}
+		total = int64(len(merged))
+		start := page * pageSize
+		if start >= len(merged) {
+			return []sub2api.Account{}, total, "异常汇总", "error+rl+unsched", nil
+		}
+		end := start + pageSize
+		if end > len(merged) {
+			end = len(merged)
+		}
+		return merged[start:end], total, "异常汇总", "error+rl+unsched", nil
+	default:
+		items, total, err = ListAccounts(ctx, cli, "error", page, pageSize)
+		return items, total, "异常账号 (status=error)", "error", err
+	}
+}
+
+// ParseBadAccCallback parses rest after ops_badacc: → kind, page.
+// Forms: "" | "error" | "error:2" | "rl:0"
+func ParseBadAccCallback(rest string) (kind string, page int) {
+	kind, page = "error", 0
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return
+	}
+	parts := strings.Split(rest, ":")
+	if len(parts) >= 1 && parts[0] != "" {
+		kind = NormalizeBadKind(parts[0])
+	}
+	if len(parts) >= 2 {
+		page, _ = strconv.Atoi(parts[1])
+		if page < 0 {
+			page = 0
+		}
+	}
+	return
+}

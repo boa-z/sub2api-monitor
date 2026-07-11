@@ -61,3 +61,20 @@ func TestParseFilter(t *testing.T) {
 		t.Fatalf("%+v", f)
 	}
 }
+
+func TestParseBadAccAndNormalize(t *testing.T) {
+	if NormalizeBadKind("RL") != "rl" {
+		t.Fatal(NormalizeBadKind("RL"))
+	}
+	if NormalizeBadKind("x") != "error" {
+		t.Fatal(NormalizeBadKind("x"))
+	}
+	k, p := ParseBadAccCallback("all:3")
+	if k != "all" || p != 3 {
+		t.Fatalf("%s %d", k, p)
+	}
+	k, p = ParseBadAccCallback("")
+	if k != "error" || p != 0 {
+		t.Fatalf("%s %d", k, p)
+	}
+}

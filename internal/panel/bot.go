@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/boa/sub2api-monitor/internal/config"
+	"github.com/boa/sub2api-monitor/internal/panel/browse"
 	"github.com/boa/sub2api-monitor/internal/sub2api"
 	"github.com/boa/sub2api-monitor/internal/telegram"
 	"github.com/boa/sub2api-monitor/internal/userstore"
@@ -324,11 +325,12 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
-		kind := "error"
+		rest := ""
 		if strings.HasPrefix(data, "ops_badacc:") {
-			kind = strings.TrimPrefix(data, "ops_badacc:")
+			rest = strings.TrimPrefix(data, "ops_badacc:")
 		}
-		return b.showBadAccountsView(ctx, chatID, msgID, cq.From.ID, kind, "")
+		kind, page := browse.ParseBadAccCallback(rest)
+		return b.showBadAccountsView(ctx, chatID, msgID, cq.From.ID, kind, page, "")
 	case data == "ops_watch_errors":
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil

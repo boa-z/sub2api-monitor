@@ -199,3 +199,26 @@ func containsCustomID(comps []discord.Component, id string) bool {
 	}
 	return false
 }
+
+func TestBadAccountTabLabels(t *testing.T) {
+	if errorTabLabel("限速", "rl", "rl") != "• 限速" {
+		t.Fatal(errorTabLabel("限速", "rl", "rl"))
+	}
+	if errorTabLabel("error", "rl", "error") != "error" {
+		t.Fatal(errorTabLabel("error", "rl", "error"))
+	}
+}
+
+func TestOpsComponentsBadAccCallback(t *testing.T) {
+	found := false
+	for _, row := range opsComponents() {
+		for _, c := range row.Components {
+			if c.CustomID == "ops_badacc:error:0" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("ops components missing badacc error:0")
+	}
+}

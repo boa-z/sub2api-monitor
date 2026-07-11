@@ -334,11 +334,16 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		}
 		text, comps := b.showErrorsView(ctx, uid, kind, page, "")
 		return b.update(ctx, it, text, comps)
-	case data == "ops_badacc":
+	case data == "ops_badacc" || strings.HasPrefix(data, "ops_badacc:"):
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		text, comps := b.showBadAccounts(ctx, uid)
+		rest := ""
+		if strings.HasPrefix(data, "ops_badacc:") {
+			rest = strings.TrimPrefix(data, "ops_badacc:")
+		}
+		kind, page := browse.ParseBadAccCallback(rest)
+		text, comps := b.showBadAccountsView(ctx, uid, kind, page, "")
 		return b.update(ctx, it, text, comps)
 	case data == "oe:resolve_all:u":
 		if !b.isAdmin(uid) {
@@ -693,4 +698,11 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+func schedLabel(v bool) string {
+	if v {
+		return "调度开"
+	}
+	return "调度关"
 }

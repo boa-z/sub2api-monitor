@@ -20,7 +20,7 @@ func manageKeyboard() *telegram.InlineKeyboardMarkup {
 			{telegram.Btn("📚 账号浏览", "mgr_browse"), telegram.Btn("🔎 搜索账号", "mgr_search")},
 			{telegram.Btn("🧹 批量清错", "mgr_bulk_clear"), telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover")},
 			{telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"), telegram.Btn("⏱ 批量清限速", "mgr_bulk_clear_rl")},
-			{telegram.Btn("📋 异常账号", "ops_badacc"), telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal")},
+			{telegram.Btn("📋 异常账号", "ops_badacc:error:0"), telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal")},
 			{telegram.Btn("👥 实例用户", "mgr_users"), telegram.Btn("🏷 分组", "mgr_groups")},
 			{telegram.Btn("👤 面板用户", "pnl_users"), telegram.Btn("« 返回主面板", "home")},
 		},
@@ -36,7 +36,7 @@ func (b *Bot) manageMenuText() string {
 • 批量清错 / 恢复 / 开调度 / 清限速 / 一键修复 — 批量处理（需确认）
 • 实例用户 / 分组 — Sub2API 只读列表
 • 面板用户 — 本 Bot 多用户与角色（admin/user）
-• 异常账号 — error 列表，点进管理 / 一键监控
+• 异常账号 — error/限速/停调度/汇总分标签分页，管理/实时/修复 / 一键监控
 
 进入账号后可执行：
 切换调度 · 启停状态 · 测试连通 · 清错误/限速 · 恢复/刷新

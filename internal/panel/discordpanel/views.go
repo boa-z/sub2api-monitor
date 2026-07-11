@@ -19,7 +19,7 @@ func helpText() string {
 	return `**Sub2API Discord 面板**
 
 • **普通用户**：连接 / 监控账号 / 阈值 / 立即检查
-• **管理员**：运维视图 + 账号管理（调度/清错/恢复/批量/错误分页/一键修复/临时停调度/搜索/面板用户）
+• **管理员**：运维视图 + 账号管理（调度/清错/恢复/批量/错误分页/异常账号分页/一键修复/临时停调度/搜索/面板用户）
 • 管理员由 admin_user_ids 或 profile.role=admin 控制
 • 配置按用户隔离，存于 users.json（可与 Telegram 共享）
 • 斜杠命令：` + "`/panel` `/status` `/check` `/setbase` `/setkey` `/addaccount` `/ops` `/manage`"
@@ -228,7 +228,7 @@ func thrWindowComponents() []discord.Component {
 }
 
 func opsMenuText() string {
-	return "**运维视图**\n\n基于当前连接的 Admin API：\n• 看板 / 可用性 / 告警 / 并发 / 渠道\n• 错误（分标签分页，可标记已解决）\n• 异常账号（跳转管理 / 批量处理）"
+	return "**运维视图**\n\n基于当前连接的 Admin API：\n• 看板 / 可用性 / 告警 / 并发 / 渠道\n• 错误（分标签分页，可标记已解决）\n• 异常账号（error/限速/停调度/汇总分标签分页 + 管理/实时/修复）"
 }
 
 func opsComponents() []discord.Component {
@@ -244,7 +244,7 @@ func opsComponents() []discord.Component {
 			discord.Button("渠道", "ops_channels", 2),
 		),
 		discord.ActionRow(
-			discord.Button("异常账号", "ops_badacc", 2),
+			discord.Button("异常账号", "ops_badacc:error:0", 2),
 			discord.Button("账号管理", "mgr_menu", 2),
 			discord.Button("« 主面板", "home", 2),
 		),
@@ -275,7 +275,7 @@ func manageComponents() []discord.Component {
 		discord.ActionRow(
 			discord.Button("停调度", "mgr_browse:unsched:0", 2),
 			discord.Button("限速", "mgr_browse:rate_limited:0", 2),
-			discord.Button("异常账号", "ops_badacc", 2),
+			discord.Button("异常账号", "ops_badacc:error:0", 2),
 		),
 		discord.ActionRow(
 			discord.DangerButton("批量清错", "mgr_bulk_clear"),
@@ -965,44 +965,97 @@ func (b *Bot) resolveAllOpsErrors(ctx context.Context, userID int64, apiKind, la
 }
 
 func (b *Bot) showBadAccounts(ctx context.Context, userID int64) (string, []discord.Component) {
+	return b.showBadAccountsView(ctx, userID, "error", 0, "")
+}
+
+// showBadAccountsView lists problematic accounts.
+// kind: error|rl|unsched|all; page is 0-based.
+func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string, page int, notice string) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
 		return "❌ " + err.Error(), opsComponents()
 	}
-	items, total, err := cli.ListAccountsEx(ctx, 1, 15, sub2api.AccountListFilter{Status: "error"})
+	if page < 0 {
+		page = 0
+	}
+	kind = browse.NormalizeBadKind(kind)
+	const pageSize = 8
+
+	items, total, title, scope, err := browse.LoadBadAccountsPage(ctx, cli, kind, page, pageSize)
 	if err != nil {
-		return "列表失败: " + err.Error(), opsComponents()
+		return "账号列表失败: " + err.Error(), opsComponents()
 	}
+
 	var bld strings.Builder
-	fmt.Fprintf(&bld, "**异常账号** · 约 %d\n\n", total)
-	for _, a := range items {
-		fmt.Fprintf(&bld, "• #%d %s [%s] %s\n", a.ID, truncate(a.Name, 16), a.Status, truncate(a.ErrorMessage, 40))
+	if notice != "" {
+		bld.WriteString(notice + "\n\n")
 	}
+	fmt.Fprintf(&bld, "**%s**\n范围: `%s` · 第 %d 页 · 共约 %d\n\n", title, scope, page+1, total)
 	if len(items) == 0 {
-		bld.WriteString("无 error 账号。")
+		bld.WriteString("当前无匹配账号。")
 	}
-	comps := []discord.Component{}
-	var row []discord.Component
+	for _, a := range items {
+		msg := a.ErrorMessage
+		if msg == "" {
+			msg = a.Status
+		}
+		fmt.Fprintf(&bld, "• #%d %s [%s/%s] %s\n  %s\n",
+			a.ID, truncate(a.Name, 16), a.Platform, a.Status, schedLabel(a.Schedulable),
+			truncate(msg, 60),
+		)
+	}
+
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button(errorTabLabel("error", kind, "error"), "ops_badacc:error:0", 2),
+			discord.Button(errorTabLabel("限速", kind, "rl"), "ops_badacc:rl:0", 2),
+			discord.Button(errorTabLabel("停调度", kind, "unsched"), "ops_badacc:unsched:0", 2),
+		),
+		discord.ActionRow(
+			discord.Button(errorTabLabel("汇总", kind, "all"), "ops_badacc:all:0", 2),
+		),
+	}
+	// account actions: manage / live / heal (up to 5 rows to leave room for nav/bulk)
 	for i, a := range items {
-		if i >= 4 {
+		if i >= 5 {
 			break
 		}
-		row = append(row, discord.Button(fmt.Sprintf("管理 #%d", a.ID), fmt.Sprintf("mgr_acc:%d", a.ID), 1))
-		if len(row) == 2 {
-			comps = append(comps, discord.ActionRow(row...))
-			row = nil
-		}
+		comps = append(comps, discord.ActionRow(
+			discord.Button(fmt.Sprintf("管理 #%d", a.ID), fmt.Sprintf("mgr_acc:%d", a.ID), 1),
+			discord.Button("实时", fmt.Sprintf("acc_live:%d", a.ID), 2),
+			discord.Button("修复", fmt.Sprintf("live_act:heal:%d", a.ID), 1),
+		))
 	}
-	if len(row) > 0 {
-		comps = append(comps, discord.ActionRow(row...))
+	nav := []discord.Component{}
+	if page > 0 {
+		nav = append(nav, discord.Button("« 上页", fmt.Sprintf("ops_badacc:%s:%d", kind, page-1), 2))
+	}
+	if int64((page+1)*pageSize) < total || len(items) == pageSize {
+		nav = append(nav, discord.Button("下页 »", fmt.Sprintf("ops_badacc:%s:%d", kind, page+1), 2))
+	}
+	if len(nav) > 0 {
+		comps = append(comps, discord.ActionRow(nav...))
+	}
+	switch kind {
+	case "rl":
+		comps = append(comps, discord.ActionRow(
+			discord.Button("批量清限速", "mgr_bulk_clear_rl", 2),
+			discord.Button("一键修复", "mgr_bulk_heal", 1),
+		))
+	case "unsched":
+		comps = append(comps, discord.ActionRow(
+			discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+		))
+	default:
+		comps = append(comps, discord.ActionRow(
+			discord.DangerButton("批量清错", "mgr_bulk_clear"),
+			discord.Button("批量恢复", "mgr_bulk_recover", 2),
+			discord.Button("一键修复", "mgr_bulk_heal", 1),
+		))
 	}
 	comps = append(comps,
 		discord.ActionRow(
-			discord.DangerButton("批量清错", "mgr_bulk_clear"),
-			discord.Button("批量恢复", "mgr_bulk_recover", 2),
-			discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
-		),
-		discord.ActionRow(
+			discord.Button("刷新", fmt.Sprintf("ops_badacc:%s:%d", kind, page), 2),
 			discord.Button("« 运维", "ops_menu", 2),
 			discord.Button("« 管理", "mgr_menu", 2),
 			discord.Button("« 主面板", "home", 2),
