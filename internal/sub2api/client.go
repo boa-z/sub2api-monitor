@@ -115,6 +115,10 @@ func (c *Client) post(ctx context.Context, path string, payload any, out any) er
 	return c.doBody(ctx, http.MethodPost, path, nil, payload, out)
 }
 
+func (c *Client) put(ctx context.Context, path string, payload any, out any) error {
+	return c.doBody(ctx, http.MethodPut, path, nil, payload, out)
+}
+
 func (c *Client) delete(ctx context.Context, path string, out any) error {
 	return c.doBody(ctx, http.MethodDelete, path, nil, nil, out)
 }
@@ -226,16 +230,47 @@ type PageMeta struct {
 	PageSize int   `json:"page_size"`
 }
 
-func (c *Client) ListAccounts(ctx context.Context, page, pageSize int, status string) ([]Account, int64, error) {
-	return c.listAccountsRaw(ctx, page, pageSize, status)
+// AccountListFilter controls admin accounts list query params.
+type AccountListFilter struct {
+	Status      string // active|error|...
+	Search      string // name/email keyword (API: search)
+	Platform    string // openai|anthropic|...
+	Schedulable *bool
 }
 
-func (c *Client) listAccountsRaw(ctx context.Context, page, pageSize int, status string) ([]Account, int64, error) {
+func (c *Client) ListAccounts(ctx context.Context, page, pageSize int, status string) ([]Account, int64, error) {
+	return c.ListAccountsEx(ctx, page, pageSize, AccountListFilter{Status: status})
+}
+
+func (c *Client) ListAccountsEx(ctx context.Context, page, pageSize int, f AccountListFilter) ([]Account, int64, error) {
+	return c.listAccountsRaw(ctx, page, pageSize, f)
+}
+
+func (c *Client) listAccountsRaw(ctx context.Context, page, pageSize int, f AccountListFilter) ([]Account, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
 	q := url.Values{}
 	q.Set("page", strconv.Itoa(page))
 	q.Set("page_size", strconv.Itoa(pageSize))
-	if status != "" {
-		q.Set("status", status)
+	if f.Status != "" {
+		q.Set("status", f.Status)
+	}
+	if f.Search != "" {
+		q.Set("search", f.Search)
+	}
+	if f.Platform != "" {
+		q.Set("platform", f.Platform)
+	}
+	if f.Schedulable != nil {
+		if *f.Schedulable {
+			q.Set("schedulable", "true")
+		} else {
+			q.Set("schedulable", "false")
+		}
 	}
 	body, err := c.getRaw(ctx, "/api/v1/admin/accounts", q)
 	if err != nil {
@@ -277,7 +312,7 @@ func (c *Client) ListAllAccounts(ctx context.Context, pageSize int, status strin
 	var all []Account
 	page := 1
 	for {
-		items, total, err := c.listAccountsRaw(ctx, page, pageSize, status)
+		items, total, err := c.listAccountsRaw(ctx, page, pageSize, AccountListFilter{Status: status})
 		if err != nil {
 			return nil, err
 		}

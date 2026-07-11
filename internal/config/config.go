@@ -10,8 +10,8 @@ import (
 )
 
 type Config struct {
-	Instance string         `yaml:"instance"`
-	Sub2API  Sub2APIConfig  `yaml:"sub2api"`
+	Instance string        `yaml:"instance"`
+	Sub2API  Sub2APIConfig `yaml:"sub2api"`
 	// Telegram is the legacy top-level Telegram config (still supported).
 	// Prefer notify.telegram for new deployments; both are merged at runtime.
 	Telegram TelegramConfig `yaml:"telegram"`
@@ -90,7 +90,12 @@ type FeishuConfig struct {
 // PanelConfig controls the Telegram user-facing configuration UI.
 type PanelConfig struct {
 	Enabled bool `yaml:"enabled"`
+	// AdminUserIDs are Telegram user IDs with full manage/ops write privileges.
+	// If empty, the private telegram.chat_id (when numeric) is treated as sole admin.
+	AdminUserIDs []int64 `yaml:"admin_user_ids"`
 	// AllowUserIDs restricts who can use the panel. Empty + OpenRegistration/AllowAll controls open access.
+	// Users in AllowUserIDs or open registration are normal users unless also listed in AdminUserIDs
+	// or Profile.Role == "admin".
 	AllowUserIDs []int64 `yaml:"allow_user_ids"`
 	// AllowAll lets any Telegram user configure their own profile (still isolated).
 	AllowAll bool `yaml:"allow_all"`
@@ -234,14 +239,14 @@ type AccountUsageTarget struct {
 }
 
 type AccountUsageCheck struct {
-	Enabled           bool                `yaml:"enabled"`
-	Interval          time.Duration       `yaml:"interval"`
-	Source            string              `yaml:"source"` // passive|active
-	ForceActive       bool                `yaml:"force_active"`
-	Concurrency       int                 `yaml:"concurrency"`
-	Cooldown           time.Duration       `yaml:"cooldown"`
-	DefaultThresholds []UsageThreshold    `yaml:"default_thresholds"`
-	DefaultToday      *TodayThreshold     `yaml:"default_today"`
+	Enabled           bool                 `yaml:"enabled"`
+	Interval          time.Duration        `yaml:"interval"`
+	Source            string               `yaml:"source"` // passive|active
+	ForceActive       bool                 `yaml:"force_active"`
+	Concurrency       int                  `yaml:"concurrency"`
+	Cooldown          time.Duration        `yaml:"cooldown"`
+	DefaultThresholds []UsageThreshold     `yaml:"default_thresholds"`
+	DefaultToday      *TodayThreshold      `yaml:"default_today"`
 	Accounts          []AccountUsageTarget `yaml:"accounts"`
 }
 
@@ -291,13 +296,13 @@ func defaultConfig() *Config {
 			APIBase:            "https://api.telegram.org",
 			SendStartupMessage: true,
 			MinSendInterval:    50 * time.Millisecond,
-				Panel: PanelConfig{
-					Enabled:          false,
-					OpenRegistration: true,
-					UsersPath:        "./data/users.json",
-					CheckInterval:    5 * time.Minute,
-					Cooldown:         2 * time.Hour,
-				},
+			Panel: PanelConfig{
+				Enabled:          false,
+				OpenRegistration: true,
+				UsersPath:        "./data/users.json",
+				CheckInterval:    5 * time.Minute,
+				Cooldown:         2 * time.Hour,
+			},
 		},
 		Poll: PollConfig{
 			Interval: 30 * time.Second,
@@ -348,7 +353,7 @@ func defaultConfig() *Config {
 				Interval:    5 * time.Minute,
 				Source:      "passive",
 				Concurrency: 3,
-				Cooldown:     2 * time.Hour,
+				Cooldown:    2 * time.Hour,
 				DefaultThresholds: []UsageThreshold{
 					{Window: "five_hour", UtilizationGTE: 80, Severity: "P2"},
 					{Window: "seven_day", UtilizationGTE: 90, Severity: "P1"},

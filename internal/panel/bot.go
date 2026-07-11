@@ -23,6 +23,7 @@ const (
 	awaitAddAcc  = "add_account"
 	awaitThrPct  = "set_threshold_pct" // window stored in session.Window
 	awaitRename  = "rename_account"    // account id in session.AccountID
+	awaitSearch  = "search_account"
 )
 
 type session struct {
@@ -107,6 +108,7 @@ func defaultBotCommands() []telegram.BotCommand {
 		{Command: "status", Description: "查看配置摘要"},
 		{Command: "ops", Description: "运维视图（看板/告警/错误）"},
 		{Command: "manage", Description: "账号管理（调度/清错/刷新）"},
+		{Command: "search", Description: "搜索账号"},
 		{Command: "check", Description: "立即检查用量"},
 		{Command: "setbase", Description: "设置 Base URL"},
 		{Command: "setkey", Description: "设置 Admin API Key"},
@@ -171,14 +173,14 @@ func (b *Bot) handleMessage(ctx context.Context, m *telegram.InMessage) error {
 	case cmd == "/status" || cmd == "状态":
 		return b.sendStatus(ctx, m.Chat.ID, m.From.ID)
 	case cmd == "/help" || cmd == "帮助":
-		return b.tg.SendChat(ctx, m.Chat.ID, helpText(), homeKeyboard())
+		return b.tg.SendChat(ctx, m.Chat.ID, helpText(), b.homeKeyboardFor(m.From.ID))
 	case cmd == "/id" || cmd == "/myid":
 		return b.tg.SendChat(ctx, m.Chat.ID,
 			"你的 Telegram ID: "+telegram.Code(strconv.FormatInt(m.From.ID, 10))+"\nChat ID: "+
 				telegram.Code(strconv.FormatInt(m.Chat.ID, 10)), homeKeyboard())
 	case cmd == "/cancel" || cmd == "取消":
 		b.clearSession(m.From.ID)
-		return b.tg.SendChat(ctx, m.Chat.ID, "已取消当前输入。", homeKeyboard())
+		return b.tg.SendChat(ctx, m.Chat.ID, "已取消当前输入。", b.homeKeyboardFor(m.From.ID))
 	case strings.HasPrefix(cmd, "/setbase") || cmd == "/baseurl":
 		if arg != "" {
 			return b.setBaseURL(ctx, m.Chat.ID, m.From.ID, arg)
@@ -207,9 +209,24 @@ func (b *Bot) handleMessage(ctx context.Context, m *telegram.InMessage) error {
 	case cmd == "/thresholds" || cmd == "/threshold" || cmd == "阈值":
 		return b.tg.SendChat(ctx, m.Chat.ID, b.thresholdsText(m.From.ID), thresholdsKeyboard(m.From.ID, b))
 	case cmd == "/ops" || cmd == "/dashboard" || cmd == "运维":
+		if !b.isAdmin(m.From.ID) {
+			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 运维视图仅管理员可用。", b.homeKeyboardFor(m.From.ID))
+		}
 		return b.tg.SendChat(ctx, m.Chat.ID, b.opsMenuText(), opsKeyboard())
 	case cmd == "/manage" || cmd == "/mgr" || cmd == "管理":
+		if !b.isAdmin(m.From.ID) {
+			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 账号管理仅管理员可用。", b.homeKeyboardFor(m.From.ID))
+		}
 		return b.tg.SendChat(ctx, m.Chat.ID, b.manageMenuText(), manageKeyboard())
+	case cmd == "/search" || strings.HasPrefix(cmd, "/search"):
+		if !b.isAdmin(m.From.ID) {
+			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 搜索账号仅管理员可用。", b.homeKeyboardFor(m.From.ID))
+		}
+		if arg != "" {
+			return b.showAccountBrowser(ctx, m.Chat.ID, 0, m.From.ID, "search:"+arg, 0)
+		}
+		b.setAwait(m.From.ID, awaitSearch, 0, "")
+		return b.tg.SendChat(ctx, m.Chat.ID, "请发送要搜索的账号关键词（名称/邮箱片段）\n/cancel 取消", cancelKeyboard())
 	case cmd == "/check" || cmd == "立即检查":
 		return b.forceCheck(ctx, m.Chat.ID, m.From.ID)
 	default:
@@ -245,52 +262,102 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 	switch {
 	case data == "home":
 		b.clearSession(cq.From.ID)
-		return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), homeKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), b.homeKeyboardFor(cq.From.ID))
 	case data == "status":
-		return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), homeKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), b.homeKeyboardFor(cq.From.ID))
 	case data == "cfg_conn":
-		return b.editOrSend(ctx, chatID, msgID, b.connText(cq.From.ID), connKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, b.connText(cq.From.ID), connKeyboardFor(b.isAdmin(cq.From.ID)))
 	case data == "cfg_acc":
 		return b.editOrSend(ctx, chatID, msgID, b.accountsText(cq.From.ID), b.accountsKeyboard(cq.From.ID))
 	case data == "cfg_thr":
 		return b.editOrSend(ctx, chatID, msgID, b.thresholdsText(cq.From.ID), thresholdsKeyboard(cq.From.ID, b))
 	case data == "ops_menu":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		return b.showOpsMenu(ctx, chatID, msgID)
 	case data == "ops_dash":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		return b.showDashboard(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_avail":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		return b.showAvailability(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_alerts":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		return b.showAlerts(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_errors":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		return b.showErrors(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_conc":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		return b.showConcurrency(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_channels":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		return b.showChannels(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_badacc":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		return b.showBadAccounts(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_watch_errors":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		return b.watchErrorAccounts(ctx, chatID, msgID, cq.From.ID)
 	case data == "mgr_menu":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		return b.showManageMenu(ctx, chatID, msgID)
+	case data == "mgr_search":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		b.setAwait(cq.From.ID, awaitSearch, 0, "")
+		return b.editOrSend(ctx, chatID, msgID, "请发送要搜索的账号关键词（名称/邮箱片段）\n/cancel 取消", cancelKeyboard())
+	case data == "mgr_bulk_clear":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkClearErrors(ctx, chatID, msgID, cq.From.ID)
+	case data == "seed_conn":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.seedConnectionFromGlobal(ctx, chatID, msgID, cq.From.ID)
 	case data == "mgr_browse" || strings.HasPrefix(data, "mgr_browse:"):
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		status, page := "all", 0
 		if strings.HasPrefix(data, "mgr_browse:") {
-			rest := strings.TrimPrefix(data, "mgr_browse:")
-			parts := strings.Split(rest, ":")
-			if len(parts) >= 1 && parts[0] != "" {
-				status = parts[0]
-			}
-			if len(parts) >= 2 {
-				page, _ = strconv.Atoi(parts[1])
-			}
+			status, page = parseBrowseCallback(strings.TrimPrefix(data, "mgr_browse:"))
 		}
 		return b.showAccountBrowser(ctx, chatID, msgID, cq.From.ID, status, page)
 	case strings.HasPrefix(data, "mgr_acc:"):
+
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "mgr_acc:"), 10, 64)
 		return b.showManageAccount(ctx, chatID, msgID, cq.From.ID, id, "")
 	case strings.HasPrefix(data, "mgr_act:"):
+
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		// mgr_act:action:id
 		rest := strings.TrimPrefix(data, "mgr_act:")
 		action, idStr, ok := strings.Cut(rest, ":")
@@ -300,12 +367,20 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		id, _ := strconv.ParseInt(idStr, 10, 64)
 		return b.handleManageAction(ctx, chatID, msgID, cq.From.ID, action, id)
 	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:"):
+
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		page := 0
 		if strings.HasPrefix(data, "mgr_users:") {
 			page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_users:"))
 		}
 		return b.showUsers(ctx, chatID, msgID, cq.From.ID, page)
 	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:"):
+
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
 		page := 0
 		if strings.HasPrefix(data, "mgr_groups:") {
 			page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_groups:"))
@@ -319,7 +394,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		return b.editOrSend(ctx, chatID, msgID, "请发送 Admin API Key\n发送后将尽量删除含密钥的消息\n/cancel 取消", cancelKeyboard())
 	case data == "test_conn":
 		msg := b.testConnection(ctx, cq.From.ID)
-		return b.editOrSend(ctx, chatID, msgID, msg+"\n\n"+b.connText(cq.From.ID), connKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, msg+"\n\n"+b.connText(cq.From.ID), connKeyboardFor(b.isAdmin(cq.From.ID)))
 	case data == "clear_conn":
 		_, err := b.users.Update(cq.From.ID, func(p *userstore.Profile) error {
 			p.BaseURL = ""
@@ -330,7 +405,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		if err != nil {
 			return b.tg.SendChat(ctx, chatID, "清除失败: "+telegram.EscapeHTML(err.Error()), nil)
 		}
-		return b.editOrSend(ctx, chatID, msgID, "✅ 已清除连接配置\n\n"+b.connText(cq.From.ID), connKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, "✅ 已清除连接配置\n\n"+b.connText(cq.From.ID), connKeyboardFor(b.isAdmin(cq.From.ID)))
 	case data == "add_acc":
 		b.setAwait(cq.From.ID, awaitAddAcc, 0, "")
 		return b.editOrSend(ctx, chatID, msgID, "请发送账号 ID（数字）\n或从列表选择。\n/cancel 取消", addAccountKeyboard())
@@ -401,7 +476,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		if err != nil {
 			return err
 		}
-		return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), homeKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), b.homeKeyboardFor(cq.From.ID))
 	case data == "toggle_src":
 		_, err := b.users.Update(cq.From.ID, func(p *userstore.Profile) error {
 			if p.Source == "active" {
@@ -414,15 +489,15 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		if err != nil {
 			return err
 		}
-		return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), homeKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), b.homeKeyboardFor(cq.From.ID))
 	case data == "check_now":
 		_ = b.tg.SendChat(ctx, chatID, "⏳ 正在检查用量…", nil)
 		return b.forceCheck(ctx, chatID, cq.From.ID)
 	case data == "help":
-		return b.editOrSend(ctx, chatID, msgID, helpText(), homeKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, helpText(), b.homeKeyboardFor(cq.From.ID))
 	case data == "cancel":
 		b.clearSession(cq.From.ID)
-		return b.editOrSend(ctx, chatID, msgID, "已取消。\n\n"+b.homeText(cq.From.ID), homeKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, "已取消。\n\n"+b.homeText(cq.From.ID), b.homeKeyboardFor(cq.From.ID))
 
 	// thresholds
 	case data == "thr_add":
@@ -478,14 +553,14 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		return b.editOrSend(ctx, chatID, msgID, "✅ 已把系统默认写入你的配置（可继续改）\n\n"+b.thresholdsText(cq.From.ID), thresholdsKeyboard(cq.From.ID, b))
 
 	default:
-		return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), homeKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), b.homeKeyboardFor(cq.From.ID))
 	}
 }
 
 func (b *Bot) handleAwait(ctx context.Context, m *telegram.InMessage, s *session, text string) error {
 	if strings.EqualFold(text, "/cancel") || text == "取消" {
 		b.clearSession(m.From.ID)
-		return b.tg.SendChat(ctx, m.Chat.ID, "已取消。", homeKeyboard())
+		return b.tg.SendChat(ctx, m.Chat.ID, "已取消。", b.homeKeyboardFor(m.From.ID))
 	}
 	switch s.Await {
 	case awaitBaseURL:
@@ -511,6 +586,14 @@ func (b *Bot) handleAwait(ctx context.Context, m *telegram.InMessage, s *session
 		return b.tg.SendChat(ctx, m.Chat.ID,
 			fmt.Sprintf("✅ 已设置 %s ≥ %.0f%%\n\n", telegram.Code(win), pct)+b.thresholdsText(m.From.ID),
 			thresholdsKeyboard(m.From.ID, b))
+	case awaitSearch:
+		q := strings.TrimSpace(text)
+		b.clearSession(m.From.ID)
+		if q == "" {
+			return b.tg.SendChat(ctx, m.Chat.ID, "关键词不能为空", manageKeyboard())
+		}
+		// reuse showAccountBrowser with search via special status prefix search:keyword
+		return b.showAccountBrowser(ctx, m.Chat.ID, 0, m.From.ID, "search:"+q, 0)
 	case awaitRename:
 		name := strings.TrimSpace(text)
 		if name == "" {
@@ -552,7 +635,7 @@ func (b *Bot) setBaseURL(ctx context.Context, chatID, userID int64, raw string) 
 	if err != nil {
 		return b.tg.SendChat(ctx, chatID, "保存失败: "+telegram.EscapeHTML(err.Error()), nil)
 	}
-	return b.tg.SendChat(ctx, chatID, "✅ Base URL 已保存: "+telegram.Code(u), connKeyboard())
+	return b.tg.SendChat(ctx, chatID, "✅ Base URL 已保存: "+telegram.Code(u), connKeyboardFor(b.isAdmin(userID)))
 }
 
 func (b *Bot) setAPIKey(ctx context.Context, chatID, userID int64, raw string) error {
@@ -571,7 +654,7 @@ func (b *Bot) setAPIKey(ctx context.Context, chatID, userID int64, raw string) e
 	if err != nil {
 		return b.tg.SendChat(ctx, chatID, "保存失败: "+telegram.EscapeHTML(err.Error()), nil)
 	}
-	return b.tg.SendChat(ctx, chatID, "✅ API Key 已保存: "+telegram.Code(userstore.MaskKey(key)), connKeyboard())
+	return b.tg.SendChat(ctx, chatID, "✅ API Key 已保存: "+telegram.Code(userstore.MaskKey(key)), connKeyboardFor(b.isAdmin(userID)))
 }
 
 // addAccountMutate adds an account and returns a short success label or error.
@@ -906,11 +989,11 @@ func (b *Bot) showAccountPicker(ctx context.Context, chatID, msgID, userID int64
 // ----- views -----
 
 func (b *Bot) sendHome(ctx context.Context, chatID, userID int64) error {
-	return b.tg.SendChat(ctx, chatID, b.homeText(userID), homeKeyboard())
+	return b.tg.SendChat(ctx, chatID, b.homeText(userID), b.homeKeyboardFor(userID))
 }
 
 func (b *Bot) sendStatus(ctx context.Context, chatID, userID int64) error {
-	return b.tg.SendChat(ctx, chatID, b.homeText(userID), homeKeyboard())
+	return b.tg.SendChat(ctx, chatID, b.homeText(userID), b.homeKeyboardFor(userID))
 }
 
 func (b *Bot) homeText(userID int64) string {
@@ -918,7 +1001,8 @@ func (b *Bot) homeText(userID int64) string {
 	var bld strings.Builder
 	bld.WriteString(telegram.Bold("Sub2API 监控面板") + "\n")
 	bld.WriteString("实例: " + telegram.Code(b.cfg.Instance) + "\n")
-	fmt.Fprintf(&bld, "检查间隔: %s · 冷却: %s\n\n",
+	fmt.Fprintf(&bld, "角色: %s · 检查间隔: %s · 冷却: %s\n\n",
+		telegram.Code(b.roleLabel(userID)),
 		telegram.Code(b.cfg.Telegram.Panel.CheckInterval.String()),
 		telegram.Code(b.cfg.Telegram.Panel.Cooldown.String()),
 	)
@@ -1105,6 +1189,7 @@ func (b *Bot) editOrSend(ctx context.Context, chatID, msgID int64, text string, 
 // ----- keyboards -----
 
 func homeKeyboard() *telegram.InlineKeyboardMarkup {
+	// default full keyboard (admin); prefer homeKeyboardFor when userID known
 	return &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{telegram.Btn("📊 状态", "status"), telegram.Btn("🛠 运维视图", "ops_menu")},
@@ -1116,14 +1201,35 @@ func homeKeyboard() *telegram.InlineKeyboardMarkup {
 	}
 }
 
-func connKeyboard() *telegram.InlineKeyboardMarkup {
+func (b *Bot) homeKeyboardFor(userID int64) *telegram.InlineKeyboardMarkup {
+	if b.isAdmin(userID) {
+		return homeKeyboard()
+	}
+	// Normal user: self-service monitoring only (no ops/manage write entry points)
 	return &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn("设置 Base URL", "set_base"), telegram.Btn("设置 API Key", "set_key")},
-			{telegram.Btn("测试连接", "test_conn"), telegram.Btn("清除连接", "clear_conn")},
-			{telegram.Btn("« 返回", "home")},
+			{telegram.Btn("📊 状态", "status"), telegram.Btn("👤 监控账号", "cfg_acc")},
+			{telegram.Btn("🔌 连接配置", "cfg_conn"), telegram.Btn("🎯 阈值", "cfg_thr")},
+			{telegram.Btn("▶️ 立即检查", "check_now"), telegram.Btn("🔁 开关监控", "toggle_mon")},
+			{telegram.Btn("📡 切换数据源", "toggle_src"), telegram.Btn("❓ 帮助", "help")},
 		},
 	}
+}
+
+func connKeyboard() *telegram.InlineKeyboardMarkup {
+	return connKeyboardFor(true)
+}
+
+func connKeyboardFor(admin bool) *telegram.InlineKeyboardMarkup {
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("设置 Base URL", "set_base"), telegram.Btn("设置 API Key", "set_key")},
+		{telegram.Btn("测试连接", "test_conn"), telegram.Btn("清除连接", "clear_conn")},
+	}
+	if admin {
+		rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("📥 使用全局配置", "seed_conn")})
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 返回", "home")})
+	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func addAccountKeyboard() *telegram.InlineKeyboardMarkup {
@@ -1257,6 +1363,7 @@ func helpText() string {
 /status — 查看配置摘要
 /ops — 运维视图（看板/可用性/告警/错误/并发）
 /manage — 账号管理（调度/清错/刷新/浏览）
+/search &lt;关键词&gt; — 搜索账号
 /check — 立即拉取用量快照
 /id — 显示你的 Telegram ID
 /thresholds — 管理用量阈值
@@ -1271,11 +1378,11 @@ func helpText() string {
 
 ` + telegram.Bold("说明") + `
 • 每位用户独立保存 base_url / key / 账号 / 阈值
-• 运维视图用你的 Admin API 只读查询实例状态
-• 账号管理可切换调度、清除错误/限速、恢复状态、刷新凭据
+• <b>普通用户</b>：自助连接 / 监控账号 / 阈值 / 立即检查
+• <b>管理员</b>：额外运维视图 + 账号管理（调度/清错/批量/搜索）
 • 用量达到阈值时 Bot 会私聊提醒你
 • 支持 passive（轻量缓存）与 active（刷新上游）数据源
-• 配置存于服务器 data/users.json
+• 配置按 Telegram 用户隔离，存于 data/users.json
 • 发送 /cancel 取消当前输入
 `
 }
@@ -1283,6 +1390,10 @@ func helpText() string {
 // ----- session + allowlist -----
 
 func (b *Bot) allowed(userID int64) bool {
+	// Admins always allowed
+	if b.isAdmin(userID) {
+		return true
+	}
 	list := b.cfg.Telegram.Panel.AllowUserIDs
 	if len(list) > 0 {
 		for _, id := range list {
@@ -1303,6 +1414,55 @@ func (b *Bot) allowed(userID int64) bool {
 		}
 	}
 	return false
+}
+
+// isAdmin reports whether the Telegram user has admin privileges.
+// Priority: Profile.Role override → admin_user_ids → numeric telegram.chat_id fallback.
+func (b *Bot) isAdmin(userID int64) bool {
+	if p, ok := b.users.Get(userID); ok {
+		switch p.EffectiveRole() {
+		case userstore.RoleAdmin:
+			return true
+		case userstore.RoleUser:
+			return false
+		}
+	}
+	for _, id := range b.cfg.Telegram.Panel.AdminUserIDs {
+		if id == userID {
+			return true
+		}
+	}
+	// If no explicit admin list, treat private chat_id owner as sole admin.
+	if len(b.cfg.Telegram.Panel.AdminUserIDs) == 0 && b.cfg.Telegram.ChatID != "" {
+		if id, err := strconv.ParseInt(b.cfg.Telegram.ChatID, 10, 64); err == nil && id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *Bot) roleLabel(userID int64) string {
+	if b.isAdmin(userID) {
+		return "管理员"
+	}
+	return "用户"
+}
+
+// denyIfNotAdmin answers callback / sends message and returns true when denied.
+func (b *Bot) denyIfNotAdmin(ctx context.Context, chatID, msgID, userID int64, cqID string) bool {
+	if b.isAdmin(userID) {
+		return false
+	}
+	if cqID != "" {
+		_ = b.tg.AnswerCallback(ctx, cqID, "需要管理员权限", true)
+	}
+	msg := "⛔ 该功能仅管理员可用。\n普通用户可配置自己的连接、监控账号与阈值。"
+	if msgID > 0 {
+		_ = b.editOrSend(ctx, chatID, msgID, msg, b.homeKeyboardFor(userID))
+	} else {
+		_ = b.tg.SendChat(ctx, chatID, msg, b.homeKeyboardFor(userID))
+	}
+	return true
 }
 
 func (b *Bot) setAwait(userID int64, kind string, accountID int64, window string) {

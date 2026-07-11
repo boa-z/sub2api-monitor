@@ -9,13 +9,15 @@ import (
 
 	"github.com/boa/sub2api-monitor/internal/sub2api"
 	"github.com/boa/sub2api-monitor/internal/telegram"
+	"github.com/boa/sub2api-monitor/internal/userstore"
 )
 
 func manageKeyboard() *telegram.InlineKeyboardMarkup {
 	return &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn("📚 账号浏览", "mgr_browse"), telegram.Btn("👥 用户", "mgr_users")},
-			{telegram.Btn("🏷 分组", "mgr_groups"), telegram.Btn("📋 异常账号", "ops_badacc")},
+			{telegram.Btn("📚 账号浏览", "mgr_browse"), telegram.Btn("🔎 搜索账号", "mgr_search")},
+			{telegram.Btn("🧹 批量清错", "mgr_bulk_clear"), telegram.Btn("📋 异常账号", "ops_badacc")},
+			{telegram.Btn("👥 用户", "mgr_users"), telegram.Btn("🏷 分组", "mgr_groups")},
 			{telegram.Btn("« 返回主面板", "home")},
 		},
 	}
@@ -26,17 +28,47 @@ func (b *Bot) manageMenuText() string {
 
 用你的 Admin API 管理实例（只对你配置的连接生效）：
 
-• 账号浏览 — 按状态分页查看、点进管理
+• 账号浏览 — 状态/平台筛选、搜索、分页
+• 批量处理 — 对 error 账号一键清错
 • 用户 / 分组 — 只读列表
 • 异常账号 — error 列表与一键监控
 
 进入账号后可执行：
-切换调度 · 清除错误 · 清除限速 · 恢复状态 · 刷新凭据
+切换调度 · 启停状态 · 测试连通 · 清除错误/限速 · 恢复/刷新
 `
 }
 
 func (b *Bot) showManageMenu(ctx context.Context, chatID, msgID int64) error {
 	return b.editOrSend(ctx, chatID, msgID, b.manageMenuText(), manageKeyboard())
+}
+
+// parseBrowseFilter decodes browser status tokens.
+// Forms: all|active|error|... | search:kw | plat:openai | plat:openai:active
+func parseBrowseFilter(status string) sub2api.AccountListFilter {
+	f := sub2api.AccountListFilter{}
+	s := strings.TrimSpace(status)
+	if s == "" || s == "all" {
+		return f
+	}
+	if strings.HasPrefix(s, "search:") {
+		f.Search = strings.TrimPrefix(s, "search:")
+		return f
+	}
+	if strings.HasPrefix(s, "plat:") {
+		rest := strings.TrimPrefix(s, "plat:")
+		parts := strings.SplitN(rest, ":", 2)
+		f.Platform = parts[0]
+		if len(parts) == 2 && parts[1] != "" && parts[1] != "all" {
+			f.Status = parts[1]
+		}
+		return f
+	}
+	if s == "unsched" || s == "rate_limited" {
+		// special client-side filters
+		return f
+	}
+	f.Status = s
+	return f
 }
 
 func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int64, status string, page int) error {
@@ -48,28 +80,28 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 		page = 0
 	}
 	const pageSize = 8
-	filter := status
-	if filter == "all" || filter == "" {
-		filter = ""
+	filterToken := status
+	if filterToken == "" {
+		filterToken = "all"
 	}
-	// special: unsched => list all then filter client-side for !schedulable
+
 	var items []sub2api.Account
 	var total int64
-	if status == "unsched" {
-		// pull a larger page of active+error isn't perfect; list without status
-		all, tot, err := cli.ListAccounts(ctx, page+1, pageSize, "")
+
+	switch {
+	case status == "unsched":
+		all, tot, err := cli.ListAccountsEx(ctx, page+1, pageSize, sub2api.AccountListFilter{})
 		if err != nil {
 			return b.editOrSend(ctx, chatID, msgID, "列表失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 		}
+		total = tot
 		for _, a := range all {
 			if !a.Schedulable {
 				items = append(items, a)
 			}
 		}
-		total = tot
-	} else if status == "rate_limited" {
-		// API may not support; fetch and filter
-		all, tot, err := cli.ListAccounts(ctx, page+1, 30, "")
+	case status == "rate_limited":
+		all, tot, err := cli.ListAccountsEx(ctx, page+1, 30, sub2api.AccountListFilter{})
 		if err != nil {
 			return b.editOrSend(ctx, chatID, msgID, "列表失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 		}
@@ -82,18 +114,24 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 		if len(items) > pageSize {
 			items = items[:pageSize]
 		}
-	} else {
+	default:
+		f := parseBrowseFilter(status)
 		var err error
-		items, total, err = cli.ListAccounts(ctx, page+1, pageSize, filter)
+		items, total, err = cli.ListAccountsEx(ctx, page+1, pageSize, f)
 		if err != nil {
 			return b.editOrSend(ctx, chatID, msgID, "列表失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 		}
 	}
 
 	var bld strings.Builder
-	title := status
-	if title == "" || title == "all" {
+	title := filterToken
+	switch {
+	case title == "" || title == "all":
 		title = "全部"
+	case strings.HasPrefix(title, "search:"):
+		title = "搜索:" + strings.TrimPrefix(title, "search:")
+	case strings.HasPrefix(title, "plat:"):
+		title = "平台:" + strings.TrimPrefix(title, "plat:")
 	}
 	bld.WriteString(telegram.Bold("账号浏览") + " · " + telegram.Code(title) + "\n")
 	fmt.Fprintf(&bld, "第 %d 页 · 共约 %s\n点账号进入管理\n\n", page+1, telegram.Code(itoa(total)))
@@ -101,21 +139,32 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 		bld.WriteString("本页无账号。")
 	}
 
+	// status filter row
 	kbRows := [][]telegram.InlineKeyboardButton{
-		{telegram.Btn(filterLabel("全部", status, "all"), "mgr_browse:all:0"),
+		{
+			telegram.Btn(filterLabel("全部", status, "all"), "mgr_browse:all:0"),
 			telegram.Btn(filterLabel("active", status, "active"), "mgr_browse:active:0"),
-			telegram.Btn(filterLabel("error", status, "error"), "mgr_browse:error:0")},
+			telegram.Btn(filterLabel("error", status, "error"), "mgr_browse:error:0"),
+		},
+		{
+			telegram.Btn(filterLabel("停调度", status, "unsched"), "mgr_browse:unsched:0"),
+			telegram.Btn(filterLabel("限速", status, "rate_limited"), "mgr_browse:rate_limited:0"),
+			telegram.Btn("🔎 搜索", "mgr_search"),
+		},
+		{
+			telegram.Btn(filterLabel("openai", status, "plat:openai"), "mgr_browse:plat|openai:0"),
+			telegram.Btn(filterLabel("anthropic", status, "plat:anthropic"), "mgr_browse:plat|anthropic:0"),
+		},
 	}
+
+	// Note: platform callbacks use mgr_browse:plat:openai:0 — need custom parse in bot.go
+	// For nav we encode statusOrAll carefully.
+
 	for _, a := range items {
-		sched := "可调度"
-		if !a.Schedulable {
-			sched = "停调度"
-		}
 		label := fmt.Sprintf("#%d [%s] %s", a.ID, a.Status, truncateRunes(a.Name, 12))
 		if a.Platform != "" {
 			label = fmt.Sprintf("#%d %s/%s %s", a.ID, truncateRunes(a.Platform, 6), a.Status, truncateRunes(a.Name, 10))
 		}
-		_ = sched
 		kbRows = append(kbRows, []telegram.InlineKeyboardButton{
 			telegram.Btn(label, fmt.Sprintf("mgr_acc:%d", a.ID)),
 		})
@@ -128,11 +177,12 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 		)
 	}
 	nav := []telegram.InlineKeyboardButton{}
+	token := browseToken(status)
 	if page > 0 {
-		nav = append(nav, telegram.Btn("« 上页", fmt.Sprintf("mgr_browse:%s:%d", statusOrAll(status), page-1)))
+		nav = append(nav, telegram.Btn("« 上页", fmt.Sprintf("mgr_browse:%s:%d", token, page-1)))
 	}
 	if int64((page+1)*pageSize) < total || len(items) == pageSize {
-		nav = append(nav, telegram.Btn("下页 »", fmt.Sprintf("mgr_browse:%s:%d", statusOrAll(status), page+1)))
+		nav = append(nav, telegram.Btn("下页 »", fmt.Sprintf("mgr_browse:%s:%d", token, page+1)))
 	}
 	if len(nav) > 0 {
 		kbRows = append(kbRows, nav)
@@ -144,11 +194,84 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: kbRows})
 }
 
+// browseToken encodes status for callback_data (avoid extra colons for search).
+func browseToken(status string) string {
+	s := strings.TrimSpace(status)
+	if s == "" {
+		return "all"
+	}
+	// search:kw uses colon — encode as search|kw for callback
+	if strings.HasPrefix(s, "search:") {
+		return "search|" + strings.TrimPrefix(s, "search:")
+	}
+	if strings.HasPrefix(s, "plat:") {
+		// plat:openai or plat:openai:active
+		return strings.ReplaceAll(s, ":", "|")
+	}
+	return s
+}
+
+// parseBrowseCallback parses rest after mgr_browse:
+// formats: all:0 | active:1 | search|kw:0 | plat|openai:0 | plat|openai|active:0
+func parseBrowseCallback(rest string) (status string, page int) {
+	status = "all"
+	page = 0
+	if rest == "" {
+		return
+	}
+	// page is always last segment after final ':'
+	// but search|kw may contain no extra colon if we use form search|kw:page
+	parts := strings.Split(rest, ":")
+	if len(parts) == 1 {
+		status = decodeBrowseToken(parts[0])
+		return
+	}
+	// last is page
+	page, _ = strconv.Atoi(parts[len(parts)-1])
+	token := strings.Join(parts[:len(parts)-1], ":")
+	// also support plat:openai:0 (colon-based platform without pipe)
+	status = decodeBrowseToken(token)
+	return
+}
+
+func decodeBrowseToken(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "all"
+	}
+	if strings.HasPrefix(token, "search|") {
+		return "search:" + strings.TrimPrefix(token, "search|")
+	}
+	if strings.HasPrefix(token, "plat|") {
+		return "plat:" + strings.ReplaceAll(strings.TrimPrefix(token, "plat|"), "|", ":")
+	}
+	// already plat:openai form from buttons
+	if strings.HasPrefix(token, "plat:") {
+		return token
+	}
+	return token
+}
+
 func filterLabel(label, cur, val string) string {
-	if cur == val || (cur == "" && val == "all") {
+	curN := normalizeFilterForLabel(cur)
+	valN := normalizeFilterForLabel(val)
+	if curN == valN || (curN == "" && valN == "all") {
 		return "• " + label
 	}
 	return label
+}
+
+func normalizeFilterForLabel(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "all"
+	}
+	if strings.HasPrefix(s, "plat:") {
+		// highlight by platform only
+		rest := strings.TrimPrefix(s, "plat:")
+		return "plat:" + strings.Split(rest, ":")[0]
+	}
+	return s
 }
 
 func statusOrAll(s string) string {
@@ -198,7 +321,6 @@ func (b *Bot) showManageAccount(ctx context.Context, chatID, msgID, userID, acco
 		bld.WriteString("临时停调度: " + telegram.Code("active") + "\n")
 	}
 
-	// watched?
 	watched := false
 	if p, ok := b.users.Get(userID); ok {
 		for _, a := range p.Accounts {
@@ -223,9 +345,21 @@ func (b *Bot) showManageAccount(ctx context.Context, chatID, msgID, userID, acco
 		watchData = fmt.Sprintf("mgr_act:unwatch:%d", accountID)
 	}
 
+	// enable/disable based on status
+	statusBtn := "🚫 禁用账号"
+	statusData := fmt.Sprintf("mgr_act:confirm_disable:%d", accountID)
+	if strings.EqualFold(acc.Status, "disabled") {
+		statusBtn = "✅ 启用账号"
+		statusData = fmt.Sprintf("mgr_act:enable:%d", accountID)
+	}
+
 	kb := &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{telegram.Btn(schedBtn, schedData), telegram.Btn(watchBtn, watchData)},
+			{
+				telegram.Btn(statusBtn, statusData),
+				telegram.Btn("🧪 测试连通", fmt.Sprintf("mgr_act:test:%d", accountID)),
+			},
 			{
 				telegram.Btn("🧹 清错误", fmt.Sprintf("mgr_act:clear_err:%d", accountID)),
 				telegram.Btn("⏱ 清限速", fmt.Sprintf("mgr_act:clear_rl:%d", accountID)),
@@ -245,8 +379,9 @@ func (b *Bot) showManageAccount(ctx context.Context, chatID, msgID, userID, acco
 }
 
 func (b *Bot) handleManageAction(ctx context.Context, chatID, msgID, userID int64, action string, accountID int64) error {
-	// confirmation step before stopping schedule
-	if action == "confirm_unsched" {
+	// confirmation steps
+	switch action {
+	case "confirm_unsched":
 		kb := &telegram.InlineKeyboardMarkup{
 			InlineKeyboard: [][]telegram.InlineKeyboardButton{
 				{
@@ -257,6 +392,18 @@ func (b *Bot) handleManageAction(ctx context.Context, chatID, msgID, userID int6
 		}
 		return b.editOrSend(ctx, chatID, msgID,
 			fmt.Sprintf("确认停止账号 #%d 的调度？\n停止后新请求将不再分配到该账号。", accountID),
+			kb)
+	case "confirm_disable":
+		kb := &telegram.InlineKeyboardMarkup{
+			InlineKeyboard: [][]telegram.InlineKeyboardButton{
+				{
+					telegram.Btn("✅ 确认禁用", fmt.Sprintf("mgr_act:disable:%d", accountID)),
+					telegram.Btn("取消", fmt.Sprintf("mgr_acc:%d", accountID)),
+				},
+			},
+		}
+		return b.editOrSend(ctx, chatID, msgID,
+			fmt.Sprintf("确认禁用账号 #%d？\n禁用后账号将不可用，直到重新启用。", accountID),
 			kb)
 	}
 
@@ -277,6 +424,29 @@ func (b *Bot) handleManageAction(ctx context.Context, chatID, msgID, userID int6
 			notice = "❌ 停止调度失败: " + telegram.EscapeHTML(err.Error())
 		} else {
 			notice = "✅ 已停止调度"
+		}
+	case "enable":
+		if _, err := cli.SetAccountStatus(ctx, accountID, "active"); err != nil {
+			notice = "❌ 启用失败: " + telegram.EscapeHTML(err.Error())
+		} else {
+			notice = "✅ 已启用（status=active）"
+		}
+	case "disable":
+		if _, err := cli.SetAccountStatus(ctx, accountID, "disabled"); err != nil {
+			notice = "❌ 禁用失败: " + telegram.EscapeHTML(err.Error())
+		} else {
+			notice = "✅ 已禁用（status=disabled）"
+		}
+	case "test":
+		raw, err := cli.TestAccount(ctx, accountID)
+		if err != nil {
+			notice = "❌ 测试失败: " + telegram.EscapeHTML(err.Error())
+		} else {
+			s := string(raw)
+			if len(s) > 280 {
+				s = s[:280] + "…"
+			}
+			notice = "✅ 测试完成: " + telegram.Code(truncateRunes(s, 200))
 		}
 	case "clear_err":
 		if _, err := cli.ClearAccountError(ctx, accountID); err != nil {
@@ -326,6 +496,75 @@ func (b *Bot) handleManageAction(ctx context.Context, chatID, msgID, userID int6
 	return b.showManageAccount(ctx, chatID, msgID, userID, accountID, notice)
 }
 
+// bulkClearErrors clears error state for up to N accounts currently in status=error.
+func (b *Bot) bulkClearErrors(ctx context.Context, chatID, msgID, userID int64) error {
+	cli, _, err := b.userClient(userID, 30*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	items, total, err := cli.ListAccountsEx(ctx, 1, 30, sub2api.AccountListFilter{Status: "error"})
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "拉取 error 账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
+	}
+	if len(items) == 0 {
+		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有 status=error 的账号。", manageKeyboard())
+	}
+	okN, failN := 0, 0
+	var fails []string
+	const maxOps = 20
+	for i, a := range items {
+		if i >= maxOps {
+			break
+		}
+		if _, err := cli.ClearAccountError(ctx, a.ID); err != nil {
+			failN++
+			if len(fails) < 5 {
+				fails = append(fails, fmt.Sprintf("#%d %s", a.ID, truncateRunes(err.Error(), 40)))
+			}
+		} else {
+			okN++
+		}
+	}
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold("批量清错结果") + "\n\n")
+	fmt.Fprintf(&bld, "error 账号约 %s 个（本页处理 %d）\n", telegram.Code(itoa(total)), min(len(items), maxOps))
+	fmt.Fprintf(&bld, "✅ 成功 %s · ❌ 失败 %s\n", telegram.Code(strconv.Itoa(okN)), telegram.Code(strconv.Itoa(failN)))
+	if len(fails) > 0 {
+		bld.WriteString("\n失败样例:\n")
+		for _, f := range fails {
+			bld.WriteString("• " + telegram.EscapeHTML(f) + "\n")
+		}
+	}
+	if total > int64(maxOps) {
+		fmt.Fprintf(&bld, "\n还有更多 error 账号，可再次点「批量清错」。")
+	}
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), manageKeyboard())
+}
+
+// seedConnectionFromGlobal copies global sub2api config into the user's panel profile.
+// Admin-only. Shares the global Admin key with this Telegram user — use carefully.
+func (b *Bot) seedConnectionFromGlobal(ctx context.Context, chatID, msgID, userID int64) error {
+	base := strings.TrimSpace(b.cfg.Sub2API.BaseURL)
+	key := strings.TrimSpace(b.cfg.Sub2API.AdminAPIKey)
+	jwt := strings.TrimSpace(b.cfg.Sub2API.JWT)
+	if base == "" || (key == "" && jwt == "") {
+		return b.editOrSend(ctx, chatID, msgID,
+			"❌ 全局 sub2api 未配置完整（需要 base_url + admin_api_key/jwt）。\n请手动设置连接，或在 config.yaml 填写全局凭证。",
+			connKeyboardFor(true))
+	}
+	_, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		p.BaseURL = strings.TrimRight(base, "/")
+		p.AdminAPIKey = key
+		p.JWT = jwt
+		return nil
+	})
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "写入失败: "+telegram.EscapeHTML(err.Error()), connKeyboardFor(true))
+	}
+	msg := "✅ 已导入全局连接配置\n\n" + b.connText(userID) + "\n\n⚠️ 共享 Admin Key 拥有完整管理权限，请仅用于可信管理员。"
+	return b.editOrSend(ctx, chatID, msgID, msg, connKeyboardFor(true))
+}
+
 func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page int) error {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
@@ -334,7 +573,7 @@ func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page i
 	if page < 0 {
 		page = 0
 	}
-	const pageSize = 10
+	const pageSize = 12
 	items, total, err := cli.ListUsers(ctx, page+1, pageSize)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "用户列表失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
@@ -343,17 +582,10 @@ func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page i
 	bld.WriteString(telegram.Bold("用户列表") + "\n")
 	fmt.Fprintf(&bld, "第 %d 页 · 共 %s\n\n", page+1, telegram.Code(itoa(total)))
 	for _, u := range items {
-		email := u.Email
-		if email == "" {
-			email = u.Username
-		}
-		fmt.Fprintf(&bld, "• #%d %s [%s]\n  余额 %s · 并发 %s/%s · %s\n",
+		fmt.Fprintf(&bld, "• #%d %s [%s] %s\n",
 			u.ID,
-			telegram.EscapeHTML(truncateRunes(email, 24)),
+			telegram.EscapeHTML(truncateRunes(u.Username, 16)),
 			telegram.EscapeHTML(u.Role),
-			telegram.Code(fmt.Sprintf("%.2f", u.Balance)),
-			telegram.Code(strconv.Itoa(u.CurrentConcurrency)),
-			telegram.Code(strconv.Itoa(u.Concurrency)),
 			telegram.EscapeHTML(u.Status),
 		)
 	}

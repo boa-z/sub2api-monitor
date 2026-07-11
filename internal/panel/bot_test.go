@@ -173,3 +173,107 @@ func containsAll(s string, parts ...string) bool {
 	}
 	return true
 }
+
+func TestIsAdminFromConfig(t *testing.T) {
+	b, _ := testBot(t)
+	b.cfg.Telegram.Panel.OpenRegistration = true
+	b.cfg.Telegram.Panel.AdminUserIDs = []int64{100}
+	b.cfg.Telegram.ChatID = "999"
+	if !b.isAdmin(100) {
+		t.Fatal("admin_user_ids should grant admin")
+	}
+	if b.isAdmin(42) {
+		t.Fatal("normal open-reg user should not be admin when admin_user_ids set")
+	}
+	if !b.allowed(42) {
+		t.Fatal("normal user still allowed via open registration")
+	}
+}
+
+func TestIsAdminChatOwnerFallback(t *testing.T) {
+	b, _ := testBot(t)
+	b.cfg.Telegram.Panel.AdminUserIDs = nil
+	b.cfg.Telegram.ChatID = "1001"
+	if !b.isAdmin(1001) {
+		t.Fatal("chat owner should be admin when admin list empty")
+	}
+	if b.isAdmin(1002) {
+		t.Fatal("other user not admin")
+	}
+}
+
+func TestIsAdminProfileOverride(t *testing.T) {
+	b, store := testBot(t)
+	b.cfg.Telegram.Panel.AdminUserIDs = []int64{1}
+	if _, err := store.GetOrCreate(2, "2", "u", "U"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(2, func(p *userstore.Profile) error {
+		p.Role = userstore.RoleAdmin
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !b.isAdmin(2) {
+		t.Fatal("profile role=admin should grant admin")
+	}
+	if _, err := store.Update(1, func(p *userstore.Profile) error {
+		// user 1 is in admin list but force user role
+		p.Role = userstore.RoleUser
+		return nil
+	}); err != nil {
+		// may not exist
+		if _, err2 := store.GetOrCreate(1, "1", "a", "A"); err2 != nil {
+			t.Fatal(err2)
+		}
+		if _, err3 := store.Update(1, func(p *userstore.Profile) error {
+			p.Role = userstore.RoleUser
+			return nil
+		}); err3 != nil {
+			t.Fatal(err3)
+		}
+	}
+	if b.isAdmin(1) {
+		t.Fatal("profile role=user should override admin_user_ids")
+	}
+}
+
+func TestHomeKeyboardRoleAware(t *testing.T) {
+	b, _ := testBot(t)
+	b.cfg.Telegram.Panel.AdminUserIDs = []int64{7}
+	adminKB := b.homeKeyboardFor(7)
+	userKB := b.homeKeyboardFor(8)
+	adminJoined := ""
+	for _, row := range adminKB.InlineKeyboard {
+		for _, btn := range row {
+			adminJoined += btn.CallbackData + ","
+		}
+	}
+	userJoined := ""
+	for _, row := range userKB.InlineKeyboard {
+		for _, btn := range row {
+			userJoined += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(adminJoined, "mgr_menu") || !strings.Contains(adminJoined, "ops_menu") {
+		t.Fatalf("admin keyboard missing manage/ops: %s", adminJoined)
+	}
+	if strings.Contains(userJoined, "mgr_menu") || strings.Contains(userJoined, "ops_menu") {
+		t.Fatalf("user keyboard should hide manage/ops: %s", userJoined)
+	}
+}
+
+func TestParseBrowseCallback(t *testing.T) {
+	st, page := parseBrowseCallback("active:2")
+	if st != "active" || page != 2 {
+		t.Fatalf("got %s %d", st, page)
+	}
+	st, page = parseBrowseCallback("search|foo bar:0")
+	if st != "search:foo bar" || page != 0 {
+		t.Fatalf("got %q %d", st, page)
+	}
+	st, page = parseBrowseCallback("plat|openai:1")
+	if st != "plat:openai" || page != 1 {
+		t.Fatalf("got %q %d", st, page)
+	}
+}

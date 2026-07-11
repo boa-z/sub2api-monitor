@@ -164,5 +164,57 @@ func parseNamedList[T any](body []byte) ([]T, int64, error) {
 
 // ListAccountsFiltered lists accounts with optional status filter.
 func (c *Client) ListAccountsFiltered(ctx context.Context, page, pageSize int, status string) ([]Account, int64, error) {
-	return c.ListAccounts(ctx, page, pageSize, status)
+	return c.ListAccountsEx(ctx, page, pageSize, AccountListFilter{Status: status})
+}
+
+// SetAccountStatus updates account status via PUT /accounts/:id {status}.
+// Common values: active, disabled, error (server-defined).
+func (c *Client) SetAccountStatus(ctx context.Context, id int64, status string) (*Account, error) {
+	var out Account
+	if err := c.put(ctx, fmt.Sprintf("/api/v1/admin/accounts/%d", id), map[string]any{
+		"status": status,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// TestAccount runs an account connectivity test and returns raw result data.
+func (c *Client) TestAccount(ctx context.Context, id int64) (json.RawMessage, error) {
+	var m any
+	if err := c.post(ctx, fmt.Sprintf("/api/v1/admin/accounts/%d/test", id), map[string]any{}, &m); err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return json.RawMessage(`{"ok":true}`), nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// ResetAccountQuota resets account quota counters when supported.
+func (c *Client) ResetAccountQuota(ctx context.Context, id int64) (*Account, error) {
+	var out Account
+	if err := c.post(ctx, fmt.Sprintf("/api/v1/admin/accounts/%d/reset-quota", id), map[string]any{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ResolveOpsError marks an ops error resolved.
+func (c *Client) ResolveOpsError(ctx context.Context, kind string, id int64) error {
+	// kind: request|upstream|errors
+	path := ""
+	switch kind {
+	case "request", "request-errors":
+		path = fmt.Sprintf("/api/v1/admin/ops/request-errors/%d/resolve", id)
+	case "upstream", "upstream-errors":
+		path = fmt.Sprintf("/api/v1/admin/ops/upstream-errors/%d/resolve", id)
+	default:
+		path = fmt.Sprintf("/api/v1/admin/ops/errors/%d/resolve", id)
+	}
+	return c.post(ctx, path, map[string]any{}, nil)
 }

@@ -27,11 +27,17 @@ telegram:
   # 启动时会 setMyCommands 注册命令菜单；密钥输入会尽量 deleteMessage
   panel:
     enabled: false # true 开启交互面板 + 按用户轮询用量
-    # allow_user_ids:           # 白名单（Telegram 数字 ID）；非空时仅列表内用户可用
-    #   - 123456789                 # 替换为你的 Telegram 用户 ID
+    # admin_user_ids:          # 管理员（运维视图 + 账号管理写操作 + 批量/搜索/导入全局连接）
+    #   - 123456789                 # 替换为管理员 Telegram 数字 ID
+    # allow_user_ids:          # 普通用户白名单；非空时仅列表内（及管理员）可用
+    #   - 987654321
 
     allow_all: false # true = 任意用户可用（仍互相隔离）
     open_registration: true # allow 列表为空时是否开放注册（默认 true）
+    # 角色说明：
+    # - 管理员：admin_user_ids，或 admin 列表为空时回退 telegram.chat_id 所有者；
+    #   也可在 data/users.json 将 profile.role 设为 admin / user 覆盖。
+    # - 普通用户：自助连接 / 监控账号 / 阈值 / 立即检查；无 manage 写操作。
     users_path: "./data/users.json" # 用户配置持久化路径
     check_interval: 5m # 用户监控账号的检查间隔
     cooldown: 2h # 用户用量告警冷却

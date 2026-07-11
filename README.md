@@ -139,20 +139,56 @@ docker compose up -d
 
 ## Telegram 用户态面板
 
-开启后，用户可在 **私聊 Bot** 中自助配置自己的监控，无需改服务器 YAML：
+开启后，用户可在 **私聊 Bot** 中自助配置自己的监控，无需改服务器 YAML。支持**多用户**与 **管理员 / 普通用户** 权限区分。
 
 ```yaml
 telegram:
   bot_token: "..."
-  chat_id: "管理员ID"        # 仍用于全局运维告警
+  chat_id: "管理员ID"        # 全局运维告警默认 chat；admin_user_ids 为空时也作为 sole admin 回退
   panel:
     enabled: true
-    allow_user_ids: [123456789]       # 白名单（你的 Telegram 数字 ID）；或 open_registration/allow_all
-
+    admin_user_ids: [123456789]   # 管理员：运维视图 + 账号管理写操作
+    # allow_user_ids: [987654321] # 可选：普通用户白名单；非空时仅列表内 + 管理员可用
+    open_registration: true       # allow 列表为空时开放注册（用户间数据隔离）
+    # allow_all: false
     users_path: "./data/users.json"
     check_interval: 5m
     cooldown: 2h
 ```
+
+### 角色与权限
+
+| 能力 | 普通用户 | 管理员 |
+|------|----------|--------|
+| 连接配置（自己的 Base/Key） | ✅ | ✅ |
+| 导入全局 `sub2api` 连接（seed） | ❌ | ✅ |
+| 监控账号 / 阈值 / 立即检查 | ✅ | ✅ |
+| 运维视图（看板/可用性/告警/错误…） | ❌ | ✅ |
+| 账号管理（调度/启停/清错/刷新/测试） | ❌ | ✅ |
+| 搜索 / 批量清错 / 用户与分组列表 | ❌ | ✅ |
+
+判定优先级：
+
+1. `data/users.json` 中 `profile.role` 为 `admin` / `user` 时**覆盖**配置
+2. 否则看 `telegram.panel.admin_user_ids`
+3. 若管理员列表为空，则数字型 `telegram.chat_id` 回退为 sole admin
+
+主面板键盘会按角色隐藏管理员入口；管理员回调若被普通用户点击会提示「需要管理员权限」。
+
+### 多用户交付建议
+
+1. **一个 Bot Token**：所有用户私聊同一 Bot；配置按 `telegram_user_id` 隔离在 `users.json`。
+2. **开放注册 + 自备 Key（推荐租户模式）**  
+   - `open_registration: true`  
+   - 普通用户填写**自己实例**的 Admin API Key  
+   - 管理员只管 Bot 进程与全局告警通道  
+3. **共享实例（运维模式）**  
+   - 配置全局 `sub2api.base_url` + `admin_api_key`  
+   - 仅 `admin_user_ids` 可「使用全局配置」导入 Key  
+   - **不要**把共享 Admin Key 交给不可信用户（Admin API 可改调度/清错等）  
+4. **混合**  
+   - 白名单 `allow_user_ids` 限制谁能进面板  
+   - 需要写权限的人进 `admin_user_ids`，或手动写 `role: admin`
 
 ### 用户操作
 
@@ -163,24 +199,23 @@ telegram:
 5. 保持「监控开启」；后台按 `check_interval` 拉用量，超阈值私聊提醒
 6. **立即检查** 查看各窗口使用率、重置时间、今日 req/token/cost，并标记已超阈值窗口
 
-常用命令：`/start` `/status` `/check` `/setbase` `/setkey` `/addaccount` `/delaccount` `/thresholds` `/id` `/help` `/cancel`
+常用命令：`/start` `/status` `/check` `/setbase` `/setkey` `/addaccount` `/delaccount` `/thresholds` `/id` `/help` `/cancel`  
+管理员：`/ops` 运维视图 · `/manage` 账号管理 · `/search` 搜索账号。
 
 ### 面板能力一览
 
 | 功能 | 说明 |
 |------|------|
-| 主面板 | 监控开关、数据源 passive/active、连接与账号摘要、阈值摘要 |
-| 连接配置 | Base URL / API Key / 测试连接 / 清除连接；密钥消息尽量自动删除 |
-| 监控账号 | 添加、列表选择、启停、删除、详情、重命名、实时状态/用量 |
-| 阈值 | 按窗口添加/修改/删除；写入或重置系统默认（来自 `checks.account_usage.default_thresholds`） |
-| 立即检查 | 用量快照 + 今日统计；超阈值窗口标 ⚠️ |
-| **运维视图** | 看板 / 可用性 / 内置告警 / 请求与上游错误 / 并发 / 渠道探测 / 异常账号一键监控 |
-| **账号管理** | 账号浏览（状态筛选）/ 用户与分组只读 / 调度开关（停调度二次确认）/ 清错误 / 清限速 / 恢复状态 / 刷新凭据 / 清临时停调度 / 加入监控 |
-| 权限 | `allow_user_ids` 白名单 / `allow_all` / `open_registration` / 回退默认 `chat_id` 所有者 |
+| 连接 | Base URL / Admin API Key / 测试连接 / 清除；管理员可导入全局配置 |
+| 监控账号 | 手动 ID / 列表选择 / 重命名 / 单账号启停 / 删除 |
+| 阈值 | 多窗口百分比；自定义或系统默认；可删除单窗口 |
+| 立即检查 | 拉 usage + today-stats，HTML 格式化摘要 |
+| **运维视图**（管理员） | 看板 / 可用性 / 内置告警 / 请求与上游错误 / 并发 / 渠道探测 / 异常账号一键监控 |
+| **账号管理**（管理员） | 浏览（状态/平台/搜索）/ 批量清错 / 用户与分组只读 / 调度开关（二次确认）/ 启停状态 / 测试连通 / 清错误·限速 / 恢复·刷新 / 清临时停调度 / 加入监控 |
+| 权限 | `admin_user_ids` + `allow_user_ids` / `allow_all` / `open_registration` / profile.role / 回退 `chat_id` |
 | 后台轮询 | `UserUsageCollector` 按用户隔离告警；拉取失败会发 P3 提示 |
 
-命令：`/ops` 运维视图 · `/manage` 账号管理。  
-运维视图只读；账号管理通过用户自己的 Admin API 调用 Sub2API 管理接口（切换调度、清错等），不会改本监控程序配置以外的服务器 YAML。
+运维视图只读；账号管理通过用户自己的 Admin API 调用 Sub2API 管理接口，不会改本监控程序配置以外的服务器 YAML。
 
 ### 数据模型
 
@@ -188,6 +223,7 @@ telegram:
 data/users.json
 └─ users[]
    ├─ telegram_user_id / chat_id
+   ├─ role                       # 可选 admin|user，覆盖配置级角色
    ├─ base_url / admin_api_key   # 每用户独立连接
    ├─ enabled / source           # passive|active
    ├─ thresholds[]               # 用户级用量阈值（空=系统默认）
@@ -213,6 +249,7 @@ Telegram 用户 ──getUpdates──► panel.Bot
                                 │
                      alerter ──► telegram.Client ──► 该用户私聊
 ```
+
 
 ## 多通道通知架构
 

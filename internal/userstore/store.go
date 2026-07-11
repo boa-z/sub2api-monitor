@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,12 +28,20 @@ func (a AccountWatch) IsEnabled() bool {
 	return *a.Enabled
 }
 
+// Role constants for panel privileges.
+const (
+	RoleUser  = "user"
+	RoleAdmin = "admin"
+)
+
 // Profile is a Telegram user's monitoring configuration.
 type Profile struct {
 	TelegramUserID int64  `json:"telegram_user_id"`
 	ChatID         string `json:"chat_id"`
 	Username       string `json:"username,omitempty"`
 	DisplayName    string `json:"display_name,omitempty"`
+	// Role is an optional per-profile override: "admin" | "user" | empty (derive from config).
+	Role string `json:"role,omitempty"`
 
 	// Sub2API connection (per-user)
 	BaseURL     string `json:"base_url"`
@@ -40,13 +49,28 @@ type Profile struct {
 	JWT         string `json:"jwt,omitempty"`
 
 	// Monitoring
-	Enabled    bool                   `json:"enabled"`
-	Source     string                 `json:"source,omitempty"` // passive|active
-	Accounts   []AccountWatch         `json:"accounts"`
+	Enabled    bool                    `json:"enabled"`
+	Source     string                  `json:"source,omitempty"` // passive|active
+	Accounts   []AccountWatch          `json:"accounts"`
 	Thresholds []config.UsageThreshold `json:"thresholds,omitempty"` // defaults for this user
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// EffectiveRole returns admin|user for this profile given explicit Role.
+func (p *Profile) EffectiveRole() string {
+	if p == nil {
+		return RoleUser
+	}
+	switch strings.ToLower(strings.TrimSpace(p.Role)) {
+	case RoleAdmin:
+		return RoleAdmin
+	case RoleUser:
+		return RoleUser
+	default:
+		return ""
+	}
 }
 
 func (p *Profile) HasConnection() bool {
