@@ -2024,44 +2024,81 @@ func (b *Bot) editOrSend(ctx context.Context, chatID, msgID int64, text string, 
 
 func homeKeyboard() *telegram.InlineKeyboardMarkup {
 	// default full keyboard (admin); prefer homeKeyboardFor when userID known
+	return homeKeyboardWithLabels("🛠 运维视图", "📋 异常账号", "🧰 账号管理", true)
+}
+
+func homeKeyboardWithLabels(opsLabel, badLabel, mgrLabel string, admin bool) *telegram.InlineKeyboardMarkup {
+	if opsLabel == "" {
+		opsLabel = "🛠 运维视图"
+	}
+	if badLabel == "" {
+		badLabel = "📋 异常账号"
+	}
+	if mgrLabel == "" {
+		if admin {
+			mgrLabel = "🧰 账号管理"
+		} else {
+			mgrLabel = "🧰 账号浏览"
+		}
+	}
+	if admin {
+		return &telegram.InlineKeyboardMarkup{
+			InlineKeyboard: [][]telegram.InlineKeyboardButton{
+				{telegram.Btn("📊 状态", "status"), telegram.Btn(opsLabel, "ops_menu")},
+				{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn(badLabel, "ops_badacc:error:0")},
+				{telegram.Btn(mgrLabel, "mgr_menu"), telegram.Btn("👤 监控账号", "cfg_acc")},
+				{telegram.Btn("🔌 连接配置", "cfg_conn"), telegram.Btn("🎯 阈值", "cfg_thr")},
+				{telegram.Btn("▶️ 立即检查", "check_now"), telegram.Btn("🔁 开关监控", "toggle_mon")},
+				{telegram.Btn("📡 切换数据源", "toggle_src"), telegram.Btn("❓ 帮助", "help")},
+			},
+		}
+	}
+	// viewer
 	return &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn("📊 状态", "status"), telegram.Btn("🛠 运维视图", "ops_menu")},
-			{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn("📋 异常账号", "ops_badacc:error:0")},
-			{telegram.Btn("🧰 账号管理", "mgr_menu"), telegram.Btn("👤 监控账号", "cfg_acc")},
-			{telegram.Btn("🔌 连接配置", "cfg_conn"), telegram.Btn("🎯 阈值", "cfg_thr")},
-			{telegram.Btn("▶️ 立即检查", "check_now"), telegram.Btn("🔁 开关监控", "toggle_mon")},
-			{telegram.Btn("📡 切换数据源", "toggle_src"), telegram.Btn("❓ 帮助", "help")},
+			{telegram.Btn("📊 状态", "status"), telegram.Btn(opsLabel, "ops_menu")},
+			{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn(badLabel, "ops_badacc:error:0")},
+			{telegram.Btn("👤 监控账号", "cfg_acc"), telegram.Btn("🔌 连接配置", "cfg_conn")},
+			{telegram.Btn("🎯 阈值", "cfg_thr"), telegram.Btn("▶️ 立即检查", "check_now")},
+			{telegram.Btn("🔁 开关监控", "toggle_mon"), telegram.Btn("📡 切换数据源", "toggle_src")},
+			{telegram.Btn("❓ 帮助", "help")},
 		},
 	}
 }
 
 func (b *Bot) homeKeyboardFor(userID int64) *telegram.InlineKeyboardMarkup {
-	if b.isAdmin(userID) {
-		return homeKeyboard()
-	}
-	if b.isViewer(userID) {
-		// Viewer: ops read + self-service; no manage write hub
+	if !b.canOpsRead(userID) {
+		// Normal user: self-service monitoring only (no ops/manage write entry points)
 		return &telegram.InlineKeyboardMarkup{
 			InlineKeyboard: [][]telegram.InlineKeyboardButton{
-				{telegram.Btn("📊 状态", "status"), telegram.Btn("🛠 运维视图", "ops_menu")},
-				{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn("📋 异常账号", "ops_badacc:error:0")},
-				{telegram.Btn("👤 监控账号", "cfg_acc"), telegram.Btn("🔌 连接配置", "cfg_conn")},
-				{telegram.Btn("🎯 阈值", "cfg_thr"), telegram.Btn("▶️ 立即检查", "check_now")},
-				{telegram.Btn("🔁 开关监控", "toggle_mon"), telegram.Btn("📡 切换数据源", "toggle_src")},
-				{telegram.Btn("❓ 帮助", "help")},
+				{telegram.Btn("📊 状态", "status"), telegram.Btn("👤 监控账号", "cfg_acc")},
+				{telegram.Btn("🔌 连接配置", "cfg_conn"), telegram.Btn("🎯 阈值", "cfg_thr")},
+				{telegram.Btn("▶️ 立即检查", "check_now"), telegram.Btn("🔁 开关监控", "toggle_mon")},
+				{telegram.Btn("📡 切换数据源", "toggle_src"), telegram.Btn("❓ 帮助", "help")},
 			},
 		}
 	}
-	// Normal user: self-service monitoring only (no ops/manage write entry points)
-	return &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn("📊 状态", "status"), telegram.Btn("👤 监控账号", "cfg_acc")},
-			{telegram.Btn("🔌 连接配置", "cfg_conn"), telegram.Btn("🎯 阈值", "cfg_thr")},
-			{telegram.Btn("▶️ 立即检查", "check_now"), telegram.Btn("🔁 开关监控", "toggle_mon")},
-			{telegram.Btn("📡 切换数据源", "toggle_src"), telegram.Btn("❓ 帮助", "help")},
-		},
+	opsLabel := "🛠 运维视图"
+	badLabel := "📋 异常账号"
+	mgrLabel := "🧰 账号管理"
+	if !b.isAdmin(userID) {
+		mgrLabel = "🧰 账号浏览"
 	}
+	if cli, _, err := b.userClient(userID, 4*time.Second); err == nil && cli != nil {
+		if st, err := cli.GetDashboardStats(context.Background()); err == nil && st != nil {
+			if st.ErrorAccounts > 0 {
+				badLabel = fmt.Sprintf("📋 异常 %v", st.ErrorAccounts)
+				opsLabel = "🛠 运维 ⚠"
+			} else if st.RatelimitAccounts > 0 {
+				badLabel = fmt.Sprintf("📋 限速 %v", st.RatelimitAccounts)
+				opsLabel = "🛠 运维 ⚠"
+			}
+			if b.isAdmin(userID) && (st.ErrorAccounts > 0 || st.RatelimitAccounts > 0) {
+				mgrLabel = "🧰 管理修复"
+			}
+		}
+	}
+	return homeKeyboardWithLabels(opsLabel, badLabel, mgrLabel, b.isAdmin(userID))
 }
 
 func connKeyboard() *telegram.InlineKeyboardMarkup {
@@ -2376,7 +2413,7 @@ func helpText() string {
 • 每位用户独立保存 base_url / key / 账号 / 阈值
 • <b>普通用户</b>：自助连接 / 监控账号 / 阈值 / 立即检查
 • <b>只读运维</b>：运维视图 / 看板 / 异常账号等只读，不能修复/调度/改角色
-• <b>管理员</b>：运维视图 + 账号管理写操作（调度/启停/清错/一键修复/临时停调度/重置额度/批量/搜索/错误分页/异常账号/面板用户角色）
+• <b>管理员</b>：运维视图 + 账号管理写操作（调度/启停/清错/一键修复/临时停调度含自定义时长/重置额度/批量/搜索/错误分页/异常账号/面板用户角色）
 • 角色由 admin_user_ids 或 profile.role=admin|viewer|user 控制；菜单按角色显示
 • 用量达到阈值时 Bot 会私聊提醒你（Telegram / Discord 按平台投递）
 • 支持 passive（轻量缓存）与 active（刷新上游）数据源

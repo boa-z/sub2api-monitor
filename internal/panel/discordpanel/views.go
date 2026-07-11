@@ -74,16 +74,38 @@ func (b *Bot) homeText(userID int64) string {
 }
 
 func (b *Bot) homeComponents(userID int64) []discord.Component {
+	opsLabel := "运维"
+	badLabel := "异常账号"
+	mgrLabel := "管理"
+	if !b.isAdmin(userID) {
+		mgrLabel = "账号浏览"
+	}
+	if b.canOpsRead(userID) {
+		if cli, _, err := b.userClient(userID, 4*time.Second); err == nil && cli != nil {
+			if st, err := cli.GetDashboardStats(context.Background()); err == nil && st != nil {
+				if st.ErrorAccounts > 0 {
+					badLabel = fmt.Sprintf("异常 %v", st.ErrorAccounts)
+					opsLabel = "运维⚠"
+				} else if st.RatelimitAccounts > 0 {
+					badLabel = fmt.Sprintf("限速 %v", st.RatelimitAccounts)
+					opsLabel = "运维⚠"
+				}
+				if b.isAdmin(userID) && (st.ErrorAccounts > 0 || st.RatelimitAccounts > 0) {
+					mgrLabel = "管理修复"
+				}
+			}
+		}
+	}
 	if b.isAdmin(userID) {
 		return []discord.Component{
 			discord.ActionRow(
 				discord.PrimaryButton("状态", "status"),
-				discord.Button("运维", "ops_menu", 2),
-				discord.Button("管理", "mgr_menu", 2),
+				discord.Button(opsLabel, "ops_menu", 2),
+				discord.Button(mgrLabel, "mgr_menu", 2),
 			),
 			discord.ActionRow(
 				discord.Button("看板", "ops_dash", 2),
-				discord.Button("异常账号", "ops_badacc:error:0", 2),
+				discord.Button(badLabel, "ops_badacc:error:0", 2),
 				discord.Button("告警", "ops_alerts", 2),
 			),
 			discord.ActionRow(
@@ -103,12 +125,12 @@ func (b *Bot) homeComponents(userID int64) []discord.Component {
 		return []discord.Component{
 			discord.ActionRow(
 				discord.PrimaryButton("状态", "status"),
-				discord.Button("运维", "ops_menu", 2),
+				discord.Button(opsLabel, "ops_menu", 2),
 				discord.Button("看板", "ops_dash", 2),
 			),
 			discord.ActionRow(
-				discord.Button("异常账号", "ops_badacc:error:0", 2),
-				discord.Button("账号浏览", "mgr_menu", 2),
+				discord.Button(badLabel, "ops_badacc:error:0", 2),
+				discord.Button(mgrLabel, "mgr_menu", 2),
 				discord.Button("监控账号", "cfg_acc", 2),
 			),
 			discord.ActionRow(
