@@ -1722,6 +1722,10 @@ func (b *Bot) forceCheckView(ctx context.Context, userID int64) (string, []disco
 		}
 	}
 	if b.canOpsRead(userID) {
+		if len(issueIDs) > 0 {
+			// Scope subsequent bulk heal to problem accounts when user taps 一键修复.
+			b.setBrowseView(userID, "problem", 0)
+		}
 		row := []discord.Component{
 			discord.Button("异常账号", "ops_badacc:error:0", 2),
 			discord.Button("异常汇总", "mgr_browse:problem:0", 2),
@@ -3905,31 +3909,7 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 
 // healAccount best-effort: clear error, clear rate limit, recover, enable schedule.
 func (b *Bot) healAccount(ctx context.Context, cli *sub2api.Client, accountID int64) string {
-	steps := []struct {
-		name string
-		fn   func() error
-	}{
-		{"清错误", func() error { _, err := cli.ClearAccountError(ctx, accountID); return err }},
-		{"清限速", func() error { _, err := cli.ClearAccountRateLimit(ctx, accountID); return err }},
-		{"恢复", func() error { _, err := cli.RecoverAccountState(ctx, accountID); return err }},
-		{"开调度", func() error { _, err := cli.SetSchedulable(ctx, accountID, true); return err }},
-	}
-	var ok, fail []string
-	for _, s := range steps {
-		if err := s.fn(); err != nil {
-			fail = append(fail, s.name+": "+truncate(err.Error(), 40))
-		} else {
-			ok = append(ok, s.name)
-		}
-	}
-	if len(ok) == 0 {
-		return "❌ 一键修复全部失败: " + strings.Join(fail, "; ")
-	}
-	msg := "✅ 一键修复完成: " + strings.Join(ok, " · ")
-	if len(fail) > 0 {
-		msg += "\n⚠️ 部分失败: " + strings.Join(fail, "; ")
-	}
-	return msg
+	return browse.HealAccount(ctx, cli, accountID, truncate)
 }
 
 func (b *Bot) showUsersView(ctx context.Context, userID int64, page int, search string) (string, []discord.Component) {

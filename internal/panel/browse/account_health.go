@@ -1,6 +1,7 @@
 package browse
 
 import (
+	"context"
 	"strings"
 
 	"github.com/boa/sub2api-monitor/internal/sub2api"
@@ -157,4 +158,46 @@ func LiveActionLabel(action string) string {
 	default:
 		return action
 	}
+}
+
+// HealAccount runs clear error + clear rate limit + recover + enable schedulable.
+// Returns a human-readable summary (no HTML/markdown escaping).
+func HealAccount(ctx context.Context, cli *sub2api.Client, accountID int64, truncateFn func(string, int) string) string {
+	if truncateFn == nil {
+		truncateFn = func(s string, n int) string {
+			if n <= 0 || len(s) <= n {
+				return s
+			}
+			// rune-safe-ish for ASCII errors; callers can pass richer truncators
+			if len(s) > n {
+				return s[:n]
+			}
+			return s
+		}
+	}
+	steps := []struct {
+		name string
+		fn   func() error
+	}{
+		{"清错误", func() error { _, err := cli.ClearAccountError(ctx, accountID); return err }},
+		{"清限速", func() error { _, err := cli.ClearAccountRateLimit(ctx, accountID); return err }},
+		{"恢复", func() error { _, err := cli.RecoverAccountState(ctx, accountID); return err }},
+		{"开调度", func() error { _, err := cli.SetSchedulable(ctx, accountID, true); return err }},
+	}
+	var ok, fail []string
+	for _, s := range steps {
+		if err := s.fn(); err != nil {
+			fail = append(fail, s.name+": "+truncateFn(err.Error(), 40))
+		} else {
+			ok = append(ok, s.name)
+		}
+	}
+	if len(ok) == 0 {
+		return "❌ 一键修复全部失败: " + strings.Join(fail, "; ")
+	}
+	msg := "✅ 一键修复完成: " + strings.Join(ok, " · ")
+	if len(fail) > 0 {
+		msg += "\n⚠️ 部分失败: " + strings.Join(fail, "; ")
+	}
+	return msg
 }

@@ -1041,31 +1041,8 @@ func (b *Bot) loadBulkTargets(ctx context.Context, cli *sub2api.Client, userID i
 }
 
 func (b *Bot) healAccount(ctx context.Context, cli *sub2api.Client, accountID int64) string {
-	steps := []struct {
-		name string
-		fn   func() error
-	}{
-		{"清错误", func() error { _, err := cli.ClearAccountError(ctx, accountID); return err }},
-		{"清限速", func() error { _, err := cli.ClearAccountRateLimit(ctx, accountID); return err }},
-		{"恢复", func() error { _, err := cli.RecoverAccountState(ctx, accountID); return err }},
-		{"开调度", func() error { _, err := cli.SetSchedulable(ctx, accountID, true); return err }},
-	}
-	var ok, fail []string
-	for _, s := range steps {
-		if err := s.fn(); err != nil {
-			fail = append(fail, s.name+": "+truncateRunes(err.Error(), 40))
-		} else {
-			ok = append(ok, s.name)
-		}
-	}
-	if len(ok) == 0 {
-		return "❌ 一键修复全部失败: " + telegram.EscapeHTML(strings.Join(fail, "; "))
-	}
-	msg := "✅ 一键修复完成: " + telegram.Code(strings.Join(ok, " · "))
-	if len(fail) > 0 {
-		msg += "\n⚠️ 部分失败: " + telegram.EscapeHTML(strings.Join(fail, "; "))
-	}
-	return msg
+	// Escape for Telegram HTML; shared helper returns plain text.
+	return telegram.EscapeHTML(browse.HealAccount(ctx, cli, accountID, truncateRunes))
 }
 
 func (b *Bot) bulkClearRLPrompt(ctx context.Context, chatID, msgID, userID int64) error {

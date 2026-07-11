@@ -1403,6 +1403,9 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, msgID, userID int64) error
 	} else {
 		bld.WriteString("\n✅ 监控账号用量与状态正常。\n")
 	}
+	if len(issueIDs) > 0 {
+		b.setBrowseView(userID, "problem", 0)
+	}
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), checkResultKeyboard(b.canOpsWrite(userID), issueIDs, issueLabels))
 }
 
