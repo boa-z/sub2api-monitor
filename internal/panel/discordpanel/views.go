@@ -849,6 +849,28 @@ func (b *Bot) thrComponents(userID int64) []discord.Component {
 	return comps
 }
 
+func thrWindowPickComponents() []discord.Component {
+	// pick window first, then custom % via modal (or jump to presets)
+	return []discord.Component{
+		discord.ActionRow(
+			discord.Button("5 小时", "thr_win:five_hour", 2),
+			discord.Button("7 天", "thr_win:seven_day", 2),
+			discord.Button("7d Sonnet", "thr_win:seven_day_sonnet", 2),
+		),
+		discord.ActionRow(
+			discord.Button("7d Fable", "thr_win:seven_day_fable", 2),
+			discord.Button("Gemini 共享", "thr_win:gemini_shared_daily", 2),
+			discord.Button("Gemini Pro", "thr_win:gemini_pro_daily", 2),
+		),
+		discord.ActionRow(
+			discord.Button("Gemini Flash", "thr_win:gemini_flash_daily", 2),
+			discord.Button("max", "thr_win:max", 2),
+			discord.Button("快捷预设", "thr_presets", 1),
+		),
+		discord.ActionRow(discord.Button("« 阈值", "cfg_thr", 2)),
+	}
+}
+
 func thrWindowComponents() []discord.Component {
 	// quick presets for common windows + percent combos
 	return []discord.Component{
@@ -872,7 +894,10 @@ func thrWindowComponents() []discord.Component {
 			discord.Button("g-fl≥80%", "thr_set:gemini_flash_daily:80", 2),
 			discord.Button("max≥90%", "thr_set:max:90", 2),
 		),
-		discord.ActionRow(discord.Button("« 阈值", "cfg_thr", 2)),
+		discord.ActionRow(
+			discord.Button("自定义窗口", "thr_add", 2),
+			discord.Button("« 阈值", "cfg_thr", 2),
+		),
 	}
 }
 
@@ -1452,6 +1477,27 @@ func (b *Bot) accountThresholdsView(userID, accountID int64) (string, []discord.
 	return bld.String(), comps
 }
 
+func thrWindowPickComponentsForAccount(accountID int64) []discord.Component {
+	return []discord.Component{
+		discord.ActionRow(
+			discord.Button("5 小时", fmt.Sprintf("acc_thr_win:%d:five_hour", accountID), 2),
+			discord.Button("7 天", fmt.Sprintf("acc_thr_win:%d:seven_day", accountID), 2),
+			discord.Button("7d Sonnet", fmt.Sprintf("acc_thr_win:%d:seven_day_sonnet", accountID), 2),
+		),
+		discord.ActionRow(
+			discord.Button("7d Fable", fmt.Sprintf("acc_thr_win:%d:seven_day_fable", accountID), 2),
+			discord.Button("Gemini 共享", fmt.Sprintf("acc_thr_win:%d:gemini_shared_daily", accountID), 2),
+			discord.Button("Gemini Pro", fmt.Sprintf("acc_thr_win:%d:gemini_pro_daily", accountID), 2),
+		),
+		discord.ActionRow(
+			discord.Button("Gemini Flash", fmt.Sprintf("acc_thr_win:%d:gemini_flash_daily", accountID), 2),
+			discord.Button("max", fmt.Sprintf("acc_thr_win:%d:max", accountID), 2),
+			discord.Button("快捷预设", fmt.Sprintf("acc_thr_presets:%d", accountID), 1),
+		),
+		discord.ActionRow(discord.Button("« 账号阈值", fmt.Sprintf("acc_thr:%d", accountID), 2)),
+	}
+}
+
 func thrWindowComponentsForAccount(accountID int64) []discord.Component {
 	return []discord.Component{
 		discord.ActionRow(
@@ -1469,7 +1515,10 @@ func thrWindowComponentsForAccount(accountID int64) []discord.Component {
 			discord.Button("g-pro≥80%", fmt.Sprintf("acc_thr_set:%d:gemini_pro_daily:80", accountID), 2),
 			discord.Button("max≥90%", fmt.Sprintf("acc_thr_set:%d:max:90", accountID), 2),
 		),
-		discord.ActionRow(discord.Button("« 账号阈值", fmt.Sprintf("acc_thr:%d", accountID), 2)),
+		discord.ActionRow(
+			discord.Button("自定义窗口", fmt.Sprintf("acc_thr_add:%d", accountID), 2),
+			discord.Button("« 账号阈值", fmt.Sprintf("acc_thr:%d", accountID), 2),
+		),
 	}
 }
 

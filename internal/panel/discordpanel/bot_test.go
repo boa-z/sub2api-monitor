@@ -738,3 +738,52 @@ func TestRenameWatchAccount(t *testing.T) {
 		t.Fatal(msg)
 	}
 }
+
+func TestParsePct(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    float64
+		wantErr bool
+	}{
+		{"80", 80, false},
+		{" 95% ", 95, false},
+		{"0", 0, true},
+		{"101", 0, true},
+		{"", 0, true},
+		{"abc", 0, true},
+	}
+	for _, tc := range cases {
+		got, err := parsePct(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("%q expected err", tc.in)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Fatalf("%q got %v %v", tc.in, got, err)
+		}
+	}
+}
+
+func TestThrWindowPickComponents(t *testing.T) {
+	comps := thrWindowPickComponents()
+	if len(comps) < 3 {
+		t.Fatalf("%d", len(comps))
+	}
+	found := false
+	for _, row := range comps {
+		for _, c := range row.Components {
+			if c.CustomID == "thr_win:five_hour" || c.CustomID == "thr_presets" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing thr_win / thr_presets")
+	}
+	acc := thrWindowPickComponentsForAccount(9)
+	if len(acc) < 3 {
+		t.Fatal(len(acc))
+	}
+}

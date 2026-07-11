@@ -670,7 +670,26 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		return b.update(ctx, it, text, comps)
 	case strings.HasPrefix(data, "acc_thr_add:"):
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "acc_thr_add:"), 10, 64)
-		return b.update(ctx, it, fmt.Sprintf("账号 #%d — 选择窗口与阈值：", id), thrWindowComponentsForAccount(id))
+		return b.update(ctx, it, fmt.Sprintf("账号 #%d — 选择窗口，再输入自定义百分比（或用快捷预设）：", id), thrWindowPickComponentsForAccount(id))
+	case strings.HasPrefix(data, "acc_thr_presets:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "acc_thr_presets:"), 10, 64)
+		return b.update(ctx, it, fmt.Sprintf("账号 #%d — 快捷预设：", id), thrWindowComponentsForAccount(id))
+	case strings.HasPrefix(data, "acc_thr_win:"):
+		rest := strings.TrimPrefix(data, "acc_thr_win:")
+		idStr, win, ok := strings.Cut(rest, ":")
+		if !ok {
+			return b.update(ctx, it, b.accountsText(uid), b.accountsComponents(uid))
+		}
+		id, _ := strconv.ParseInt(idStr, 10, 64)
+		win = sub2api.NormalizeWindow(win)
+		title := "账号阈值 %"
+		if len(win) > 0 {
+			title = truncate(win, 20) + " %"
+		}
+		return b.openModal(ctx, it, discord.NewModal(
+			fmt.Sprintf("modal_acc_thr:%d:%s", id, win), title, "pct", "阈值百分比 1-100",
+			"80", 8,
+		))
 	case strings.HasPrefix(data, "acc_thr_set:"):
 		// acc_thr_set:id:window:pct
 		rest := strings.TrimPrefix(data, "acc_thr_set:")
@@ -708,7 +727,19 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		text, comps := b.accountThresholdsView(uid, id)
 		return b.update(ctx, it, "✅ 已复制默认阈值到该账号\n\n"+text, comps)
 	case data == "thr_add":
-		return b.update(ctx, it, "选择窗口后使用固定阈值，或之后可在配置中细化：", thrWindowComponents())
+		return b.update(ctx, it, "选择窗口后输入自定义百分比，或用「快捷预设」一键写入：", thrWindowPickComponents())
+	case data == "thr_presets":
+		return b.update(ctx, it, "快捷预设（窗口 + 百分比）：", thrWindowComponents())
+	case strings.HasPrefix(data, "thr_win:"):
+		win := sub2api.NormalizeWindow(strings.TrimPrefix(data, "thr_win:"))
+		if win == "" {
+			return b.update(ctx, it, b.thresholdsText(uid), b.thrComponents(uid))
+		}
+		title := truncate(win, 20) + " %"
+		return b.openModal(ctx, it, discord.NewModal(
+			"modal_thr:"+win, title, "pct", "阈值百分比 1-100",
+			"80", 8,
+		))
 	case strings.HasPrefix(data, "thr_set:"):
 		// thr_set:window:pct
 		rest := strings.TrimPrefix(data, "thr_set:")
@@ -776,6 +807,37 @@ func (b *Bot) handleModal(ctx context.Context, it *discord.Interaction, uid int6
 		msg := b.addAccount(ctx, uid, idRaw)
 		return b.respond(ctx, it, msg+"\n\n"+b.accountsText(uid), b.accountsComponents(uid), false)
 	default:
+		if strings.HasPrefix(it.Data.CustomID, "modal_thr:") {
+			win := sub2api.NormalizeWindow(strings.TrimPrefix(it.Data.CustomID, "modal_thr:"))
+			pct, err := parsePct(it.ModalValue("pct"))
+			if err != nil {
+				return b.respond(ctx, it, "❌ "+err.Error()+"\n请输入 1-100 的数字。", b.thrComponents(uid), true)
+			}
+			if err := b.setThreshold(uid, win, pct, ""); err != nil {
+				return b.respond(ctx, it, "❌ "+err.Error(), b.thrComponents(uid), true)
+			}
+			return b.respond(ctx, it, fmt.Sprintf("✅ 已设置 `%s` ≥ `%.0f%%`\n\n", win, pct)+b.thresholdsText(uid), b.thrComponents(uid), false)
+		}
+		if strings.HasPrefix(it.Data.CustomID, "modal_acc_thr:") {
+			rest := strings.TrimPrefix(it.Data.CustomID, "modal_acc_thr:")
+			idStr, win, ok := strings.Cut(rest, ":")
+			if !ok {
+				return b.respond(ctx, it, "参数无效", b.accountsComponents(uid), true)
+			}
+			id, _ := strconv.ParseInt(idStr, 10, 64)
+			win = sub2api.NormalizeWindow(win)
+			pct, err := parsePct(it.ModalValue("pct"))
+			if err != nil {
+				text, comps := b.accountThresholdsView(uid, id)
+				return b.respond(ctx, it, "❌ "+err.Error()+"\n\n"+text, comps, true)
+			}
+			if err := b.setAccountThreshold(uid, id, win, pct, ""); err != nil {
+				text, comps := b.accountThresholdsView(uid, id)
+				return b.respond(ctx, it, "❌ "+err.Error()+"\n\n"+text, comps, true)
+			}
+			text, comps := b.accountThresholdsView(uid, id)
+			return b.respond(ctx, it, fmt.Sprintf("✅ 已设置 `%s` ≥ `%.0f%%`\n\n", win, pct)+text, comps, false)
+		}
 		if strings.HasPrefix(it.Data.CustomID, "modal_rename:") {
 			id, _ := strconv.ParseInt(strings.TrimPrefix(it.Data.CustomID, "modal_rename:"), 10, 64)
 			name := strings.TrimSpace(it.ModalValue("name"))
@@ -809,6 +871,23 @@ func (b *Bot) followupEdit(ctx context.Context, it *discord.Interaction, content
 		return err
 	}
 	return b.dc.UpdateInteraction(ctx, appID, it.Token, content, comps)
+}
+
+func parsePct(raw string) (float64, error) {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimSuffix(s, "%")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("百分比不能为空")
+	}
+	pct, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, fmt.Errorf("百分比格式无效")
+	}
+	if pct <= 0 || pct > 100 {
+		return 0, fmt.Errorf("百分比需在 1-100")
+	}
+	return pct, nil
 }
 
 func optionString(it *discord.Interaction, name string) string {
