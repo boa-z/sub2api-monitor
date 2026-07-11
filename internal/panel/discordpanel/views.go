@@ -43,7 +43,16 @@ func (b *Bot) homeText(userID int64) string {
 				bld.WriteString("**运维快照**\n")
 				fmt.Fprintf(&bld, "正常 `%v` · 异常 `%v` · 限速 `%v` · 过载 `%v`\n",
 					st.NormalAccounts, st.ErrorAccounts, st.RatelimitAccounts, st.OverloadAccounts)
-				if st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 || st.OverloadAccounts > 0 {
+				issues := st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 || st.OverloadAccounts > 0
+				if traf, err := cli.GetRealtimeTraffic(context.Background(), "5min"); err == nil && traf != nil && traf.Enabled {
+					qps, peak := traf.CurrentQPS(), traf.PeakQPS()
+					if browse.TrafficIsDropped(qps, peak) {
+						fmt.Fprintf(&bld, "流量: ⚠ 相对峰值下降约 `%d%%`（QPS `%.2f` / 峰值 `%.2f`）\n",
+							browse.TrafficDropPercent(qps, peak), qps, peak)
+						issues = true
+					}
+				}
+				if issues {
 					bld.WriteString("可从下方运维/看板快速处理异常。\n")
 				}
 				bld.WriteString("\n")
@@ -4378,6 +4387,9 @@ func (b *Bot) showUsersView(ctx context.Context, userID int64, page int, search 
 			u.ID, truncate(name, 16), u.Role, u.Status)
 		if u.CurrentConcurrency > 0 || u.Concurrency > 0 {
 			fmt.Fprintf(&bld, " · 并发 `%d/%d`", u.CurrentConcurrency, u.Concurrency)
+			if browse.UserIsHot(u.CurrentConcurrency, u.Concurrency) {
+				bld.WriteString(" 🔥")
+			}
 		}
 		if u.Balance != 0 {
 			fmt.Fprintf(&bld, " · 余额 `%.2f`", u.Balance)
@@ -4466,7 +4478,13 @@ func (b *Bot) showUserDetailView(ctx context.Context, userID, targetID int64) (s
 		fmt.Fprintf(&bld, " · 冻结 `%.2f`", u.FrozenBalance)
 	}
 	bld.WriteString("\n")
+	pct := browse.UserConcurrencyPct(u.CurrentConcurrency, u.Concurrency)
 	fmt.Fprintf(&bld, "并发: `%d/%d`", u.CurrentConcurrency, u.Concurrency)
+	if u.Concurrency > 0 {
+		fmt.Fprintf(&bld, " (%.0f%%)", pct)
+	} else if u.Concurrency <= 0 && u.CurrentConcurrency > 0 {
+		bld.WriteString(" (配额未限制)")
+	}
 	if u.RPMLimit > 0 {
 		fmt.Fprintf(&bld, " · RPM `%d`", u.RPMLimit)
 	}
@@ -4474,20 +4492,62 @@ func (b *Bot) showUserDetailView(ctx context.Context, userID, targetID int64) (s
 	if strings.TrimSpace(u.Notes) != "" {
 		fmt.Fprintf(&bld, "备注: %s\n", truncate(u.Notes, 120))
 	}
+
+	hot := browse.UserIsHot(u.CurrentConcurrency, u.Concurrency)
+	statusBad := browse.UserStatusNeedsAttention(u.Status)
+	userErrN := 0
+	var errAccIDs []int64
+	{
+		cctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		var items []sub2api.OpsError
+		if page, err := cli.ListUpstreamErrors(cctx, 1, 30); err == nil && page != nil {
+			items = append(items, page.Items...)
+		}
+		if page, err := cli.ListRequestErrors(cctx, 1, 30); err == nil && page != nil {
+			items = append(items, page.Items...)
+		}
+		cancel()
+		userErrN, errAccIDs = browse.CountUserOpsErrors(items, u.ID)
+	}
+	if hot || statusBad || userErrN > 0 {
+		bld.WriteString("\n")
+		if statusBad {
+			fmt.Fprintf(&bld, "⚠ 用户状态 `%s`，可能无法正常调用。\n", u.Status)
+		}
+		if hot {
+			fmt.Fprintf(&bld, "⚠ 用户并发偏热 (%.0f%%)，可查全局并发/流量。\n", pct)
+		}
+		if userErrN > 0 {
+			fmt.Fprintf(&bld, "⚠ 近期未解决错误约 `%d` 条", userErrN)
+			if len(errAccIDs) > 0 {
+				fmt.Fprintf(&bld, " · 关联账号 `%d`", len(errAccIDs))
+			}
+			bld.WriteString("\n")
+		}
+	}
 	bld.WriteString("\n只读详情；写操作需上游 Admin API 支持后再开放。")
 	back := usersCallback(0, b.getUserSearch(userID))
-	comps := []discord.Component{
+	rows := []discord.Component{
 		discord.ActionRow(
 			discord.Button("🔄 刷新", fmt.Sprintf("mgr_user:%d", u.ID), 2),
-			discord.Button("« 用户列表", back, 2),
+			discord.Button("并发", "ops_conc", 2),
+			discord.Button("流量", "ops_traf", 2),
 		),
 		discord.ActionRow(
+			discord.Button("错误", "ops_errors:all:0", 2),
+			discord.Button("异常账号", "ops_badacc:error:0", 2),
+			discord.Button("异常汇总", "mgr_browse:problem:0", 2),
+		),
+		discord.ActionRow(
+			discord.Button("« 用户列表", back, 2),
 			discord.Button("分组", "mgr_groups", 2),
-			discord.Button("浏览账号", "mgr_browse:all:0", 2),
 			discord.Button("« 管理", "mgr_menu", 2),
 		),
 	}
-	return bld.String(), comps
+	if len(rows) > 5 {
+		rows = rows[:5]
+	}
+	return bld.String(), rows
 }
 
 func (b *Bot) showGroupsView(ctx context.Context, userID int64, page int, search string) (string, []discord.Component) {

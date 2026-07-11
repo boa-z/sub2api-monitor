@@ -1203,6 +1203,9 @@ func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page i
 			fmt.Fprintf(&bld, " · 并发 %s/%s",
 				telegram.Code(itoa(u.CurrentConcurrency)),
 				telegram.Code(itoa(u.Concurrency)))
+			if browse.UserIsHot(u.CurrentConcurrency, u.Concurrency) {
+				bld.WriteString(" 🔥")
+			}
 		}
 		if u.Balance != 0 {
 			fmt.Fprintf(&bld, " · 余额 %s", telegram.Code(fmt.Sprintf("%.2f", u.Balance)))
@@ -1290,10 +1293,16 @@ func (b *Bot) showUserDetail(ctx context.Context, chatID, msgID, userID, targetI
 		fmt.Fprintf(&bld, " · 冻结 %s", telegram.Code(fmt.Sprintf("%.2f", u.FrozenBalance)))
 	}
 	bld.WriteString("\n")
+	pct := browse.UserConcurrencyPct(u.CurrentConcurrency, u.Concurrency)
 	fmt.Fprintf(&bld, "并发: %s/%s",
 		telegram.Code(itoa(u.CurrentConcurrency)),
 		telegram.Code(itoa(u.Concurrency)),
 	)
+	if u.Concurrency > 0 {
+		fmt.Fprintf(&bld, " (%.0f%%)", pct)
+	} else if u.Concurrency <= 0 && u.CurrentConcurrency > 0 {
+		bld.WriteString(" (配额未限制)")
+	}
 	if u.RPMLimit > 0 {
 		fmt.Fprintf(&bld, " · RPM %s", telegram.Code(itoa(u.RPMLimit)))
 	}
@@ -1301,21 +1310,70 @@ func (b *Bot) showUserDetail(ctx context.Context, chatID, msgID, userID, targetI
 	if strings.TrimSpace(u.Notes) != "" {
 		fmt.Fprintf(&bld, "备注: %s\n", telegram.EscapeHTML(truncateRunes(u.Notes, 120)))
 	}
+
+	// best-effort live signals: user hot concurrency + recent ops errors
+	hot := browse.UserIsHot(u.CurrentConcurrency, u.Concurrency)
+	statusBad := browse.UserStatusNeedsAttention(u.Status)
+	userErrN := 0
+	var errAccIDs []int64
+	{
+		cctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		var items []sub2api.OpsError
+		if page, err := cli.ListUpstreamErrors(cctx, 1, 30); err == nil && page != nil {
+			items = append(items, page.Items...)
+		}
+		if page, err := cli.ListRequestErrors(cctx, 1, 30); err == nil && page != nil {
+			items = append(items, page.Items...)
+		}
+		cancel()
+		userErrN, errAccIDs = browse.CountUserOpsErrors(items, u.ID)
+	}
+	if hot || statusBad || userErrN > 0 {
+		bld.WriteString("\n")
+		if statusBad {
+			fmt.Fprintf(&bld, "⚠ 用户状态 %s，可能无法正常调用。\n", telegram.Code(u.Status))
+		}
+		if hot {
+			fmt.Fprintf(&bld, "⚠ 用户并发偏热 (%.0f%%)，可查全局并发/流量。\n", pct)
+		}
+		if userErrN > 0 {
+			fmt.Fprintf(&bld, "⚠ 近期未解决错误约 %s 条", telegram.Code(itoa(userErrN)))
+			if len(errAccIDs) > 0 {
+				fmt.Fprintf(&bld, " · 关联账号 %s", telegram.Code(itoa(len(errAccIDs))))
+			}
+			bld.WriteString("\n")
+		}
+	}
 	bld.WriteString("\n只读详情；写操作需上游 Admin API 支持后再开放。")
 	back := usersCallback(0, b.getUserSearch(userID))
-	kb := &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn("🔄 刷新", fmt.Sprintf("mgr_user:%d", u.ID))},
-			{
-				telegram.Btn("« 用户列表", back),
-				telegram.Btn("🏷 分组", "mgr_groups"),
-			},
-			{
-				telegram.Btn("📚 账号浏览", "mgr_browse"),
-				telegram.Btn("« 管理菜单", "mgr_menu"),
-			},
+	rows := [][]telegram.InlineKeyboardButton{
+		{
+			telegram.Btn("🔄 刷新", fmt.Sprintf("mgr_user:%d", u.ID)),
+			telegram.Btn("⚙️ 并发", "ops_conc"),
+		},
+		{
+			telegram.Btn("📈 流量", "ops_traf"),
+			telegram.Btn("❌ 错误", "ops_errors:all:0"),
 		},
 	}
+	if hot || userErrN > 0 {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			telegram.Btn("📚 异常汇总", "mgr_browse:problem:0"),
+		})
+	} else {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("🏷 分组", "mgr_groups"),
+			telegram.Btn("📚 账号浏览", "mgr_browse"),
+		})
+	}
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("« 用户列表", back),
+			telegram.Btn("« 管理菜单", "mgr_menu"),
+		},
+	)
+	kb := &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
 }
 

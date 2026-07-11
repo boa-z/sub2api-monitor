@@ -1880,6 +1880,18 @@ func (b *Bot) homeText(userID int64) string {
 			if line, issues := adminHealthSnapshot(context.Background(), cli); line != "" {
 				bld.WriteString(telegram.Bold("运维快照") + "\n")
 				bld.WriteString(line + "\n")
+				// best-effort traffic drop line (short timeout already on client)
+				if traf, err := cli.GetRealtimeTraffic(context.Background(), "5min"); err == nil && traf != nil && traf.Enabled {
+					qps, peak := traf.CurrentQPS(), traf.PeakQPS()
+					if browse.TrafficIsDropped(qps, peak) {
+						fmt.Fprintf(&bld, "流量: ⚠ 相对峰值下降约 %s%%（QPS %s / 峰值 %s）\n",
+							telegram.Code(strconv.Itoa(browse.TrafficDropPercent(qps, peak))),
+							telegram.Code(fmt.Sprintf("%.2f", qps)),
+							telegram.Code(fmt.Sprintf("%.2f", peak)),
+						)
+						issues = true
+					}
+				}
 				if issues {
 					bld.WriteString("可从下方「运维视图 / 看板」查看异常（写操作需管理员）。\n")
 				}
