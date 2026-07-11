@@ -1,0 +1,88 @@
+# 示例配置 — 复制为 config.yaml 后填写真实值
+# cp config.example.yaml config.yaml
+
+instance: "prod" # 告警消息里的实例名（多实例部署时区分）
+
+sub2api:
+  base_url: "http://127.0.0.1:8080" # 不要尾斜杠
+  admin_api_key: "" # 后台 Settings → Admin API Key
+  # jwt: ""                       # 可选：Bearer JWT，与 admin_api_key 二选一
+  timeout: 15s
+  insecure_skip_verify: false # 仅自签证书调试时开启
+
+telegram:
+  bot_token: ""
+  chat_id: "" # 用户/群/频道 ID，群多为负数
+  parse_mode: "HTML" # HTML | MarkdownV2 | 空
+  disable_notification: false # true 时静音推送
+  # api_base: "https://api.telegram.org"  # 可选代理镜像
+
+poll:
+  interval: 30s # 主循环间隔
+  jitter: 3s # 防惊群抖动
+
+alert:
+  cooldown: 10m # 同一 fingerprint 冷却
+  send_resolved: true # 恢复时发 RESOLVED
+  max_message_runes: 3500 # Telegram 上限 4096，留余量
+  # quiet_hours:                 # 可选静默时段（本地时区）
+  #   start: "23:00"
+  #   end: "08:00"
+  #   allow_severities: ["P0"]
+
+state:
+  driver: "memory" # memory | sqlite
+  sqlite_path: "./data/state.db"
+
+checks:
+  health:
+    enabled: true
+    interval: 30s
+    fail_threshold: 2 # 连续失败 N 次才告警
+
+  dashboard:
+    enabled: true
+    interval: 60s
+    max_error_accounts: 0 # > 该值告警；0 表示任何 error 账号都告警
+    max_overload_accounts: 5
+    max_ratelimit_accounts: 20
+
+  accounts:
+    enabled: true
+    interval: 60s
+    # 关注的状态变化
+    watch_statuses: ["error"]
+    watch_rate_limited: true
+    watch_overload: true
+    watch_temp_unschedulable: true
+    page_size: 100
+
+  availability:
+    enabled: true
+    interval: 60s
+    min_available_ratio: 0.3 # 分组/平台可用比例低于此值
+    min_available_accounts: 1 # 绝对可用数低于此值
+
+  ops_alerts:
+    enabled: true
+    interval: 30s
+    # 仅转发这些严重级别；空=全部
+    severities: ["P0", "P1", "P2"]
+    statuses: ["firing", "open", "active"] # 按 API 实际字段过滤
+
+  errors:
+    enabled: false
+    interval: 60s
+    window: 5m
+    max_request_errors: 50
+    max_upstream_errors: 50
+
+  traffic:
+    enabled: false
+    interval: 60s
+    window: 5min # 对应 API: 1min|5min|30min|1h
+    min_qps: 0.1 # 低于此 QPS 视为异常（需业务常有流量）
+
+logging:
+  level: "info" # debug|info|warn|error
+  format: "text" # text|json

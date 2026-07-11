@@ -1,0 +1,30 @@
+# Binaries
+bin/
+sub2api-monitor
+*.exe
+*.test
+*.out
+
+# Config & secrets
+config.yaml
+config.local.yaml
+.env
+.env.*
+!.env.example
+
+# State / runtime
+data/
+*.db
+*.db-journal
+*.log
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+.claude/
+
+# Go
+vendor/
+coverage.out

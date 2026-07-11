@@ -1,0 +1,21 @@
+services:
+  monitor:
+    build: .
+    container_name: sub2api-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-http://host.docker.internal:8080}
+      SUB2API_ADMIN_API_KEY: ${SUB2API_ADMIN_API_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      INSTANCE: ${INSTANCE:-prod}
+      TZ: Asia/Shanghai
+    volumes:
+      # optional: mount full config (overrides env for fields present in file)
+      # - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+    # Linux: allow host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
