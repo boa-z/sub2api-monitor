@@ -174,8 +174,8 @@ func (b *Bot) handleCommand(ctx context.Context, it *discord.Interaction, uid in
 		return b.respond(ctx, it, helpText(), b.homeComponents(uid), false)
 	case "check":
 		_ = b.respond(ctx, it, "⏳ 正在检查用量…", nil, false)
-		msg := b.forceCheck(ctx, uid)
-		return b.followupEdit(ctx, it, msg, b.homeComponents(uid))
+		msg, comps := b.forceCheckView(ctx, uid)
+		return b.followupEdit(ctx, it, msg, comps)
 	case "ops":
 		if !b.isAdmin(uid) {
 			return b.respond(ctx, it, "⛔ 运维视图仅管理员可用。", b.homeComponents(uid), true)
@@ -185,7 +185,8 @@ func (b *Bot) handleCommand(ctx context.Context, it *discord.Interaction, uid in
 		if !b.isAdmin(uid) {
 			return b.respond(ctx, it, "⛔ 账号管理仅管理员可用。", b.homeComponents(uid), true)
 		}
-		return b.respond(ctx, it, manageMenuText(), manageComponents(), false)
+		text, comps := b.manageMenuView(ctx, uid)
+		return b.respond(ctx, it, text, comps, false)
 	case "setbase":
 		url := optionString(it, "url")
 		msg := b.setBaseURL(uid, url)
@@ -236,8 +237,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		return b.update(ctx, it, helpText(), b.homeComponents(uid))
 	case data == "check_now":
 		_ = b.respondUpdate(ctx, it, "⏳ 正在检查用量…", nil)
-		msg := b.forceCheck(ctx, uid)
-		return b.followupEdit(ctx, it, msg, b.homeComponents(uid))
+		msg, comps := b.forceCheckView(ctx, uid)
+		return b.followupEdit(ctx, it, msg, comps)
 	case data == "toggle_mon":
 		_, _ = b.users.Update(uid, func(p *userstore.Profile) error {
 			p.Enabled = !p.Enabled
@@ -386,7 +387,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, manageMenuText(), manageComponents())
+		text, comps := b.manageMenuView(ctx, uid)
+		return b.update(ctx, it, text, comps)
 	case data == "mgr_browse" || strings.HasPrefix(data, "mgr_browse:"):
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -414,7 +416,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		// mgr_act:<action...>:<accountID> (action may contain colons, e.g. temp:15m)
 		idx := strings.LastIndex(rest, ":")
 		if idx <= 0 {
-			return b.update(ctx, it, manageMenuText(), manageComponents())
+			text, comps := b.manageMenuView(ctx, uid)
+			return b.update(ctx, it, text, comps)
 		}
 		action := rest[:idx]
 		id, _ := strconv.ParseInt(rest[idx+1:], 10, 64)
@@ -438,7 +441,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		rest := strings.TrimPrefix(data, "live_act:")
 		action, idStr, ok := strings.Cut(rest, ":")
 		if !ok {
-			return b.update(ctx, it, manageMenuText(), manageComponents())
+			text, comps := b.manageMenuView(ctx, uid)
+			return b.update(ctx, it, text, comps)
 		}
 		id, _ := strconv.ParseInt(idStr, 10, 64)
 		text, comps := b.handleLiveAction(ctx, uid, action, id)

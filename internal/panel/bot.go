@@ -221,12 +221,24 @@ func (b *Bot) handleMessage(ctx context.Context, m *telegram.InMessage) error {
 		if !b.isAdmin(m.From.ID) {
 			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 运维视图仅管理员可用。", b.homeKeyboardFor(m.From.ID))
 		}
-		return b.tg.SendChat(ctx, m.Chat.ID, b.opsMenuText(ctx, m.From.ID), opsKeyboard())
+		var stats *sub2api.DashboardStats
+		if cli, _, err := b.userClient(m.From.ID, 6*time.Second); err == nil && cli != nil {
+			if st, err := cli.GetDashboardStats(ctx); err == nil {
+				stats = st
+			}
+		}
+		return b.tg.SendChat(ctx, m.Chat.ID, b.opsMenuText(ctx, m.From.ID), opsKeyboardFor(stats))
 	case cmd == "/manage" || cmd == "/mgr" || cmd == "管理":
 		if !b.isAdmin(m.From.ID) {
 			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 账号管理仅管理员可用。", b.homeKeyboardFor(m.From.ID))
 		}
-		return b.tg.SendChat(ctx, m.Chat.ID, b.manageMenuText(), manageKeyboard())
+		var stats *sub2api.DashboardStats
+		if cli, _, err := b.userClient(m.From.ID, 6*time.Second); err == nil && cli != nil {
+			if st, err := cli.GetDashboardStats(ctx); err == nil {
+				stats = st
+			}
+		}
+		return b.tg.SendChat(ctx, m.Chat.ID, b.manageMenuText(ctx, m.From.ID), manageKeyboardFor(stats))
 	case cmd == "/search" || strings.HasPrefix(cmd, "/search"):
 		if !b.isAdmin(m.From.ID) {
 			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 搜索账号仅管理员可用。", b.homeKeyboardFor(m.From.ID))
@@ -345,7 +357,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
-		return b.showManageMenu(ctx, chatID, msgID)
+		return b.showManageMenu(ctx, chatID, msgID, cq.From.ID)
 	case data == "mgr_search":
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
@@ -456,7 +468,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		rest := strings.TrimPrefix(data, "mgr_act:")
 		idx := strings.LastIndex(rest, ":")
 		if idx <= 0 {
-			return b.showManageMenu(ctx, chatID, msgID)
+			return b.showManageMenu(ctx, chatID, msgID, cq.From.ID)
 		}
 		action := rest[:idx]
 		id, _ := strconv.ParseInt(rest[idx+1:], 10, 64)
@@ -1008,6 +1020,9 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 	fmt.Fprintf(&bld, "数据源: %s · %s\n\n", telegram.Code(p.EffectiveSource()), telegram.Code(time.Now().Local().Format("15:04:05")))
 	src := p.EffectiveSource()
 	checked := 0
+	warnN := 0
+	var issueIDs []int64
+	var issueLabels []string
 	for _, a := range p.Accounts {
 		if !a.IsEnabled() {
 			fmt.Fprintf(&bld, "• #%d %s %s\n", a.ID, telegram.EscapeHTML(displayName(a)), telegram.Code("已暂停"))
@@ -1015,8 +1030,8 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 		}
 		checked++
 		name := displayName(a)
-		// account meta
 		statusLine := ""
+		accBad := false
 		if acc, err := cli.GetAccount(ctx, a.ID); err == nil && acc != nil {
 			if name == fmt.Sprintf("#%d", a.ID) && acc.Name != "" {
 				name = acc.Name
@@ -1025,11 +1040,16 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 			if acc.Platform != "" {
 				statusLine = fmt.Sprintf(" [%s/%s]", acc.Platform, acc.Status)
 			}
+			if strings.EqualFold(acc.Status, "error") || acc.ErrorMessage != "" || acc.RateLimitedAt != nil || !acc.Schedulable {
+				accBad = true
+			}
 		}
 		usage, err := cli.GetAccountUsage(ctx, a.ID, src, false)
 		fmt.Fprintf(&bld, "• %s%s\n", telegram.EscapeHTML(fmt.Sprintf("#%d %s", a.ID, name)), telegram.EscapeHTML(statusLine))
+		hitThr := false
 		if err != nil {
 			fmt.Fprintf(&bld, "  用量: %s\n", telegram.EscapeHTML(err.Error()))
+			accBad = true
 		} else {
 			windows := usage.Windows()
 			if len(windows) == 0 {
@@ -1047,6 +1067,7 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 				mark := ""
 				if thr, ok := thMap[normalizeWindow(w.Window)]; ok && w.Utilization >= thr {
 					mark = " ⚠️"
+					hitThr = true
 				}
 				reset := ""
 				if w.ResetsAt != nil {
@@ -1061,6 +1082,7 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 			}
 			if usage.Error != "" {
 				fmt.Fprintf(&bld, "  提示: %s\n", telegram.EscapeHTML(usage.Error))
+				accBad = true
 			}
 		}
 		if today, err := cli.GetAccountTodayStats(ctx, a.ID); err == nil && today != nil {
@@ -1070,11 +1092,65 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 				telegram.Code(fmt.Sprintf("%.4f", today.Cost)),
 			)
 		}
+		if hitThr || accBad {
+			warnN++
+			if len(issueIDs) < 6 {
+				issueIDs = append(issueIDs, a.ID)
+				issueLabels = append(issueLabels, name)
+			}
+		}
 	}
 	if checked == 0 {
 		bld.WriteString("\n没有启用的账号。")
+	} else if warnN > 0 {
+		fmt.Fprintf(&bld, "\n⚠️ 需关注 %s 个账号（超阈值或状态异常），可用下方按钮直达。\n", telegram.Code(strconv.Itoa(warnN)))
+	} else {
+		bld.WriteString("\n✅ 监控账号用量与状态正常。\n")
 	}
-	return b.tg.SendChat(ctx, chatID, bld.String(), b.homeKeyboardFor(userID))
+	return b.tg.SendChat(ctx, chatID, bld.String(), checkResultKeyboard(b.isAdmin(userID), issueIDs, issueLabels))
+}
+
+// checkResultKeyboard offers per-account live/manage jumps after force check.
+func checkResultKeyboard(admin bool, issueIDs []int64, issueLabels []string) *telegram.InlineKeyboardMarkup {
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("🔄 再检查", "check_now"), telegram.Btn("« 主面板", "home")},
+	}
+	if len(issueIDs) > 0 {
+		var row []telegram.InlineKeyboardButton
+		for i, id := range issueIDs {
+			if i >= 4 {
+				break
+			}
+			label := fmt.Sprintf("#%d", id)
+			if i < len(issueLabels) && issueLabels[i] != "" {
+				label = fmt.Sprintf("#%d %s", id, truncateRunes(issueLabels[i], 8))
+			}
+			if admin {
+				row = append(row, telegram.Btn("管理 "+label, fmt.Sprintf("mgr_acc:%d", id)))
+			} else {
+				row = append(row, telegram.Btn("实时 "+label, fmt.Sprintf("acc_live:%d", id)))
+			}
+			if len(row) == 2 {
+				rows = append(rows, row)
+				row = nil
+			}
+		}
+		if len(row) > 0 {
+			rows = append(rows, row)
+		}
+	}
+	if admin {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			telegram.Btn("🛠 运维视图", "ops_menu"),
+		})
+	} else {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("👤 监控账号", "cfg_acc"),
+			telegram.Btn("🎯 阈值", "cfg_thr"),
+		})
+	}
+	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func (b *Bot) showAccountPicker(ctx context.Context, chatID, msgID, userID int64, page int) error {

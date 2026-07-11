@@ -15,22 +15,84 @@ import (
 )
 
 func manageKeyboard() *telegram.InlineKeyboardMarkup {
-	return &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn("📚 账号浏览", "mgr_browse"), telegram.Btn("🔎 搜索账号", "mgr_search")},
-			{telegram.Btn("🧹 批量清错", "mgr_bulk_clear"), telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover")},
-			{telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"), telegram.Btn("⏱ 批量清限速", "mgr_bulk_clear_rl")},
-			{telegram.Btn("📋 异常账号", "ops_badacc:error:0"), telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal")},
-			{telegram.Btn("👥 实例用户", "mgr_users"), telegram.Btn("🏷 分组", "mgr_groups")},
-			{telegram.Btn("👤 面板用户", "pnl_users"), telegram.Btn("« 返回主面板", "home")},
-		},
-	}
+	return manageKeyboardFor(nil)
 }
 
-func (b *Bot) manageMenuText() string {
-	return telegram.Bold("账号管理") + `
+// manageKeyboardFor builds manage hub buttons. With stats, prioritizes triage actions.
+func manageKeyboardFor(stats *sub2api.DashboardStats) *telegram.InlineKeyboardMarkup {
+	badLabel := "📋 异常账号"
+	healLabel := "🛠 批量一键修复"
+	clearLabel := "🧹 批量清错"
+	rlLabel := "⏱ 批量清限速"
+	if stats != nil {
+		if stats.ErrorAccounts > 0 {
+			badLabel = fmt.Sprintf("📋 异常 %v", stats.ErrorAccounts)
+			clearLabel = fmt.Sprintf("🧹 清错 %v", stats.ErrorAccounts)
+		}
+		if stats.RatelimitAccounts > 0 {
+			rlLabel = fmt.Sprintf("⏱ 清限速 %v", stats.RatelimitAccounts)
+		}
+	}
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("📚 账号浏览", "mgr_browse"), telegram.Btn("🔎 搜索账号", "mgr_search")},
+	}
+	if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
+		rows = append(rows,
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn(badLabel, "ops_badacc:error:0"),
+				telegram.Btn(healLabel, "mgr_bulk_heal"),
+			},
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn(clearLabel, "mgr_bulk_clear"),
+				telegram.Btn(rlLabel, "mgr_bulk_clear_rl"),
+			},
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+				telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+			},
+		)
+	} else {
+		rows = append(rows,
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn(clearLabel, "mgr_bulk_clear"),
+				telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+			},
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+				telegram.Btn(rlLabel, "mgr_bulk_clear_rl"),
+			},
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn(badLabel, "ops_badacc:error:0"),
+				telegram.Btn(healLabel, "mgr_bulk_heal"),
+			},
+		)
+	}
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("👥 实例用户", "mgr_users"),
+			telegram.Btn("🏷 分组", "mgr_groups"),
+		},
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("👤 面板用户", "pnl_users"),
+			telegram.Btn("« 返回主面板", "home"),
+		},
+	)
+	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
 
-用你的 Admin API 管理实例（只对你配置的连接生效）：
+func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold("账号管理") + "\n\n")
+	if cli, _, err := b.userClient(userID, 6*time.Second); err == nil && cli != nil {
+		if line, issues := adminHealthSnapshot(ctx, cli); line != "" {
+			bld.WriteString(line + "\n")
+			if issues {
+				bld.WriteString("建议优先处理异常/限速账号，或使用下方批量操作。\n")
+			}
+			bld.WriteString("\n")
+		}
+	}
+	bld.WriteString(`用你的 Admin API 管理实例（只对你配置的连接生效）：
 
 • 账号浏览 — 状态/平台筛选、搜索、分页
 • 批量清错 / 恢复 / 开调度 / 清限速 / 一键修复 — 批量处理（需确认）
@@ -41,11 +103,18 @@ func (b *Bot) manageMenuText() string {
 进入账号后可执行：
 切换调度 · 启停状态 · 测试连通 · 清错误/限速 · 恢复/刷新
 临时停调度 · 重置额度 · 加入监控 · 实时用量
-`
+`)
+	return bld.String()
 }
 
-func (b *Bot) showManageMenu(ctx context.Context, chatID, msgID int64) error {
-	return b.editOrSend(ctx, chatID, msgID, b.manageMenuText(), manageKeyboard())
+func (b *Bot) showManageMenu(ctx context.Context, chatID, msgID, userID int64) error {
+	var stats *sub2api.DashboardStats
+	if cli, _, err := b.userClient(userID, 6*time.Second); err == nil && cli != nil {
+		if st, err := cli.GetDashboardStats(ctx); err == nil {
+			stats = st
+		}
+	}
+	return b.editOrSend(ctx, chatID, msgID, b.manageMenuText(ctx, userID), manageKeyboardFor(stats))
 }
 
 func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int64, status string, page int) error {
@@ -842,7 +911,12 @@ func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page i
 	if len(nav) > 0 {
 		rows = append(rows, nav)
 	}
-	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 管理菜单", "mgr_menu")})
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("📚 账号浏览", "mgr_browse"),
+			telegram.Btn("« 管理菜单", "mgr_menu"),
+		},
+	)
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
@@ -885,7 +959,12 @@ func (b *Bot) showGroups(ctx context.Context, chatID, msgID, userID int64, page 
 	if len(nav) > 0 {
 		rows = append(rows, nav)
 	}
-	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 管理菜单", "mgr_menu")})
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("📚 账号浏览", "mgr_browse"),
+			telegram.Btn("« 管理菜单", "mgr_menu"),
+		},
+	)
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 

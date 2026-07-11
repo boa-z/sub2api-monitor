@@ -1,6 +1,7 @@
 package discordpanel
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -349,5 +350,25 @@ func TestAlertsComponents(t *testing.T) {
 	}
 	if !containsCustomID(comps, "ops_dash") {
 		t.Fatal("missing dash for firing")
+	}
+}
+
+func TestManageComponentsForHealth(t *testing.T) {
+	comps := manageComponentsFor(&sub2api.DashboardStats{ErrorAccounts: 2, RatelimitAccounts: 1})
+	if !containsCustomID(comps, "mgr_bulk_heal") || !containsCustomID(comps, "ops_badacc:error:0") {
+		t.Fatalf("%+v", comps)
+	}
+	// healthy path still has bulk clear
+	comps2 := manageComponentsFor(nil)
+	if !containsCustomID(comps2, "mgr_bulk_clear") {
+		t.Fatal("nil stats missing bulk clear")
+	}
+}
+
+func TestForceCheckViewEmpty(t *testing.T) {
+	b, _ := testBot(t)
+	text, comps := b.forceCheckView(context.Background(), 42)
+	if text == "" || len(comps) == 0 {
+		t.Fatal("empty force check view")
 	}
 }

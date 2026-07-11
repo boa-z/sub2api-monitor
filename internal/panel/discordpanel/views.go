@@ -297,12 +297,41 @@ func opsViewComponents(refresh string) []discord.Component {
 	}
 }
 
-func manageMenuText() string {
-	return "**账号管理**\n\n浏览（状态/平台/停调度/限速）、搜索、切换调度、清错/恢复/一键修复、临时停调度、批量处理、面板用户角色（Admin API / Bot 权限）。"
+func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
+	var bld strings.Builder
+	bld.WriteString("**账号管理**\n\n")
+	if cli, _, err := b.userClient(userID, 6*time.Second); err == nil && cli != nil {
+		if st, err := cli.GetDashboardStats(ctx); err == nil && st != nil {
+			fmt.Fprintf(&bld, "健康: 正常 `%v` · 异常 `%v` · 限速 `%v` · 过载 `%v`\n",
+				st.NormalAccounts, st.ErrorAccounts, st.RatelimitAccounts, st.OverloadAccounts)
+			if st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 {
+				bld.WriteString("建议优先处理异常/限速，或使用批量操作。\n")
+			}
+			bld.WriteString("\n")
+		}
+	}
+	bld.WriteString("浏览（状态/平台/停调度/限速）、搜索、切换调度、清错/恢复/一键修复、临时停调度、批量处理、面板用户角色（Admin API / Bot 权限）。")
+	return bld.String()
 }
 
 func manageComponents() []discord.Component {
-	return []discord.Component{
+	return manageComponentsFor(nil)
+}
+
+func manageComponentsFor(stats *sub2api.DashboardStats) []discord.Component {
+	badLabel := "异常账号"
+	clearLabel := "批量清错"
+	rlLabel := "批量清限速"
+	if stats != nil {
+		if stats.ErrorAccounts > 0 {
+			badLabel = fmt.Sprintf("异常 %v", stats.ErrorAccounts)
+			clearLabel = fmt.Sprintf("清错 %v", stats.ErrorAccounts)
+		}
+		if stats.RatelimitAccounts > 0 {
+			rlLabel = fmt.Sprintf("清限速 %v", stats.RatelimitAccounts)
+		}
+	}
+	comps := []discord.Component{
 		discord.ActionRow(
 			discord.Button("浏览全部", "mgr_browse:all:0", 1),
 			discord.Button("error", "mgr_browse:error:0", 2),
@@ -311,23 +340,51 @@ func manageComponents() []discord.Component {
 		discord.ActionRow(
 			discord.Button("停调度", "mgr_browse:unsched:0", 2),
 			discord.Button("限速", "mgr_browse:rate_limited:0", 2),
-			discord.Button("异常账号", "ops_badacc:error:0", 2),
-		),
-		discord.ActionRow(
-			discord.DangerButton("批量清错", "mgr_bulk_clear"),
-			discord.Button("批量恢复", "mgr_bulk_recover", 2),
-			discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
-		),
-		discord.ActionRow(
-			discord.Button("批量清限速", "mgr_bulk_clear_rl", 2),
-			discord.Button("一键修复", "mgr_bulk_heal", 1),
-			discord.Button("搜索", "mgr_search", 2),
-		),
-		discord.ActionRow(
-			discord.Button("面板用户", "pnl_users", 2),
-			discord.Button("« 主面板", "home", 2),
+			discord.Button(badLabel, "ops_badacc:error:0", 2),
 		),
 	}
+	if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
+		comps = append(comps,
+			discord.ActionRow(
+				discord.Button("一键修复", "mgr_bulk_heal", 1),
+				discord.DangerButton(clearLabel, "mgr_bulk_clear"),
+				discord.Button(rlLabel, "mgr_bulk_clear_rl", 2),
+			),
+			discord.ActionRow(
+				discord.Button("批量恢复", "mgr_bulk_recover", 2),
+				discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+				discord.Button("搜索", "mgr_search", 2),
+			),
+		)
+	} else {
+		comps = append(comps,
+			discord.ActionRow(
+				discord.DangerButton(clearLabel, "mgr_bulk_clear"),
+				discord.Button("批量恢复", "mgr_bulk_recover", 2),
+				discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+			),
+			discord.ActionRow(
+				discord.Button(rlLabel, "mgr_bulk_clear_rl", 2),
+				discord.Button("一键修复", "mgr_bulk_heal", 1),
+				discord.Button("搜索", "mgr_search", 2),
+			),
+		)
+	}
+	comps = append(comps, discord.ActionRow(
+		discord.Button("面板用户", "pnl_users", 2),
+		discord.Button("« 主面板", "home", 2),
+	))
+	return comps
+}
+
+func (b *Bot) manageMenuView(ctx context.Context, userID int64) (string, []discord.Component) {
+	var stats *sub2api.DashboardStats
+	if cli, _, err := b.userClient(userID, 6*time.Second); err == nil && cli != nil {
+		if st, err := cli.GetDashboardStats(ctx); err == nil {
+			stats = st
+		}
+	}
+	return b.manageMenuText(ctx, userID), manageComponentsFor(stats)
 }
 
 func confirmComponents(action string, accountID int64) []discord.Component {
@@ -537,33 +594,78 @@ func (b *Bot) seedConnection(userID int64) string {
 }
 
 func (b *Bot) forceCheck(ctx context.Context, userID int64) string {
+	text, _ := b.forceCheckView(ctx, userID)
+	return text
+}
+
+func (b *Bot) forceCheckView(ctx context.Context, userID int64) (string, []discord.Component) {
 	cli, p, err := b.userClient(userID, 25*time.Second)
 	if err != nil {
-		return "❌ " + err.Error()
+		return "❌ " + err.Error(), b.homeComponents(userID)
 	}
 	if p == nil || len(p.Accounts) == 0 {
-		return "请先添加监控账号"
+		return "请先添加监控账号", b.homeComponents(userID)
 	}
 	src := p.EffectiveSource()
+	thsDefault := p.Thresholds
+	if len(thsDefault) == 0 {
+		thsDefault = b.defaults
+	}
 	var bld strings.Builder
 	bld.WriteString("**立即检查** · `" + src + "`\n\n")
+	warnN := 0
+	var issueIDs []int64
 	for _, a := range p.Accounts {
 		if !a.IsEnabled() {
 			fmt.Fprintf(&bld, "• #%d 已暂停\n", a.ID)
 			continue
 		}
-		usage, err := cli.GetAccountUsage(ctx, a.ID, src, false)
-		if err != nil {
-			fmt.Fprintf(&bld, "• #%d 失败: %s\n", a.ID, truncate(err.Error(), 60))
-			continue
-		}
 		name := a.Name
+		accBad := false
+		if acc, err := cli.GetAccount(ctx, a.ID); err == nil && acc != nil {
+			if name == "" {
+				name = acc.Name
+			}
+			if strings.EqualFold(acc.Status, "error") || acc.ErrorMessage != "" || acc.RateLimitedAt != nil || !acc.Schedulable {
+				accBad = true
+			}
+		}
 		if name == "" {
 			name = fmt.Sprintf("#%d", a.ID)
 		}
+		usage, err := cli.GetAccountUsage(ctx, a.ID, src, false)
+		if err != nil {
+			fmt.Fprintf(&bld, "• #%d 失败: %s\n", a.ID, truncate(err.Error(), 60))
+			warnN++
+			if len(issueIDs) < 4 {
+				issueIDs = append(issueIDs, a.ID)
+			}
+			continue
+		}
 		fmt.Fprintf(&bld, "**#%d %s**\n", a.ID, name)
+		hitThr := false
+		thMap := map[string]float64{}
+		ths := a.Thresholds
+		if len(ths) == 0 {
+			ths = thsDefault
+		}
+		for _, th := range ths {
+			thMap[strings.ToLower(th.Window)] = th.UtilizationGTE
+		}
 		for _, w := range usage.Windows() {
-			fmt.Fprintf(&bld, "  `%s` %.1f%%", w.Window, w.Utilization)
+			mark := ""
+			key := strings.ToLower(w.Window)
+			if thr, ok := thMap[key]; ok && w.Utilization >= thr {
+				mark = " ⚠"
+				hitThr = true
+			}
+			if key == "five_hour" {
+				if thr, ok := thMap["5h"]; ok && w.Utilization >= thr {
+					mark = " ⚠"
+					hitThr = true
+				}
+			}
+			fmt.Fprintf(&bld, "  `%s` %.1f%%%s", w.Window, w.Utilization, mark)
 			if w.ResetsAt != nil {
 				fmt.Fprintf(&bld, " · 重置 %s", w.ResetsAt.Local().Format("01-02 15:04"))
 			}
@@ -572,8 +674,48 @@ func (b *Bot) forceCheck(ctx context.Context, userID int64) string {
 		if today, err := cli.GetAccountTodayStats(ctx, a.ID); err == nil && today != nil {
 			fmt.Fprintf(&bld, "  today: req=%d token=%d cost=%.2f\n", today.Requests, today.Tokens, today.Cost)
 		}
+		if hitThr || accBad {
+			warnN++
+			if len(issueIDs) < 4 {
+				issueIDs = append(issueIDs, a.ID)
+			}
+		}
 	}
-	return bld.String()
+	if warnN > 0 {
+		fmt.Fprintf(&bld, "\n⚠ 需关注 %d 个账号（超阈值或状态异常）。\n", warnN)
+	} else {
+		bld.WriteString("\n✅ 监控账号用量与状态正常。\n")
+	}
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.SuccessButton("再检查", "check_now"),
+			discord.Button("« 主面板", "home", 2),
+		),
+	}
+	if len(issueIDs) > 0 {
+		row := []discord.Component{}
+		for _, id := range issueIDs {
+			if b.isAdmin(userID) {
+				row = append(row, discord.Button(fmt.Sprintf("管理 #%d", id), fmt.Sprintf("mgr_acc:%d", id), 1))
+			} else {
+				row = append(row, discord.Button(fmt.Sprintf("实时 #%d", id), fmt.Sprintf("acc_live:%d", id), 2))
+			}
+			if len(row) == 2 {
+				comps = append(comps, discord.ActionRow(row...))
+				row = nil
+			}
+		}
+		if len(row) > 0 {
+			comps = append(comps, discord.ActionRow(row...))
+		}
+	}
+	if b.isAdmin(userID) {
+		comps = append(comps, discord.ActionRow(
+			discord.Button("异常账号", "ops_badacc:error:0", 2),
+			discord.Button("运维", "ops_menu", 2),
+		))
+	}
+	return bld.String(), comps
 }
 
 func (b *Bot) showDashboard(ctx context.Context, userID int64) string {
@@ -1847,9 +1989,10 @@ func (b *Bot) showAccountLive(ctx context.Context, userID, accountID int64, noti
 			),
 		)
 	}
+	backLabel, backData := b.manageBackLabel(userID)
 	comps = append(comps, discord.ActionRow(
-		discord.Button("« 管理", fmt.Sprintf("mgr_acc:%d", accountID), 2),
-		discord.Button("« 浏览", "mgr_browse:all:0", 2),
+		discord.Button(backLabel, backData, 2),
+		discord.Button("完整管理", fmt.Sprintf("mgr_acc:%d", accountID), 2),
 	))
 	return bld.String(), comps
 }

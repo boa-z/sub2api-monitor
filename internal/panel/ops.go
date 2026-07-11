@@ -1392,7 +1392,7 @@ func (b *Bot) showAccountLiveWithNotice(ctx context.Context, chatID, msgID, user
 	}
 	rows = append(rows,
 		[]telegram.InlineKeyboardButton{
-			telegram.Btn("« 账号详情", fmt.Sprintf("acc:%d", accountID)),
+			b.manageBackButton(userID),
 			telegram.Btn("« 列表", "cfg_acc"),
 		},
 	)

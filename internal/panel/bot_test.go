@@ -775,3 +775,42 @@ func TestOpsKeyboardForHealth(t *testing.T) {
 		t.Fatal("healthy/nil should not force bulk heal row")
 	}
 }
+
+func TestCheckResultKeyboard(t *testing.T) {
+	kb := checkResultKeyboard(true, []int64{11, 22}, []string{"a", "b"})
+	joined := ""
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined, "mgr_acc:11") || !strings.Contains(joined, "check_now") {
+		t.Fatalf("%s", joined)
+	}
+	kb2 := checkResultKeyboard(false, []int64{9}, []string{"x"})
+	joined2 := ""
+	for _, row := range kb2.InlineKeyboard {
+		for _, btn := range row {
+			joined2 += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined2, "acc_live:9") || strings.Contains(joined2, "mgr_acc:") {
+		t.Fatalf("%s", joined2)
+	}
+}
+
+func TestManageKeyboardForHealth(t *testing.T) {
+	kb := manageKeyboardFor(&sub2api.DashboardStats{ErrorAccounts: 4, RatelimitAccounts: 1})
+	joined := ""
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.Text + "|" + btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined, "mgr_bulk_heal") || !strings.Contains(joined, "ops_badacc:error:0") {
+		t.Fatalf("%s", joined)
+	}
+	if !strings.Contains(joined, "mgr_bulk_clear") {
+		t.Fatalf("missing clear: %s", joined)
+	}
+}
