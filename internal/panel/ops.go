@@ -1678,6 +1678,18 @@ func (b *Bot) handleLiveAction(ctx context.Context, chatID, msgID, userID int64,
 		} else {
 			notice = "✅ 已刷新账号/凭据"
 		}
+	case "clear_temp":
+		if err := cli.ClearTempUnschedulable(ctx, accountID); err != nil {
+			notice = "❌ 清除临时停失败: " + telegram.EscapeHTML(err.Error())
+		} else {
+			notice = "✅ 已清除临时停调度"
+		}
+	case "enable":
+		if _, err := cli.SetAccountStatus(ctx, accountID, "active"); err != nil {
+			notice = "❌ 启用失败: " + telegram.EscapeHTML(err.Error())
+		} else {
+			notice = "✅ 已启用账号"
+		}
 	default:
 		notice = "未知操作"
 	}
@@ -1853,6 +1865,10 @@ func liveActionTGLabel(action string) string {
 		return "▶️ 开调度"
 	case browse.LiveRefresh:
 		return "🔄 刷新凭据"
+	case browse.LiveClearTemp:
+		return "🚫 清临时停"
+	case browse.LiveEnable:
+		return "✅ 启用"
 	default:
 		return browse.LiveActionLabel(action)
 	}

@@ -696,6 +696,32 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		_ = b.update(ctx, it, "⏳ 批量一键修复处理中…", nil)
 		text, comps := b.bulkAccountActionExecute(ctx, uid, "heal")
 		return b.followupEdit(ctx, it, text, comps)
+	case data == "mgr_bulk_enable":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		text, comps := b.bulkActionPrompt(ctx, uid, "enable", "批量启用", "mgr_bulk_enable_go")
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_bulk_enable_go":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		_ = b.update(ctx, it, "⏳ 批量启用处理中…", nil)
+		text, comps := b.bulkAccountActionExecute(ctx, uid, "enable")
+		return b.followupEdit(ctx, it, text, comps)
+	case data == "mgr_bulk_clear_temp":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		text, comps := b.bulkActionPrompt(ctx, uid, "clear_temp", "批量清临时停", "mgr_bulk_clear_temp_go")
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_bulk_clear_temp_go":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		_ = b.update(ctx, it, "⏳ 批量清临时停处理中…", nil)
+		text, comps := b.bulkAccountActionExecute(ctx, uid, "clear_temp")
+		return b.followupEdit(ctx, it, text, comps)
 	case data == "mgr_search":
 		if !b.canOpsRead(uid) {
 			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))

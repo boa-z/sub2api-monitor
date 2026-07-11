@@ -173,3 +173,40 @@ func TestTitleProblem(t *testing.T) {
 		t.Fatalf("parse %s %d", st, pg)
 	}
 }
+
+func TestTitleDisabledTemp(t *testing.T) {
+	if Title("disabled") != "已禁用" {
+		t.Fatal(Title("disabled"))
+	}
+	if Title("temp") != "临时停调度" {
+		t.Fatal(Title("temp"))
+	}
+}
+
+func TestBulkScopeEnableClearTemp(t *testing.T) {
+	if !bulkScopeCompatible("enable", "disabled") {
+		t.Fatal("enable+disabled")
+	}
+	if bulkScopeCompatible("enable", "error") {
+		t.Fatal("enable should not scope error")
+	}
+	if !bulkScopeCompatible("clear_temp", "temp") {
+		t.Fatal("clear_temp+temp")
+	}
+	if !bulkScopeCompatible("sched_on", "temp") {
+		t.Fatal("sched_on+temp")
+	}
+}
+
+func TestIsTempUnschedulable(t *testing.T) {
+	now := time.Now()
+	if !IsTempUnschedulable(sub2api.Account{TempUnschedulableUntil: &now}) {
+		t.Fatal("until")
+	}
+	if !IsTempUnschedulable(sub2api.Account{TempUnschedulableReason: "x"}) {
+		t.Fatal("reason")
+	}
+	if IsTempUnschedulable(sub2api.Account{}) {
+		t.Fatal("empty")
+	}
+}

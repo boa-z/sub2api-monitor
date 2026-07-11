@@ -79,6 +79,12 @@ func ListAccounts(ctx context.Context, cli *sub2api.Client, status string, page,
 			return items, total, nil
 		}
 		return ScanPage(ctx, cli, page, pageSize, IsOverloaded)
+	case "disabled":
+		// Prefer API status filter; empty result is valid (no disabled accounts).
+		return cli.ListAccountsEx(ctx, page+1, pageSize, sub2api.AccountListFilter{Status: "disabled"})
+	case "temp":
+		// Temp-unschedulable is not always a list status; scan client-side.
+		return ScanPage(ctx, cli, page, pageSize, IsTempUnschedulable)
 	default:
 		f := ParseFilter(status)
 		return cli.ListAccountsEx(ctx, page+1, pageSize, f)
@@ -101,6 +107,14 @@ func IsOverloaded(a sub2api.Account) bool {
 	}
 	st := strings.ToLower(a.Status)
 	return strings.Contains(st, "overload")
+}
+
+// IsTempUnschedulable reports temporary unschedulable windows/reasons.
+func IsTempUnschedulable(a sub2api.Account) bool {
+	if a.TempUnschedulableUntil != nil {
+		return true
+	}
+	return strings.TrimSpace(a.TempUnschedulableReason) != ""
 }
 
 // ScanPage walks account list pages and returns the requested slice of matches.
@@ -209,6 +223,8 @@ func Title(status string) string {
 		return "正常"
 	case title == "disabled":
 		return "已禁用"
+	case title == "temp":
+		return "临时停调度"
 	default:
 		return title
 	}
@@ -258,6 +274,12 @@ func LoadBulkTargetsScoped(ctx context.Context, cli *sub2api.Client, action stri
 		}
 		items, total, err = ListAccounts(ctx, cli, "error", 0, maxOps)
 		return items, total, "error 账号（无停调度时回退）", err
+	case "enable":
+		items, total, err := ListAccounts(ctx, cli, "disabled", 0, maxOps)
+		return items, total, "已禁用账号", err
+	case "clear_temp":
+		items, total, err := ListAccounts(ctx, cli, "temp", 0, maxOps)
+		return items, total, "临时停调度账号", err
 	default:
 		items, total, err := ListAccounts(ctx, cli, "error", 0, maxOps)
 		return items, total, "status=error 账号", err
@@ -280,18 +302,22 @@ func bulkScopeCompatible(action, status string) bool {
 	case "clear_rl":
 		return status == "rate_limited" || status == "overload"
 	case "sched_on":
-		return status == "unsched" || status == "error"
+		return status == "unsched" || status == "error" || status == "temp"
+	case "enable":
+		return status == "disabled"
+	case "clear_temp":
+		return status == "temp" || status == "unsched" || status == "problem"
 	case "clear_err", "recover", "heal":
 		// error tab or other problem tabs; also allow overload/rate_limited for heal
 		switch status {
-		case "error", "rate_limited", "overload", "unsched":
+		case "error", "rate_limited", "overload", "unsched", "temp":
 			return true
 		default:
 			// active/disabled etc. are not safe defaults for destructive bulk
 			return false
 		}
 	default:
-		return status == "error" || status == "rate_limited" || status == "overload" || status == "unsched"
+		return status == "error" || status == "rate_limited" || status == "overload" || status == "unsched" || status == "temp" || status == "disabled"
 	}
 }
 

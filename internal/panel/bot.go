@@ -442,6 +442,26 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return nil
 		}
 		return b.bulkAccountActionExecute(ctx, chatID, msgID, cq.From.ID, "clear_rl")
+	case data == "mgr_bulk_enable":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkEnablePrompt(ctx, chatID, msgID, cq.From.ID)
+	case data == "mgr_bulk_enable_go":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkAccountActionExecute(ctx, chatID, msgID, cq.From.ID, "enable")
+	case data == "mgr_bulk_clear_temp":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkClearTempPrompt(ctx, chatID, msgID, cq.From.ID)
+	case data == "mgr_bulk_clear_temp_go":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkAccountActionExecute(ctx, chatID, msgID, cq.From.ID, "clear_temp")
 	case data == "mgr_bulk_heal":
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil

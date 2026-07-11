@@ -3083,15 +3083,15 @@ func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, p
 	comps := []discord.Component{
 		discord.ActionRow(
 			discord.Button(filterBtn("全部", status, "all"), "mgr_browse:all:0", 2),
-			discord.Button(filterBtn("active", status, "active"), "mgr_browse:active:0", 2),
 			discord.Button(filterBtn("error", status, "error"), "mgr_browse:error:0", 2),
 			discord.Button(filterBtn("汇总", status, "problem"), "mgr_browse:problem:0", 2),
 			discord.Button(filterBtn("限速", status, "rate_limited"), "mgr_browse:rate_limited:0", 2),
+			discord.Button(filterBtn("停调度", status, "unsched"), "mgr_browse:unsched:0", 2),
 		),
 		discord.ActionRow(
-			discord.Button(filterBtn("停调度", status, "unsched"), "mgr_browse:unsched:0", 2),
 			discord.Button(filterBtn("过载", status, "overload"), "mgr_browse:overload:0", 2),
-			discord.Button(filterBtn("openai", status, "plat:openai"), "mgr_browse:"+browse.Token("plat:openai")+":0", 2),
+			discord.Button(filterBtn("禁用", status, "disabled"), "mgr_browse:disabled:0", 2),
+			discord.Button(filterBtn("临时停", status, "temp"), "mgr_browse:temp:0", 2),
 			discord.Button("异常", "ops_badacc:error:0", 2),
 			discord.Button("搜索", "mgr_search", 2),
 		),
@@ -3137,6 +3137,15 @@ func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, p
 				discord.DangerButton("批量清错", "mgr_bulk_clear"),
 				discord.Button("批量恢复", "mgr_bulk_recover", 2),
 				discord.Button("一键修复", "mgr_bulk_heal", 1),
+			))
+		case status == "disabled":
+			comps = append(comps, discord.ActionRow(
+				discord.SuccessButton("批量启用", "mgr_bulk_enable"),
+			))
+		case status == "temp":
+			comps = append(comps, discord.ActionRow(
+				discord.Button("清临时停", "mgr_bulk_clear_temp", 2),
+				discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
 			))
 		}
 	}
@@ -3691,7 +3700,7 @@ func (b *Bot) showAccountLive(ctx context.Context, userID, accountID int64, noti
 			btns := make([]discord.Component, 0, len(row))
 			for _, act := range row {
 				style := 2
-				if act == browse.LiveHeal || act == browse.LiveSched {
+				if act == browse.LiveHeal || act == browse.LiveSched || act == browse.LiveEnable {
 					style = 1
 				}
 				btns = append(btns, discord.Button(
@@ -3775,6 +3784,18 @@ func (b *Bot) handleLiveAction(ctx context.Context, userID int64, action string,
 			notice = "❌ 刷新凭据失败: " + err.Error()
 		} else {
 			notice = "✅ 已刷新账号/凭据"
+		}
+	case "clear_temp":
+		if err := cli.ClearTempUnschedulable(ctx, accountID); err != nil {
+			notice = "❌ 清除临时停失败: " + err.Error()
+		} else {
+			notice = "✅ 已清除临时停调度"
+		}
+	case "enable":
+		if _, err := cli.SetAccountStatus(ctx, accountID, "active"); err != nil {
+			notice = "❌ 启用失败: " + err.Error()
+		} else {
+			notice = "✅ 已启用账号"
 		}
 	default:
 		notice = "未知操作"
@@ -3885,6 +3906,10 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 			if strings.HasPrefix(msg, "❌") {
 				opErr = fmt.Errorf("%s", strings.TrimPrefix(msg, "❌ "))
 			}
+		case "enable":
+			_, opErr = cli.SetAccountStatus(ctx, a.ID, "active")
+		case "clear_temp":
+			opErr = cli.ClearTempUnschedulable(ctx, a.ID)
 		default:
 			opErr = fmt.Errorf("unknown action %s", action)
 		}
@@ -3901,11 +3926,13 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 		}
 	}
 	title := map[string]string{
-		"clear_err": "批量清错",
-		"recover":   "批量恢复",
-		"sched_on":  "批量开调度",
-		"clear_rl":  "批量清限速",
-		"heal":      "批量一键修复",
+		"clear_err":  "批量清错",
+		"recover":    "批量恢复",
+		"sched_on":   "批量开调度",
+		"clear_rl":   "批量清限速",
+		"heal":       "批量一键修复",
+		"enable":     "批量启用",
+		"clear_temp": "批量清临时停",
 	}[action]
 	if title == "" {
 		title = "批量操作"

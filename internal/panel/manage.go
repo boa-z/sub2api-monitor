@@ -204,6 +204,10 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 		},
 		{
 			telegram.Btn(filterLabel("异常汇总", status, "problem"), "mgr_browse:problem:0"),
+			telegram.Btn(filterLabel("禁用", status, "disabled"), "mgr_browse:disabled:0"),
+			telegram.Btn(filterLabel("临时停", status, "temp"), "mgr_browse:temp:0"),
+		},
+		{
 			telegram.Btn("🔎 搜索", "mgr_search"),
 			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
 		},
@@ -282,6 +286,15 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 					telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
 				},
 			)
+		case "disabled":
+			kbRows = append(kbRows, []telegram.InlineKeyboardButton{
+				telegram.Btn("✅ 批量启用", "mgr_bulk_enable"),
+			})
+		case "temp":
+			kbRows = append(kbRows, []telegram.InlineKeyboardButton{
+				telegram.Btn("🚫 批量清临时停", "mgr_bulk_clear_temp"),
+				telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+			})
 		}
 	}
 	kbRows = append(kbRows, []telegram.InlineKeyboardButton{
@@ -928,11 +941,13 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有可处理的账号（"+telegram.EscapeHTML(scopeLabel)+"）。", b.bulkNavKeyboard(userID))
 	}
 	title := map[string]string{
-		"clear_err": "批量清错",
-		"recover":   "批量恢复",
-		"sched_on":  "批量开调度",
-		"clear_rl":  "批量清限速",
-		"heal":      "批量一键修复",
+		"clear_err":  "批量清错",
+		"recover":    "批量恢复",
+		"sched_on":   "批量开调度",
+		"clear_rl":   "批量清限速",
+		"heal":       "批量一键修复",
+		"enable":     "批量启用",
+		"clear_temp": "批量清临时停",
 	}[action]
 	if title == "" {
 		title = "批量操作"
@@ -968,6 +983,10 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 			if strings.HasPrefix(msg, "❌") {
 				opErr = fmt.Errorf("%s", strings.TrimPrefix(msg, "❌ "))
 			}
+		case "enable":
+			_, opErr = cli.SetAccountStatus(ctx, a.ID, "active")
+		case "clear_temp":
+			opErr = cli.ClearTempUnschedulable(ctx, a.ID)
 		default:
 			opErr = fmt.Errorf("unknown action")
 		}
@@ -1072,6 +1091,14 @@ func (b *Bot) bulkClearRLPrompt(ctx context.Context, chatID, msgID, userID int64
 
 func (b *Bot) bulkHealPrompt(ctx context.Context, chatID, msgID, userID int64) error {
 	return b.bulkAccountActionPrompt(ctx, chatID, msgID, userID, "一键修复(清错+清限速+恢复+开调度)", "批量一键修复确认", "mgr_bulk_heal_go")
+}
+
+func (b *Bot) bulkEnablePrompt(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.bulkAccountActionPrompt(ctx, chatID, msgID, userID, "启用账号", "批量启用确认", "mgr_bulk_enable_go")
+}
+
+func (b *Bot) bulkClearTempPrompt(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.bulkAccountActionPrompt(ctx, chatID, msgID, userID, "清除临时停调度", "批量清临时停确认", "mgr_bulk_clear_temp_go")
 }
 
 // seedConnectionFromGlobal copies global sub2api config into the user's panel profile.

@@ -52,6 +52,14 @@ func TestLiveActionPlanFor(t *testing.T) {
 	if p.Rows[0][0] != LiveSched {
 		t.Fatalf("unsched plan: %+v", p)
 	}
+	p = LiveActionPlanFor(IssueTemp)
+	if p.Rows[0][0] != LiveClearTemp {
+		t.Fatalf("temp plan: %+v", p)
+	}
+	p = LiveActionPlanFor(IssueDisabled)
+	if p.Rows[0][0] != LiveEnable {
+		t.Fatalf("disabled plan: %+v", p)
+	}
 	p = LiveActionPlanFor(IssueOK)
 	if p.AppendRefreshWithManage || len(p.Rows) != 3 {
 		t.Fatalf("ok plan: %+v", p)

@@ -75,12 +75,14 @@ func AccountNeedsHeal(a sub2api.Account) bool {
 
 // Live quick-action tokens shared by Telegram / Discord live views.
 const (
-	LiveHeal     = "heal"
-	LiveClearErr = "clear_err"
-	LiveClearRL  = "clear_rl"
-	LiveRecover  = "recover"
-	LiveSched    = "sched"
-	LiveRefresh  = "refresh"
+	LiveHeal      = "heal"
+	LiveClearErr  = "clear_err"
+	LiveClearRL   = "clear_rl"
+	LiveRecover   = "recover"
+	LiveSched     = "sched"
+	LiveRefresh   = "refresh"
+	LiveClearTemp = "clear_temp"
+	LiveEnable    = "enable"
 )
 
 // LiveActionPlan describes prioritized live-view action buttons for an issue kind.
@@ -111,20 +113,27 @@ func LiveActionPlanFor(kind string) LiveActionPlan {
 			},
 			AppendRefreshWithManage: true,
 		}
-	case IssueUnsched, IssueTemp:
+	case IssueUnsched:
 		return LiveActionPlan{
 			Rows: [][]string{
 				{LiveSched, LiveHeal},
-				{LiveClearRL, LiveRecover},
+				{LiveClearTemp, LiveRecover},
+			},
+			AppendRefreshWithManage: true,
+		}
+	case IssueTemp:
+		return LiveActionPlan{
+			Rows: [][]string{
+				{LiveClearTemp, LiveSched},
+				{LiveHeal, LiveRecover},
 			},
 			AppendRefreshWithManage: true,
 		}
 	case IssueDisabled:
-		// Live has no "enable"; keep recover/sched/heal useful and push refresh to manage row.
 		return LiveActionPlan{
 			Rows: [][]string{
-				{LiveRecover, LiveSched},
-				{LiveHeal, LiveClearErr},
+				{LiveEnable, LiveSched},
+				{LiveHeal, LiveRecover},
 			},
 			AppendRefreshWithManage: true,
 		}
@@ -155,6 +164,10 @@ func LiveActionLabel(action string) string {
 		return "开调度"
 	case LiveRefresh:
 		return "刷新凭据"
+	case LiveClearTemp:
+		return "清临时停"
+	case LiveEnable:
+		return "启用"
 	default:
 		return action
 	}
