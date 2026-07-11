@@ -5,6 +5,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/boa/sub2api-monitor/internal/sub2api"
 )
@@ -309,4 +310,72 @@ func ParseBadAccCallback(rest string) (kind string, page int) {
 		}
 	}
 	return
+}
+
+// WatchTarget is a watched account identity for status snapshots.
+type WatchTarget struct {
+	ID   int64
+	Name string
+}
+
+// AccountSnap holds concurrent-fetched account status + usage for one watch target.
+type AccountSnap struct {
+	ID         int64
+	Name       string
+	Account    *sub2api.Account
+	AccountErr error
+	Usage      *sub2api.UsageInfo
+	UsageErr   error
+}
+
+// FetchAccountSnaps loads GetAccount + GetAccountUsage for up to maxShow targets
+// with bounded concurrency. Order matches the input targets (trimmed to maxShow).
+func FetchAccountSnaps(ctx context.Context, cli *sub2api.Client, targets []WatchTarget, source string, maxShow, concurrency int) []AccountSnap {
+	if cli == nil || len(targets) == 0 {
+		return nil
+	}
+	if maxShow <= 0 || maxShow > len(targets) {
+		maxShow = len(targets)
+	}
+	if concurrency <= 0 {
+		concurrency = 4
+	}
+	if concurrency > maxShow {
+		concurrency = maxShow
+	}
+	out := make([]AccountSnap, maxShow)
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for i := 0; i < maxShow; i++ {
+		i, t := i, targets[i]
+		out[i] = AccountSnap{ID: t.ID, Name: t.Name}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				out[i].AccountErr = ctx.Err()
+				return
+			case sem <- struct{}{}:
+			}
+			defer func() { <-sem }()
+
+			name := t.Name
+			acc, err := cli.GetAccount(ctx, t.ID)
+			out[i].Account, out[i].AccountErr = acc, err
+			if err == nil && acc != nil && (name == "" || name == fmtID(t.ID)) && acc.Name != "" {
+				name = acc.Name
+			}
+			out[i].Name = name
+
+			usage, uerr := cli.GetAccountUsage(ctx, t.ID, source, false)
+			out[i].Usage, out[i].UsageErr = usage, uerr
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
+func fmtID(id int64) string {
+	return "#" + strconv.FormatInt(id, 10)
 }

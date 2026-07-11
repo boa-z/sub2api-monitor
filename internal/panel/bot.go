@@ -1333,27 +1333,29 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 	usageSrc := p.EffectiveSource()
 	warnN := 0
 	usageHitN := 0
-	shown := 0
 	var issueIDs []int64
 	const maxShow = 8
+	targets := make([]browse.WatchTarget, 0, len(enabled))
+	thByID := map[int64][]config.UsageThreshold{}
 	for _, a := range enabled {
-		if shown >= maxShow {
-			fmt.Fprintf(&bld, "… 另有 %s 个启用账号\n", telegram.Code(strconv.Itoa(len(enabled)-maxShow)))
-			break
+		targets = append(targets, browse.WatchTarget{ID: a.ID, Name: displayName(a)})
+		thByID[a.ID] = a.Thresholds
+	}
+	snaps := browse.FetchAccountSnaps(ctx, cli, targets, usageSrc, maxShow, 4)
+	for _, snap := range snaps {
+		name := snap.Name
+		if name == "" {
+			name = fmt.Sprintf("#%d", snap.ID)
 		}
-		shown++
-		name := displayName(a)
 		flag := "✅"
 		detail := ""
 		statusBad := false
-		if acc, err := cli.GetAccount(ctx, a.ID); err != nil {
+		if snap.AccountErr != nil {
 			flag = "❓"
-			detail = telegram.EscapeHTML(truncateRunes(err.Error(), 40))
+			detail = telegram.EscapeHTML(truncateRunes(snap.AccountErr.Error(), 40))
 			statusBad = true
-		} else if acc != nil {
-			if acc.Name != "" && name == fmt.Sprintf("#%d", a.ID) {
-				name = acc.Name
-			}
+			fmt.Fprintf(&bld, "%s #%d %s · %s\n", flag, snap.ID, telegram.EscapeHTML(truncateRunes(name, 14)), detail)
+		} else if acc := snap.Account; acc != nil {
 			parts := []string{acc.Status}
 			if acc.Platform != "" {
 				parts = []string{acc.Platform, acc.Status}
@@ -1382,7 +1384,7 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 			detailLine := strings.Join(parts, "/")
 			fmt.Fprintf(&bld, "%s #%d %s · %s\n",
 				flag,
-				a.ID,
+				snap.ID,
 				telegram.EscapeHTML(truncateRunes(name, 14)),
 				telegram.Code(detailLine),
 			)
@@ -1390,11 +1392,10 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 				fmt.Fprintf(&bld, "   %s\n", detail)
 			}
 		} else {
-			fmt.Fprintf(&bld, "%s #%d %s\n", flag, a.ID, telegram.EscapeHTML(truncateRunes(name, 14)))
+			fmt.Fprintf(&bld, "%s #%d %s\n", flag, snap.ID, telegram.EscapeHTML(truncateRunes(name, 14)))
 		}
 
-		// compact usage vs thresholds (passive/active per profile; not force)
-		ths := a.Thresholds
+		ths := thByID[snap.ID]
 		if len(ths) == 0 {
 			ths = thsDefault
 		}
@@ -1404,10 +1405,10 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 		}
 		usageLine := ""
 		usageHit := false
-		if usage, err := cli.GetAccountUsage(ctx, a.ID, usageSrc, false); err != nil {
-			usageLine = "用量: " + telegram.EscapeHTML(truncateRunes(err.Error(), 36))
+		if snap.UsageErr != nil {
+			usageLine = "用量: " + telegram.EscapeHTML(truncateRunes(snap.UsageErr.Error(), 36))
 			usageHit = true
-		} else if usage != nil {
+		} else if usage := snap.Usage; usage != nil {
 			sum, hit := usage.CompactUsageSummary(thMap, 3)
 			usageHit = hit
 			if sum == "" {
@@ -1427,19 +1428,12 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 				usageHitN++
 			}
 			if len(issueIDs) < 6 {
-				// avoid dups
-				dup := false
-				for _, id := range issueIDs {
-					if id == a.ID {
-						dup = true
-						break
-					}
-				}
-				if !dup {
-					issueIDs = append(issueIDs, a.ID)
-				}
+				issueIDs = append(issueIDs, snap.ID)
 			}
 		}
+	}
+	if len(enabled) > maxShow {
+		fmt.Fprintf(&bld, "… 另有 %s 个启用账号\n", telegram.Code(strconv.Itoa(len(enabled)-maxShow)))
 	}
 	if len(enabled) == 0 {
 		bld.WriteString("(没有启用的监控账号)\n")

@@ -1,6 +1,7 @@
 package browse
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -95,4 +96,19 @@ func TestIsOverloaded(t *testing.T) {
 		t.Fatal(NormalizeBadKind("ol"))
 	}
 	_ = until
+}
+
+func TestFetchAccountSnapsEmpty(t *testing.T) {
+	if got := FetchAccountSnaps(context.Background(), nil, nil, "passive", 8, 4); got != nil {
+		t.Fatalf("nil client: %+v", got)
+	}
+	if got := FetchAccountSnaps(context.Background(), nil, []WatchTarget{{ID: 1}}, "passive", 8, 4); got != nil {
+		t.Fatalf("nil client with targets: %+v", got)
+	}
+}
+
+func TestFmtID(t *testing.T) {
+	if got := fmtID(42); got != "#42" {
+		t.Fatalf("got %s", got)
+	}
 }
