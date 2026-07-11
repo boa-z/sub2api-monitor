@@ -103,7 +103,7 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 	bld.WriteString(`用你的 Admin API 管理实例（只对你配置的连接生效）：
 
 • 账号浏览 — 状态/平台筛选、搜索、分页
-• 批量清错 / 恢复 / 开调度 / 清限速 / 一键修复 — 批量处理（需确认）
+• 批量清错 / 恢复 / 开调度 / 清限速 / 一键修复 — 批量处理（需确认；优先当前浏览/异常 tab 筛选）
 • 实例用户 / 分组 — 搜索与只读详情
 • 面板用户 — 本 Bot 多用户与角色（admin/viewer/user，仅管理员可改）
 • 异常账号 — error/限速/停调度/汇总分标签分页，管理/实时/修复 / 一键监控
@@ -116,6 +116,8 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 }
 
 func (b *Bot) showManageMenu(ctx context.Context, chatID, msgID, userID int64) error {
+	// Hub entry: bulk return targets hub, not a previous triage tab.
+	b.setManageBack(userID, "mgr_menu")
 	var stats *sub2api.DashboardStats
 	if cli, _, err := b.userClient(userID, 6*time.Second); err == nil && cli != nil {
 		if st, err := cli.GetDashboardStats(ctx); err == nil {
@@ -235,6 +237,17 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 			kbRows = append(kbRows, []telegram.InlineKeyboardButton{
 				telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
 			})
+		case "problem":
+			kbRows = append(kbRows,
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("🧹 批量清错", "mgr_bulk_clear"),
+					telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+				},
+				[]telegram.InlineKeyboardButton{
+					telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
+					telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+				},
+			)
 		}
 	}
 	kbRows = append(kbRows, []telegram.InlineKeyboardButton{

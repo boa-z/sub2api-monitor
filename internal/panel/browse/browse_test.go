@@ -136,6 +136,12 @@ func TestBulkScopeCompatible(t *testing.T) {
 	if bulkScopeCompatible("sched_on", "all") {
 		t.Fatal("all not scoped")
 	}
+	if !bulkScopeCompatible("heal", "problem") {
+		t.Fatal("problem should scope heal")
+	}
+	if !bulkScopeCompatible("clear_rl", "problem") {
+		t.Fatal("problem should scope clear_rl")
+	}
 }
 
 func TestStatusFromBadKind(t *testing.T) {
@@ -144,7 +150,7 @@ func TestStatusFromBadKind(t *testing.T) {
 		"rl":      "rate_limited",
 		"ol":      "overload",
 		"unsched": "unsched",
-		"all":     "all",
+		"all":     "problem",
 		"":        "error",
 		"weird":   "error",
 	}

@@ -1053,7 +1053,7 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 			bld.WriteString("\n")
 		}
 	}
-	bld.WriteString("浏览（状态/平台/停调度/限速）、搜索、切换调度、清错/恢复/一键修复、临时停调度、批量处理、实例用户/分组（搜索+详情只读）、面板用户角色（Admin API / Bot 权限）。")
+	bld.WriteString("浏览（状态/平台/停调度/限速）、搜索、切换调度、清错/恢复/一键修复、临时停调度、批量处理（优先当前浏览/异常 tab 筛选）、实例用户/分组（搜索+详情只读）、面板用户角色（Admin API / Bot 权限）。")
 	return bld.String()
 }
 
@@ -1139,6 +1139,8 @@ func manageComponentsFor(stats *sub2api.DashboardStats, canWrite bool) []discord
 }
 
 func (b *Bot) manageMenuView(ctx context.Context, userID int64) (string, []discord.Component) {
+	// Hub entry: bulk return targets hub, not a previous triage tab.
+	b.setManageBack(userID, "mgr_menu")
 	var stats *sub2api.DashboardStats
 	if cli, _, err := b.userClient(userID, 6*time.Second); err == nil && cli != nil {
 		if st, err := cli.GetDashboardStats(ctx); err == nil {
@@ -3021,6 +3023,12 @@ func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, p
 		case status == "unsched":
 			comps = append(comps, discord.ActionRow(
 				discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+			))
+		case status == "problem":
+			comps = append(comps, discord.ActionRow(
+				discord.DangerButton("批量清错", "mgr_bulk_clear"),
+				discord.Button("批量恢复", "mgr_bulk_recover", 2),
+				discord.Button("一键修复", "mgr_bulk_heal", 1),
 			))
 		}
 	}

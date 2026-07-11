@@ -49,6 +49,8 @@ func ListAccounts(ctx context.Context, cli *sub2api.Client, status string, page,
 		pageSize = 8
 	}
 	switch status {
+	case "problem":
+		return ListProblemAccounts(ctx, cli, page, pageSize)
 	case "unsched":
 		falseV := false
 		items, total, err := cli.ListAccountsEx(ctx, page+1, pageSize, sub2api.AccountListFilter{Schedulable: &falseV})
@@ -199,6 +201,8 @@ func Title(status string) string {
 		return "限速"
 	case title == "overload":
 		return "过载"
+	case title == "problem":
+		return "异常汇总"
 	default:
 		return title
 	}
@@ -222,13 +226,16 @@ func LoadBulkTargetsScoped(ctx context.Context, cli *sub2api.Client, action stri
 
 	// Prefer the operator's current browser filter when it is a useful scope.
 	if browseStatus != "" && bulkScopeCompatible(action, browseStatus) {
-		items, total, err := ListAccounts(ctx, cli, browseStatus, 0, maxOps)
+		var items []sub2api.Account
+		var total int64
+		var err error
+		if browseStatus == "problem" {
+			items, total, err = ListProblemAccounts(ctx, cli, 0, maxOps)
+		} else {
+			items, total, err = ListAccounts(ctx, cli, browseStatus, 0, maxOps)
+		}
 		if err == nil {
-			label := "浏览筛选: " + Title(browseStatus)
-			if len(items) == 0 {
-				// still report scoped empty so UI can say "current filter has none"
-				return items, total, label, nil
-			}
+			label := "当前筛选: " + Title(browseStatus)
 			return items, total, label, nil
 		}
 		// fall through to action defaults on list error
@@ -259,8 +266,8 @@ func bulkScopeCompatible(action, status string) bool {
 	if status == "" || status == "all" {
 		return false
 	}
-	// search / platform filters always scope (operator is looking at a subset)
-	if strings.HasPrefix(status, "search:") || strings.HasPrefix(status, "plat:") {
+	// search / platform / problem-summary filters always scope
+	if strings.HasPrefix(status, "search:") || strings.HasPrefix(status, "plat:") || status == "problem" {
 		return true
 	}
 	switch action {
@@ -295,7 +302,7 @@ func NormalizeBadKind(kind string) string {
 
 // StatusFromBadKind maps a bad-account tab kind to a browser status filter so
 // bulk manage actions opened from that tab reuse the same account set.
-// "all" maps to "all" (not a bulk scope override).
+// "all" maps to "problem" (merged error+限速+过载+停调度) for bulk/heal.
 func StatusFromBadKind(kind string) string {
 	switch NormalizeBadKind(kind) {
 	case "rl":
@@ -305,10 +312,47 @@ func StatusFromBadKind(kind string) string {
 	case "unsched":
 		return "unsched"
 	case "all":
-		return "all"
+		return "problem"
 	default:
 		return "error"
 	}
+}
+
+// ListProblemAccounts merges error + rate_limited + overload + unsched accounts
+// (unique by ID, capped scan) and returns one page for bulk/summary views.
+func ListProblemAccounts(ctx context.Context, cli *sub2api.Client, page, pageSize int) ([]sub2api.Account, int64, error) {
+	if page < 0 {
+		page = 0
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	errItems, _, e1 := ListAccounts(ctx, cli, "error", 0, 40)
+	rlItems, _, e2 := ListAccounts(ctx, cli, "rate_limited", 0, 40)
+	olItems, _, e4 := ListAccounts(ctx, cli, "overload", 0, 40)
+	unItems, _, e3 := ListAccounts(ctx, cli, "unsched", 0, 40)
+	if e1 != nil && e2 != nil && e3 != nil && e4 != nil {
+		return nil, 0, e1
+	}
+	seen := map[int64]struct{}{}
+	var merged []sub2api.Account
+	for _, a := range append(append(append(errItems, rlItems...), olItems...), unItems...) {
+		if _, ok := seen[a.ID]; ok {
+			continue
+		}
+		seen[a.ID] = struct{}{}
+		merged = append(merged, a)
+	}
+	total := int64(len(merged))
+	start := page * pageSize
+	if start >= len(merged) {
+		return []sub2api.Account{}, total, nil
+	}
+	end := start + pageSize
+	if end > len(merged) {
+		end = len(merged)
+	}
+	return merged[start:end], total, nil
 }
 
 // LoadBadAccountsPage returns one page of problematic accounts.
@@ -332,33 +376,8 @@ func LoadBadAccountsPage(ctx context.Context, cli *sub2api.Client, kind string, 
 		items, total, err = ListAccounts(ctx, cli, "unsched", page, pageSize)
 		return items, total, "停调度账号", "unsched", err
 	case "all":
-		// merge unique error+rl+ol+unsched (capped scan), then slice page
-		errItems, _, e1 := ListAccounts(ctx, cli, "error", 0, 40)
-		rlItems, _, e2 := ListAccounts(ctx, cli, "rate_limited", 0, 40)
-		olItems, _, e4 := ListAccounts(ctx, cli, "overload", 0, 40)
-		unItems, _, e3 := ListAccounts(ctx, cli, "unsched", 0, 40)
-		if e1 != nil && e2 != nil && e3 != nil && e4 != nil {
-			return nil, 0, "异常汇总", "error+rl+ol+unsched", e1
-		}
-		seen := map[int64]struct{}{}
-		var merged []sub2api.Account
-		for _, a := range append(append(append(errItems, rlItems...), olItems...), unItems...) {
-			if _, ok := seen[a.ID]; ok {
-				continue
-			}
-			seen[a.ID] = struct{}{}
-			merged = append(merged, a)
-		}
-		total = int64(len(merged))
-		start := page * pageSize
-		if start >= len(merged) {
-			return []sub2api.Account{}, total, "异常汇总", "error+rl+ol+unsched", nil
-		}
-		end := start + pageSize
-		if end > len(merged) {
-			end = len(merged)
-		}
-		return merged[start:end], total, "异常汇总", "error+rl+ol+unsched", nil
+		items, total, err = ListProblemAccounts(ctx, cli, page, pageSize)
+		return items, total, "异常汇总", "error+rl+ol+unsched", err
 	default:
 		items, total, err = ListAccounts(ctx, cli, "error", page, pageSize)
 		return items, total, "异常账号 (status=error)", "error", err
