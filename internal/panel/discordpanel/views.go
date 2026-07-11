@@ -116,6 +116,12 @@ func (b *Bot) homeComponents(userID int64) []discord.Component {
 }
 
 func (b *Bot) statusText(ctx context.Context, userID int64) string {
+	text, _ := b.statusTextWithIssues(ctx, userID)
+	return text
+}
+
+func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, []int64) {
+
 	p, _ := b.users.Get(userID)
 	var bld strings.Builder
 	bld.WriteString("**运行状态**\n")
@@ -139,7 +145,7 @@ func (b *Bot) statusText(ctx context.Context, userID int64) string {
 	}
 	if p == nil {
 		bld.WriteString("尚未创建配置，点「主面板」开始。")
-		return bld.String()
+		return bld.String(), nil
 	}
 	mon := "关闭"
 	if p.Enabled {
@@ -161,11 +167,11 @@ func (b *Bot) statusText(ctx context.Context, userID int64) string {
 	fmt.Fprintf(&bld, "监控账号: `%d` 个（启用 `%d`）\n\n", len(p.Accounts), len(enabled))
 	if !p.HasConnection() {
 		bld.WriteString("⚠️ 请先配置连接信息")
-		return bld.String()
+		return bld.String(), nil
 	}
 	if len(p.Accounts) == 0 {
 		bld.WriteString("⚠️ 请添加至少一个监控账号")
-		return bld.String()
+		return bld.String(), nil
 	}
 	bld.WriteString("**启用账号快照**\n")
 	cli, err := sub2api.NewClient(config.Sub2APIConfig{
@@ -173,9 +179,10 @@ func (b *Bot) statusText(ctx context.Context, userID int64) string {
 	})
 	if err != nil {
 		bld.WriteString("客户端错误: " + err.Error())
-		return bld.String()
+		return bld.String(), nil
 	}
 	warnN := 0
+	var issueIDs []int64
 	const maxShow = 12
 	for i, a := range enabled {
 		if i >= maxShow {
@@ -190,6 +197,9 @@ func (b *Bot) statusText(ctx context.Context, userID int64) string {
 		if acc, err := cli.GetAccount(ctx, a.ID); err != nil {
 			flag = "❓"
 			warnN++
+			if len(issueIDs) < 6 {
+				issueIDs = append(issueIDs, a.ID)
+			}
 			fmt.Fprintf(&bld, "%s `#%d` %s · %s\n", flag, a.ID, truncate(name, 14), truncate(err.Error(), 40))
 			continue
 		} else if acc != nil {
@@ -222,6 +232,9 @@ func (b *Bot) statusText(ctx context.Context, userID int64) string {
 			if flag == "❌" && acc.ErrorMessage != "" {
 				fmt.Fprintf(&bld, "   %s\n", truncate(acc.ErrorMessage, 48))
 			}
+			if flag != "✅" && len(issueIDs) < 6 {
+				issueIDs = append(issueIDs, a.ID)
+			}
 			continue
 		}
 		fmt.Fprintf(&bld, "%s `#%d` %s\n", flag, a.ID, truncate(name, 14))
@@ -238,40 +251,70 @@ func (b *Bot) statusText(ctx context.Context, userID int64) string {
 	} else {
 		bld.WriteString("\n✅ 自动监控开启中。")
 	}
-	return bld.String()
+	return bld.String(), issueIDs
 }
 
-func (b *Bot) statusComponents(userID int64) []discord.Component {
-	if b.isAdmin(userID) {
-		return []discord.Component{
-			discord.ActionRow(
-				discord.Button("刷新状态", "status", 2),
-				discord.SuccessButton("立即检查", "check_now"),
-				discord.Button("运维", "ops_menu", 2),
-			),
-			discord.ActionRow(
-				discord.Button("异常账号", "ops_badacc:error:0", 2),
-				discord.Button("看板", "ops_dash", 2),
-				discord.Button("账号管理", "mgr_menu", 2),
-			),
-			discord.ActionRow(
-				discord.Button("监控账号", "cfg_acc", 2),
-				discord.Button("连接", "cfg_conn", 2),
-				discord.Button("« 主面板", "home", 2),
-			),
-		}
+func (b *Bot) statusComponents(userID int64, issueIDs ...[]int64) []discord.Component {
+	var issues []int64
+	if len(issueIDs) > 0 {
+		issues = issueIDs[0]
 	}
-	return []discord.Component{
+	comps := []discord.Component{
 		discord.ActionRow(
 			discord.Button("刷新状态", "status", 2),
 			discord.SuccessButton("立即检查", "check_now"),
 			discord.Button("监控账号", "cfg_acc", 2),
 		),
-		discord.ActionRow(
+	}
+	if len(issues) > 0 {
+		var row []discord.Component
+		for i, id := range issues {
+			if i >= 4 {
+				break
+			}
+			if b.isAdmin(userID) {
+				row = append(row, discord.Button(fmt.Sprintf("管理 #%d", id), fmt.Sprintf("mgr_acc:%d", id), 1))
+			} else {
+				row = append(row, discord.Button(fmt.Sprintf("实时 #%d", id), fmt.Sprintf("acc_live:%d", id), 2))
+			}
+			if len(row) == 2 {
+				comps = append(comps, discord.ActionRow(row...))
+				row = nil
+			}
+		}
+		if len(row) > 0 {
+			comps = append(comps, discord.ActionRow(row...))
+		}
+	}
+	if b.isAdmin(userID) {
+		comps = append(comps,
+			discord.ActionRow(
+				discord.Button("运维", "ops_menu", 2),
+				discord.Button("异常账号", "ops_badacc:error:0", 2),
+				discord.Button("看板", "ops_dash", 2),
+			),
+			discord.ActionRow(
+				discord.Button("账号管理", "mgr_menu", 2),
+				discord.Button("连接", "cfg_conn", 2),
+				discord.Button("« 主面板", "home", 2),
+			),
+		)
+	} else {
+		comps = append(comps, discord.ActionRow(
 			discord.Button("连接", "cfg_conn", 2),
 			discord.Button("« 主面板", "home", 2),
-		),
+		))
 	}
+	// Discord max 5 action rows
+	if len(comps) > 5 {
+		comps = comps[:5]
+	}
+	return comps
+}
+
+func (b *Bot) statusView(ctx context.Context, userID int64) (string, []discord.Component) {
+	text, issues := b.statusTextWithIssues(ctx, userID)
+	return text, b.statusComponents(userID, issues)
 }
 
 func (b *Bot) connText(userID int64) string {
@@ -1029,7 +1072,20 @@ func (b *Bot) showAvailabilityView(ctx context.Context, userID int64) (string, [
 				fmt.Fprintf(&bld, "… 另有 %d 个\n", len(bad)-8)
 				break
 			}
-			fmt.Fprintf(&bld, "• #%d %s\n", st.AccountID, truncate(st.AccountName, 16))
+			flags := []string{}
+			if st.HasError {
+				flags = append(flags, "error")
+			}
+			if st.IsRateLimited {
+				flags = append(flags, "rl")
+			}
+			if st.IsOverloaded {
+				flags = append(flags, "ol")
+			}
+			if !st.IsAvailable {
+				flags = append(flags, "unavail")
+			}
+			fmt.Fprintf(&bld, "• #%d %s [%s]\n", st.AccountID, truncate(st.AccountName, 16), strings.Join(flags, ","))
 		}
 	}
 	b.setManageBack(userID, "ops_avail")
@@ -1679,9 +1735,10 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 		discord.ActionRow(
 			discord.Button(errorTabLabel("error", kind, "error"), "ops_badacc:error:0", 2),
 			discord.Button(errorTabLabel("限速", kind, "rl"), "ops_badacc:rl:0", 2),
-			discord.Button(errorTabLabel("停调度", kind, "unsched"), "ops_badacc:unsched:0", 2),
+			discord.Button(errorTabLabel("过载", kind, "ol"), "ops_badacc:ol:0", 2),
 		),
 		discord.ActionRow(
+			discord.Button(errorTabLabel("停调度", kind, "unsched"), "ops_badacc:unsched:0", 2),
 			discord.Button(errorTabLabel("汇总", kind, "all"), "ops_badacc:all:0", 2),
 		),
 	}
@@ -1691,7 +1748,7 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 			break
 		}
 		quick, quickData := "修复", fmt.Sprintf("live_act:heal:%d", a.ID)
-		if kind == "rl" {
+		if kind == "rl" || kind == "ol" {
 			quick, quickData = "清限速", fmt.Sprintf("live_act:clear_rl:%d", a.ID)
 		} else if kind == "unsched" {
 			quick, quickData = "开调度", fmt.Sprintf("live_act:sched:%d", a.ID)
@@ -1713,7 +1770,7 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 		comps = append(comps, discord.ActionRow(nav...))
 	}
 	switch kind {
-	case "rl":
+	case "rl", "ol":
 		comps = append(comps, discord.ActionRow(
 			discord.Button("批量清限速", "mgr_bulk_clear_rl", 2),
 			discord.Button("一键修复", "mgr_bulk_heal", 1),
@@ -1775,9 +1832,10 @@ func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, p
 		discord.ActionRow(
 			discord.Button(filterBtn("停调度", status, "unsched"), "mgr_browse:unsched:0", 2),
 			discord.Button(filterBtn("限速", status, "rate_limited"), "mgr_browse:rate_limited:0", 2),
-			discord.Button(filterBtn("openai", status, "plat:openai"), "mgr_browse:"+browse.Token("plat:openai")+":0", 2),
+			discord.Button(filterBtn("过载", status, "overload"), "mgr_browse:overload:0", 2),
 		),
 		discord.ActionRow(
+			discord.Button(filterBtn("openai", status, "plat:openai"), "mgr_browse:"+browse.Token("plat:openai")+":0", 2),
 			discord.Button(filterBtn("anthropic", status, "plat:anthropic"), "mgr_browse:"+browse.Token("plat:anthropic")+":0", 2),
 			discord.Button(filterBtn("gemini", status, "plat:gemini"), "mgr_browse:"+browse.Token("plat:gemini")+":0", 2),
 			discord.Button(filterBtn("grok", status, "plat:grok"), "mgr_browse:"+browse.Token("plat:grok")+":0", 2),
@@ -1882,6 +1940,15 @@ func (b *Bot) manageAccount(ctx context.Context, userID, accountID int64, notice
 	}
 	if acc.TempUnschedulableUntil != nil {
 		fmt.Fprintf(&bld, "临时停调度至: `%s`\n", acc.TempUnschedulableUntil.Local().Format("01-02 15:04"))
+	}
+	if snap, err := cli.GetConcurrency(ctx); err == nil && snap != nil && snap.Enabled {
+		for _, v := range snap.Account {
+			if v.AccountID == accountID {
+				fmt.Fprintf(&bld, "并发: `%d/%d` (%.0f%%) wait=`%d`\n",
+					v.CurrentInUse, v.MaxCapacity, v.LoadPercentage, v.WaitingInQueue)
+				break
+			}
+		}
 	}
 	watched := false
 	if p, ok := b.users.Get(userID); ok {
@@ -2160,6 +2227,21 @@ func (b *Bot) showAccountLive(ctx context.Context, userID, accountID int64, noti
 	}
 	if today, err := cli.GetAccountTodayStats(ctx, accountID); err == nil && today != nil {
 		fmt.Fprintf(&bld, "\n今日: req=`%d` tok=`%d` cost=`%.4f`\n", today.Requests, today.Tokens, today.Cost)
+	}
+	if av, err := cli.GetAccountAvailability(ctx); err == nil && av != nil {
+		if st, ok := av.Account[strconv.FormatInt(accountID, 10)]; ok {
+			fmt.Fprintf(&bld, "\n运行态: available=%v error=%v rl=%v ol=%v\n",
+				st.IsAvailable, st.HasError, st.IsRateLimited, st.IsOverloaded)
+		}
+	}
+	if snap, err := cli.GetConcurrency(ctx); err == nil && snap != nil && snap.Enabled {
+		for _, v := range snap.Account {
+			if v.AccountID == accountID {
+				fmt.Fprintf(&bld, "并发: `%d/%d` (%.0f%%) wait=`%d`\n",
+					v.CurrentInUse, v.MaxCapacity, v.LoadPercentage, v.WaitingInQueue)
+				break
+			}
+		}
 	}
 	comps := []discord.Component{
 		discord.ActionRow(discord.Button("刷新", fmt.Sprintf("acc_live:%d", accountID), 2)),

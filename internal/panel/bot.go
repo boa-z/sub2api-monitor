@@ -1220,15 +1220,23 @@ func (b *Bot) sendHome(ctx context.Context, chatID, userID int64) error {
 }
 
 func (b *Bot) sendStatus(ctx context.Context, chatID, userID int64) error {
-	return b.tg.SendChat(ctx, chatID, b.statusText(ctx, userID), b.statusKeyboardFor(userID))
+	text, issueIDs := b.statusTextWithIssues(ctx, userID)
+	return b.tg.SendChat(ctx, chatID, text, b.statusKeyboardFor(userID, issueIDs))
 }
 
 func (b *Bot) showStatus(ctx context.Context, chatID, msgID, userID int64) error {
-	return b.editOrSend(ctx, chatID, msgID, b.statusText(ctx, userID), b.statusKeyboardFor(userID))
+	text, issueIDs := b.statusTextWithIssues(ctx, userID)
+	return b.editOrSend(ctx, chatID, msgID, text, b.statusKeyboardFor(userID, issueIDs))
 }
 
 // statusText is a live status view: profile + watched accounts health (best-effort).
 func (b *Bot) statusText(ctx context.Context, userID int64) string {
+	text, _ := b.statusTextWithIssues(ctx, userID)
+	return text
+}
+
+// statusTextWithIssues returns status text and watched account IDs that need attention.
+func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, []int64) {
 	p, _ := b.users.Get(userID)
 	var bld strings.Builder
 	bld.WriteString(telegram.Bold("运行状态") + "\n")
@@ -1255,7 +1263,7 @@ func (b *Bot) statusText(ctx context.Context, userID int64) string {
 
 	if p == nil {
 		bld.WriteString("尚未创建配置，点「主面板」开始。")
-		return bld.String()
+		return bld.String(), nil
 	}
 	mon := "关闭"
 	if p.Enabled {
@@ -1301,11 +1309,11 @@ func (b *Bot) statusText(ctx context.Context, userID int64) string {
 
 	if !p.HasConnection() {
 		bld.WriteString("\n⚠️ 请先配置连接信息")
-		return bld.String()
+		return bld.String(), nil
 	}
 	if len(p.Accounts) == 0 {
 		bld.WriteString("\n⚠️ 请添加至少一个监控账号")
-		return bld.String()
+		return bld.String(), nil
 	}
 
 	bld.WriteString("\n" + telegram.Bold("启用账号快照") + "\n")
@@ -1314,10 +1322,11 @@ func (b *Bot) statusText(ctx context.Context, userID int64) string {
 	})
 	if err != nil {
 		bld.WriteString("客户端错误: " + telegram.EscapeHTML(err.Error()))
-		return bld.String()
+		return bld.String(), nil
 	}
 	warnN := 0
 	shown := 0
+	var issueIDs []int64
 	const maxShow = 12
 	for _, a := range enabled {
 		if shown >= maxShow {
@@ -1332,6 +1341,9 @@ func (b *Bot) statusText(ctx context.Context, userID int64) string {
 			flag = "❓"
 			detail = telegram.EscapeHTML(truncateRunes(err.Error(), 40))
 			warnN++
+			if len(issueIDs) < 6 {
+				issueIDs = append(issueIDs, a.ID)
+			}
 		} else if acc != nil {
 			if acc.Name != "" && name == fmt.Sprintf("#%d", a.ID) {
 				name = acc.Name
@@ -1371,6 +1383,9 @@ func (b *Bot) statusText(ctx context.Context, userID int64) string {
 			if detail != "" && flag == "❌" {
 				fmt.Fprintf(&bld, "   %s\n", detail)
 			}
+			if flag != "✅" && len(issueIDs) < 6 {
+				issueIDs = append(issueIDs, a.ID)
+			}
 			continue
 		}
 		fmt.Fprintf(&bld, "%s #%d %s · %s\n", flag, a.ID, telegram.EscapeHTML(truncateRunes(name, 14)), detail)
@@ -1387,14 +1402,41 @@ func (b *Bot) statusText(ctx context.Context, userID int64) string {
 	} else {
 		bld.WriteString("\n✅ 自动监控开启中。")
 	}
-	return bld.String()
+	return bld.String(), issueIDs
 }
 
-func (b *Bot) statusKeyboardFor(userID int64) *telegram.InlineKeyboardMarkup {
+func (b *Bot) statusKeyboardFor(userID int64, issueIDs ...[]int64) *telegram.InlineKeyboardMarkup {
+	var issues []int64
+	if len(issueIDs) > 0 {
+		issues = issueIDs[0]
+	}
 	rows := [][]telegram.InlineKeyboardButton{
 		{telegram.Btn("🔄 刷新状态", "status"), telegram.Btn("▶️ 立即检查", "check_now")},
-		{telegram.Btn("👤 监控账号", "cfg_acc"), telegram.Btn("🔌 连接", "cfg_conn")},
 	}
+	// watched issue shortcuts
+	if len(issues) > 0 {
+		var row []telegram.InlineKeyboardButton
+		for i, id := range issues {
+			if i >= 4 {
+				break
+			}
+			if b.isAdmin(userID) {
+				row = append(row, telegram.Btn(fmt.Sprintf("管理 #%d", id), fmt.Sprintf("mgr_acc:%d", id)))
+			} else {
+				row = append(row, telegram.Btn(fmt.Sprintf("实时 #%d", id), fmt.Sprintf("acc_live:%d", id)))
+			}
+			if len(row) == 2 {
+				rows = append(rows, row)
+				row = nil
+			}
+		}
+		if len(row) > 0 {
+			rows = append(rows, row)
+		}
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{
+		telegram.Btn("👤 监控账号", "cfg_acc"), telegram.Btn("🔌 连接", "cfg_conn"),
+	})
 	if b.isAdmin(userID) {
 		rows = append(rows, []telegram.InlineKeyboardButton{
 			telegram.Btn("🛠 运维视图", "ops_menu"),

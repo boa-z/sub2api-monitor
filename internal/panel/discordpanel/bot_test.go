@@ -11,6 +11,7 @@ import (
 
 	"github.com/boa/sub2api-monitor/internal/config"
 	"github.com/boa/sub2api-monitor/internal/discord"
+	"github.com/boa/sub2api-monitor/internal/panel/browse"
 	"github.com/boa/sub2api-monitor/internal/sub2api"
 	"github.com/boa/sub2api-monitor/internal/userstore"
 )
@@ -422,5 +423,27 @@ func TestStatusTextBasic(t *testing.T) {
 	txt := b.statusText(context.Background(), 42)
 	if !strings.Contains(txt, "运行状态") {
 		t.Fatalf("%s", txt)
+	}
+}
+
+func TestStatusComponentsIssueJumps(t *testing.T) {
+	b, _ := testBot(t)
+	comps := b.statusComponents(100, []int64{3, 4})
+	if !containsCustomID(comps, "mgr_acc:3") {
+		t.Fatalf("%+v", comps)
+	}
+	if len(comps) > 5 {
+		t.Fatalf("rows %d", len(comps))
+	}
+	comps2 := b.statusComponents(42, []int64{8})
+	if !containsCustomID(comps2, "acc_live:8") || containsCustomID(comps2, "mgr_acc:8") {
+		t.Fatalf("%+v", comps2)
+	}
+}
+
+func TestManageComponentsOverloadBrowse(t *testing.T) {
+	// overload lives on account browser, not manage hub; ensure ol badacc path tokens normalize
+	if browse.NormalizeBadKind("ol") != "ol" {
+		t.Fatal("ol")
 	}
 }

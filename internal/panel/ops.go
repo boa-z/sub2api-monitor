@@ -105,10 +105,7 @@ func dashboardKeyboard(stats *sub2api.DashboardStats) *telegram.InlineKeyboardMa
 			jump = append(jump, telegram.Btn(fmt.Sprintf("⏱ 限速 %v", stats.RatelimitAccounts), "ops_badacc:rl:0"))
 		}
 		if stats.OverloadAccounts > 0 && len(jump) < 3 {
-			// overload often overlaps rate_limited; still offer rl tab
-			if stats.RatelimitAccounts == 0 {
-				jump = append(jump, telegram.Btn(fmt.Sprintf("过载 %v", stats.OverloadAccounts), "ops_badacc:rl:0"))
-			}
+			jump = append(jump, telegram.Btn(fmt.Sprintf("过载 %v", stats.OverloadAccounts), "ops_badacc:ol:0"))
 		}
 	}
 	if len(jump) == 0 {
@@ -1097,14 +1094,17 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 		{
 			telegram.Btn(errorTabLabel("error", kind, "error"), "ops_badacc:error:0"),
 			telegram.Btn(errorTabLabel("限速", kind, "rl"), "ops_badacc:rl:0"),
-			telegram.Btn(errorTabLabel("停调度", kind, "unsched"), "ops_badacc:unsched:0"),
+			telegram.Btn(errorTabLabel("过载", kind, "ol"), "ops_badacc:ol:0"),
 		},
-		{telegram.Btn(errorTabLabel("汇总", kind, "all"), "ops_badacc:all:0")},
+		{
+			telegram.Btn(errorTabLabel("停调度", kind, "unsched"), "ops_badacc:unsched:0"),
+			telegram.Btn(errorTabLabel("汇总", kind, "all"), "ops_badacc:all:0"),
+		},
 	}
 	for _, a := range items {
 		quick := "修复"
 		quickData := fmt.Sprintf("live_act:heal:%d", a.ID)
-		if kind == "rl" {
+		if kind == "rl" || kind == "ol" {
 			quick = "清限速"
 			quickData = fmt.Sprintf("live_act:clear_rl:%d", a.ID)
 		} else if kind == "unsched" {
@@ -1129,7 +1129,7 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 		rows = append(rows, nav)
 	}
 	switch kind {
-	case "rl":
+	case "rl", "ol":
 		rows = append(rows, []telegram.InlineKeyboardButton{
 			telegram.Btn("⏱ 批量清限速", "mgr_bulk_clear_rl"),
 			telegram.Btn("🛠 一键修复", "mgr_bulk_heal"),
@@ -1405,6 +1405,19 @@ func (b *Bot) showAccountLiveWithNotice(ctx context.Context, chatID, msgID, user
 		if st, ok := av.Account[strconv.FormatInt(accountID, 10)]; ok {
 			fmt.Fprintf(&bld, "\n运行态: available=%v error=%v rl=%v ol=%v\n",
 				st.IsAvailable, st.HasError, st.IsRateLimited, st.IsOverloaded)
+		}
+	}
+	if snap, err := cli.GetConcurrency(ctx); err == nil && snap != nil && snap.Enabled {
+		for _, v := range snap.Account {
+			if v.AccountID == accountID {
+				fmt.Fprintf(&bld, "并发: %s/%s (%.0f%%) wait=%s\n",
+					telegram.Code(strconv.Itoa(v.CurrentInUse)),
+					telegram.Code(strconv.Itoa(v.MaxCapacity)),
+					v.LoadPercentage,
+					telegram.Code(strconv.Itoa(v.WaitingInQueue)),
+				)
+				break
+			}
 		}
 	}
 

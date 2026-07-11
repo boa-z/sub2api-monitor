@@ -171,7 +171,8 @@ func (b *Bot) handleCommand(ctx context.Context, it *discord.Interaction, uid in
 	case "panel":
 		return b.respond(ctx, it, b.homeText(uid), b.homeComponents(uid), false)
 	case "status":
-		return b.respond(ctx, it, b.statusText(ctx, uid), b.statusComponents(uid), false)
+		text, comps := b.statusView(ctx, uid)
+		return b.respond(ctx, it, text, comps, false)
 	case "help":
 		return b.respond(ctx, it, helpText(), b.homeComponents(uid), false)
 	case "check":
@@ -230,7 +231,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 	case data == "home":
 		return b.update(ctx, it, b.homeText(uid), b.homeComponents(uid))
 	case data == "status":
-		return b.update(ctx, it, b.statusText(ctx, uid), b.statusComponents(uid))
+		text, comps := b.statusView(ctx, uid)
+		return b.update(ctx, it, text, comps)
 	case data == "cfg_conn":
 		return b.update(ctx, it, b.connText(uid), b.connComponents(uid))
 	case data == "cfg_acc":

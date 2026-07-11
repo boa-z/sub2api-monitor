@@ -158,6 +158,9 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 		{
 			telegram.Btn(filterLabel("停调度", status, "unsched"), "mgr_browse:unsched:0"),
 			telegram.Btn(filterLabel("限速", status, "rate_limited"), "mgr_browse:rate_limited:0"),
+			telegram.Btn(filterLabel("过载", status, "overload"), "mgr_browse:overload:0"),
+		},
+		{
 			telegram.Btn("🔎 搜索", "mgr_search"),
 		},
 		{
@@ -310,6 +313,21 @@ func (b *Bot) showManageAccount(ctx context.Context, chatID, msgID, userID, acco
 	}
 	if temp, err := cli.GetTempUnschedulable(ctx, accountID); err == nil && temp != nil && temp.Active {
 		bld.WriteString("临时停调度: " + telegram.Code("active") + "\n")
+	}
+
+	// best-effort concurrency load for this account
+	if snap, err := cli.GetConcurrency(ctx); err == nil && snap != nil && snap.Enabled {
+		for _, v := range snap.Account {
+			if v.AccountID == accountID {
+				fmt.Fprintf(&bld, "并发: %s/%s (%.0f%%) wait=%s\n",
+					telegram.Code(strconv.Itoa(v.CurrentInUse)),
+					telegram.Code(strconv.Itoa(v.MaxCapacity)),
+					v.LoadPercentage,
+					telegram.Code(strconv.Itoa(v.WaitingInQueue)),
+				)
+				break
+			}
+		}
 	}
 
 	watched := false

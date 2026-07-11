@@ -30,7 +30,7 @@ func ParseFilter(status string) sub2api.AccountListFilter {
 		}
 		return f
 	}
-	if s == "unsched" || s == "rate_limited" {
+	if s == "unsched" || s == "rate_limited" || s == "overload" {
 		// special client-side / API hybrid filters
 		return f
 	}
@@ -69,6 +69,13 @@ func ListAccounts(ctx context.Context, cli *sub2api.Client, status string, page,
 			return items, total, nil
 		}
 		return ScanPage(ctx, cli, page, pageSize, IsRateLimited)
+	case "overload":
+		// prefer API status when supported; fall back to scan on OverloadUntil/status
+		items, total, err := cli.ListAccountsEx(ctx, page+1, pageSize, sub2api.AccountListFilter{Status: "overload"})
+		if err == nil && (total > 0 || len(items) > 0) {
+			return items, total, nil
+		}
+		return ScanPage(ctx, cli, page, pageSize, IsOverloaded)
 	default:
 		f := ParseFilter(status)
 		return cli.ListAccountsEx(ctx, page+1, pageSize, f)
@@ -82,6 +89,15 @@ func IsRateLimited(a sub2api.Account) bool {
 	}
 	st := strings.ToLower(a.Status)
 	return strings.Contains(st, "rate") || strings.Contains(st, "limit") || strings.Contains(st, "overload")
+}
+
+// IsOverloaded reports overload-specific state (subset of rate-limit-ish issues).
+func IsOverloaded(a sub2api.Account) bool {
+	if a.OverloadUntil != nil {
+		return true
+	}
+	st := strings.ToLower(a.Status)
+	return strings.Contains(st, "overload")
 }
 
 // ScanPage walks account list pages and returns the requested slice of matches.
@@ -180,6 +196,8 @@ func Title(status string) string {
 		return "停调度"
 	case title == "rate_limited":
 		return "限速"
+	case title == "overload":
+		return "过载"
 	default:
 		return title
 	}
@@ -207,11 +225,11 @@ func LoadBulkTargets(ctx context.Context, cli *sub2api.Client, action string, ma
 	}
 }
 
-// NormalizeBadKind maps callback kind tokens to error|rl|unsched|all.
+// NormalizeBadKind maps callback kind tokens to error|rl|ol|unsched|all.
 func NormalizeBadKind(kind string) string {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	switch kind {
-	case "rl", "unsched", "all":
+	case "rl", "ol", "unsched", "all":
 		return kind
 	default:
 		return "error"
@@ -232,20 +250,24 @@ func LoadBadAccountsPage(ctx context.Context, cli *sub2api.Client, kind string, 
 	case "rl":
 		items, total, err = ListAccounts(ctx, cli, "rate_limited", page, pageSize)
 		return items, total, "限速/过载账号", "rate_limited", err
+	case "ol":
+		items, total, err = ListAccounts(ctx, cli, "overload", page, pageSize)
+		return items, total, "过载账号", "overload", err
 	case "unsched":
 		items, total, err = ListAccounts(ctx, cli, "unsched", page, pageSize)
 		return items, total, "停调度账号", "unsched", err
 	case "all":
-		// merge unique error+rl+unsched (capped scan), then slice page
+		// merge unique error+rl+ol+unsched (capped scan), then slice page
 		errItems, _, e1 := ListAccounts(ctx, cli, "error", 0, 40)
 		rlItems, _, e2 := ListAccounts(ctx, cli, "rate_limited", 0, 40)
+		olItems, _, e4 := ListAccounts(ctx, cli, "overload", 0, 40)
 		unItems, _, e3 := ListAccounts(ctx, cli, "unsched", 0, 40)
-		if e1 != nil && e2 != nil && e3 != nil {
-			return nil, 0, "异常汇总", "error+rl+unsched", e1
+		if e1 != nil && e2 != nil && e3 != nil && e4 != nil {
+			return nil, 0, "异常汇总", "error+rl+ol+unsched", e1
 		}
 		seen := map[int64]struct{}{}
 		var merged []sub2api.Account
-		for _, a := range append(append(errItems, rlItems...), unItems...) {
+		for _, a := range append(append(append(errItems, rlItems...), olItems...), unItems...) {
 			if _, ok := seen[a.ID]; ok {
 				continue
 			}
@@ -255,13 +277,13 @@ func LoadBadAccountsPage(ctx context.Context, cli *sub2api.Client, kind string, 
 		total = int64(len(merged))
 		start := page * pageSize
 		if start >= len(merged) {
-			return []sub2api.Account{}, total, "异常汇总", "error+rl+unsched", nil
+			return []sub2api.Account{}, total, "异常汇总", "error+rl+ol+unsched", nil
 		}
 		end := start + pageSize
 		if end > len(merged) {
 			end = len(merged)
 		}
-		return merged[start:end], total, "异常汇总", "error+rl+unsched", nil
+		return merged[start:end], total, "异常汇总", "error+rl+ol+unsched", nil
 	default:
 		items, total, err = ListAccounts(ctx, cli, "error", page, pageSize)
 		return items, total, "异常账号 (status=error)", "error", err

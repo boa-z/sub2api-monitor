@@ -78,3 +78,21 @@ func TestParseBadAccAndNormalize(t *testing.T) {
 		t.Fatalf("%s %d", k, p)
 	}
 }
+
+func TestIsOverloaded(t *testing.T) {
+	if !IsOverloaded(sub2api.Account{Status: "overload"}) {
+		t.Fatal("status overload")
+	}
+	until := sub2api.Account{}
+	// OverloadUntil via RateLimited helper still true for IsRateLimited; IsOverloaded needs field
+	if IsOverloaded(sub2api.Account{Status: "active"}) {
+		t.Fatal("active")
+	}
+	if Title("overload") != "过载" {
+		t.Fatal(Title("overload"))
+	}
+	if NormalizeBadKind("ol") != "ol" {
+		t.Fatal(NormalizeBadKind("ol"))
+	}
+	_ = until
+}

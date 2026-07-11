@@ -867,3 +867,28 @@ func TestManageBackUsersGroups(t *testing.T) {
 		t.Fatalf("%+v", btn)
 	}
 }
+
+func TestStatusKeyboardIssueJumps(t *testing.T) {
+	b, _ := testBot(t)
+	b.cfg.Telegram.Panel.AdminUserIDs = []int64{7}
+	kb := b.statusKeyboardFor(7, []int64{11, 22})
+	joined := ""
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined, "mgr_acc:11") || !strings.Contains(joined, "mgr_acc:22") {
+		t.Fatalf("%s", joined)
+	}
+	kb2 := b.statusKeyboardFor(42, []int64{9})
+	joined2 := ""
+	for _, row := range kb2.InlineKeyboard {
+		for _, btn := range row {
+			joined2 += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined2, "acc_live:9") || strings.Contains(joined2, "mgr_acc:") {
+		t.Fatalf("%s", joined2)
+	}
+}
