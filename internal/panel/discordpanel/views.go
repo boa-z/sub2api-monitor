@@ -23,6 +23,8 @@ func helpText() string {
 • **只读运维**：运维视图 / 看板 / 异常账号等只读（不可修复/调度/改角色）
 • **管理员**：运维写操作 + 账号管理（调度/清错/恢复/批量/一键修复/临时停调度/启用/账号与用户搜索/面板用户）
 • 异常账号支持 tab：error / 限速 / 过载 / 停调度 / 临时停 / 禁用 / 汇总
+• 实例用户支持状态/角色筛选；错误列表含平台/用户样本汇总与跳转
+• 主面板/状态/看板提示流量骤降与实时负载
 • 批量操作优先使用当前「账号浏览 / 异常 tab」筛选范围
 • 角色由 admin_user_ids 或 profile.role=admin|viewer|user 控制
 • 配置按用户隔离，存于 users.json（可与 Telegram 共享）
@@ -1119,7 +1121,7 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 	if st, _ := b.getBrowseView(userID); st != "" && st != "all" {
 		fmt.Fprintf(&bld, "当前筛选: `%s`（批量操作优先此范围）\n\n", browse.Title(st))
 	}
-	bld.WriteString("浏览（状态/平台/停调度/限速）、搜索、切换调度、清错/恢复/一键修复、临时停调度、批量处理（优先当前浏览/异常 tab 筛选）、实例用户/分组（搜索+详情只读）、面板用户角色（Admin API / Bot 权限）。")
+	bld.WriteString("浏览（状态/平台/停调度/限速）、搜索、切换调度、清错/恢复/一键修复、临时停调度、批量处理（优先当前浏览/异常 tab 筛选）、实例用户/分组（搜索·状态/角色筛选+详情只读）、面板用户角色（Admin API / Bot 权限）。")
 	return bld.String()
 }
 
