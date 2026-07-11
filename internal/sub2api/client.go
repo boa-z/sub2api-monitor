@@ -1,6 +1,7 @@
 package sub2api
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -45,11 +46,23 @@ type envelope struct {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, out any) error {
+	return c.doBody(ctx, method, path, query, nil, out)
+}
+
+func (c *Client) doBody(ctx context.Context, method, path string, query url.Values, payload any, out any) error {
 	u := c.baseURL + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u, nil)
+	var bodyReader io.Reader
+	if payload != nil {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		bodyReader = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, bodyReader)
 	if err != nil {
 		return err
 	}
@@ -59,6 +72,9 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		req.Header.Set("Authorization", "Bearer "+c.jwt)
 	}
 	req.Header.Set("Accept", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -85,12 +101,22 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		if len(env.Data) > 0 && string(env.Data) != "null" {
 			return json.Unmarshal(env.Data, out)
 		}
+		// success with empty data
+		return nil
 	}
 	return json.Unmarshal(body, out)
 }
 
 func (c *Client) get(ctx context.Context, path string, query url.Values, out any) error {
 	return c.do(ctx, http.MethodGet, path, query, out)
+}
+
+func (c *Client) post(ctx context.Context, path string, payload any, out any) error {
+	return c.doBody(ctx, http.MethodPost, path, nil, payload, out)
+}
+
+func (c *Client) delete(ctx context.Context, path string, out any) error {
+	return c.doBody(ctx, http.MethodDelete, path, nil, nil, out)
 }
 
 func (c *Client) getRaw(ctx context.Context, path string, query url.Values) ([]byte, error) {

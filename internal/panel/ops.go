@@ -37,8 +37,8 @@ func opsKeyboard() *telegram.InlineKeyboardMarkup {
 			{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn("✅ 可用性", "ops_avail")},
 			{telegram.Btn("🚨 告警", "ops_alerts"), telegram.Btn("❌ 错误", "ops_errors")},
 			{telegram.Btn("⚙️ 并发", "ops_conc"), telegram.Btn("📡 渠道探测", "ops_channels")},
-			{telegram.Btn("📋 异常账号", "ops_badacc"), telegram.Btn("🔄 刷新", "ops_menu")},
-			{telegram.Btn("« 返回主面板", "home")},
+			{telegram.Btn("📋 异常账号", "ops_badacc"), telegram.Btn("🧰 账号管理", "mgr_menu")},
+			{telegram.Btn("🔄 刷新菜单", "ops_menu"), telegram.Btn("« 主面板", "home")},
 		},
 	}
 }
@@ -649,7 +649,7 @@ func (b *Bot) showAccountLive(ctx context.Context, chatID, msgID, userID, accoun
 	_ = name
 	kb := &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn("🔄 刷新", fmt.Sprintf("acc_live:%d", accountID))},
+			{telegram.Btn("🔄 刷新", fmt.Sprintf("acc_live:%d", accountID)), telegram.Btn("🧰 管理", fmt.Sprintf("mgr_acc:%d", accountID))},
 			{telegram.Btn("« 账号详情", fmt.Sprintf("acc:%d", accountID)), telegram.Btn("« 列表", "cfg_acc")},
 		},
 	}

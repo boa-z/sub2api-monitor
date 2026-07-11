@@ -106,6 +106,7 @@ func defaultBotCommands() []telegram.BotCommand {
 		{Command: "start", Description: "打开主面板"},
 		{Command: "status", Description: "查看配置摘要"},
 		{Command: "ops", Description: "运维视图（看板/告警/错误）"},
+		{Command: "manage", Description: "账号管理（调度/清错/刷新）"},
 		{Command: "check", Description: "立即检查用量"},
 		{Command: "setbase", Description: "设置 Base URL"},
 		{Command: "setkey", Description: "设置 Admin API Key"},
@@ -207,6 +208,8 @@ func (b *Bot) handleMessage(ctx context.Context, m *telegram.InMessage) error {
 		return b.tg.SendChat(ctx, m.Chat.ID, b.thresholdsText(m.From.ID), thresholdsKeyboard(m.From.ID, b))
 	case cmd == "/ops" || cmd == "/dashboard" || cmd == "运维":
 		return b.tg.SendChat(ctx, m.Chat.ID, b.opsMenuText(), opsKeyboard())
+	case cmd == "/manage" || cmd == "/mgr" || cmd == "管理":
+		return b.tg.SendChat(ctx, m.Chat.ID, b.manageMenuText(), manageKeyboard())
 	case cmd == "/check" || cmd == "立即检查":
 		return b.forceCheck(ctx, m.Chat.ID, m.From.ID)
 	default:
@@ -269,6 +272,45 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		return b.showBadAccounts(ctx, chatID, msgID, cq.From.ID)
 	case data == "ops_watch_errors":
 		return b.watchErrorAccounts(ctx, chatID, msgID, cq.From.ID)
+	case data == "mgr_menu":
+		return b.showManageMenu(ctx, chatID, msgID)
+	case data == "mgr_browse" || strings.HasPrefix(data, "mgr_browse:"):
+		status, page := "all", 0
+		if strings.HasPrefix(data, "mgr_browse:") {
+			rest := strings.TrimPrefix(data, "mgr_browse:")
+			parts := strings.Split(rest, ":")
+			if len(parts) >= 1 && parts[0] != "" {
+				status = parts[0]
+			}
+			if len(parts) >= 2 {
+				page, _ = strconv.Atoi(parts[1])
+			}
+		}
+		return b.showAccountBrowser(ctx, chatID, msgID, cq.From.ID, status, page)
+	case strings.HasPrefix(data, "mgr_acc:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "mgr_acc:"), 10, 64)
+		return b.showManageAccount(ctx, chatID, msgID, cq.From.ID, id, "")
+	case strings.HasPrefix(data, "mgr_act:"):
+		// mgr_act:action:id
+		rest := strings.TrimPrefix(data, "mgr_act:")
+		action, idStr, ok := strings.Cut(rest, ":")
+		if !ok {
+			return b.showManageMenu(ctx, chatID, msgID)
+		}
+		id, _ := strconv.ParseInt(idStr, 10, 64)
+		return b.handleManageAction(ctx, chatID, msgID, cq.From.ID, action, id)
+	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:"):
+		page := 0
+		if strings.HasPrefix(data, "mgr_users:") {
+			page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_users:"))
+		}
+		return b.showUsers(ctx, chatID, msgID, cq.From.ID, page)
+	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:"):
+		page := 0
+		if strings.HasPrefix(data, "mgr_groups:") {
+			page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_groups:"))
+		}
+		return b.showGroups(ctx, chatID, msgID, cq.From.ID, page)
 	case data == "set_base":
 		b.setAwait(cq.From.ID, awaitBaseURL, 0, "")
 		return b.editOrSend(ctx, chatID, msgID, "请发送 Base URL（如 <code>http://host:8080</code>）\n/cancel 取消", cancelKeyboard())
@@ -1066,10 +1108,10 @@ func homeKeyboard() *telegram.InlineKeyboardMarkup {
 	return &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{telegram.Btn("📊 状态", "status"), telegram.Btn("🛠 运维视图", "ops_menu")},
-			{telegram.Btn("🔌 连接配置", "cfg_conn"), telegram.Btn("👤 监控账号", "cfg_acc")},
-			{telegram.Btn("🎯 阈值", "cfg_thr"), telegram.Btn("▶️ 立即检查", "check_now")},
-			{telegram.Btn("🔁 开关监控", "toggle_mon"), telegram.Btn("📡 切换数据源", "toggle_src")},
-			{telegram.Btn("❓ 帮助", "help")},
+			{telegram.Btn("🧰 账号管理", "mgr_menu"), telegram.Btn("👤 监控账号", "cfg_acc")},
+			{telegram.Btn("🔌 连接配置", "cfg_conn"), telegram.Btn("🎯 阈值", "cfg_thr")},
+			{telegram.Btn("▶️ 立即检查", "check_now"), telegram.Btn("🔁 开关监控", "toggle_mon")},
+			{telegram.Btn("📡 切换数据源", "toggle_src"), telegram.Btn("❓ 帮助", "help")},
 		},
 	}
 }
@@ -1123,6 +1165,7 @@ func accountDetailKeyboard(id int64) *telegram.InlineKeyboardMarkup {
 	return &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{telegram.Btn("📡 实时状态/用量", fmt.Sprintf("acc_live:%d", id))},
+			{telegram.Btn("🧰 管理操作", fmt.Sprintf("mgr_acc:%d", id))},
 			{
 				telegram.Btn("✏️ 重命名", fmt.Sprintf("rename:%d", id)),
 				telegram.Btn("🗑 删除", fmt.Sprintf("del_acc:%d", id)),
@@ -1213,6 +1256,7 @@ func helpText() string {
 /start · /menu — 打开主面板
 /status — 查看配置摘要
 /ops — 运维视图（看板/可用性/告警/错误/并发）
+/manage — 账号管理（调度/清错/刷新/浏览）
 /check — 立即拉取用量快照
 /id — 显示你的 Telegram ID
 /thresholds — 管理用量阈值
@@ -1228,6 +1272,7 @@ func helpText() string {
 ` + telegram.Bold("说明") + `
 • 每位用户独立保存 base_url / key / 账号 / 阈值
 • 运维视图用你的 Admin API 只读查询实例状态
+• 账号管理可切换调度、清除错误/限速、恢复状态、刷新凭据
 • 用量达到阈值时 Bot 会私聊提醒你
 • 支持 passive（轻量缓存）与 active（刷新上游）数据源
 • 配置存于服务器 data/users.json

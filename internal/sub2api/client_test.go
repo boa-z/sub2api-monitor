@@ -83,3 +83,14 @@ func TestOpsErrorPageUnmarshal(t *testing.T) {
 		t.Fatalf("%+v", p)
 	}
 }
+
+func TestParseNamedListUsersShape(t *testing.T) {
+	raw := []byte(`{"items":[{"id":1,"email":"a@b.c","role":"user","balance":10,"concurrency":5,"status":"active"}],"total":1}`)
+	items, total, err := parseNamedList[User](raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(items) != 1 || items[0].Email != "a@b.c" {
+		t.Fatalf("%+v %d", items, total)
+	}
+}
