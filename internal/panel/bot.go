@@ -482,6 +482,11 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return nil
 		}
 		return b.resolveAllRequestErrors(ctx, chatID, msgID, cq.From.ID)
+	case data == "oe:heal_related":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.healRelatedFromErrors(ctx, chatID, msgID, cq.From.ID)
 	case strings.HasPrefix(data, "oe:r:"):
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
@@ -2147,11 +2152,20 @@ func homeKeyboard() *telegram.InlineKeyboardMarkup {
 }
 
 func homeKeyboardWithLabels(opsLabel, badLabel, mgrLabel string, admin bool) *telegram.InlineKeyboardMarkup {
+	return homeKeyboardWithLabelsData(opsLabel, badLabel, "ops_badacc:error:0", mgrLabel, admin)
+}
+
+// homeKeyboardWithLabelsData is like homeKeyboardWithLabels but allows a contextual
+// bad-account callback (error / rl / ol) for the home triage shortcut.
+func homeKeyboardWithLabelsData(opsLabel, badLabel, badData, mgrLabel string, admin bool) *telegram.InlineKeyboardMarkup {
 	if opsLabel == "" {
 		opsLabel = "🛠 运维视图"
 	}
 	if badLabel == "" {
 		badLabel = "📋 异常账号"
+	}
+	if badData == "" {
+		badData = "ops_badacc:error:0"
 	}
 	if mgrLabel == "" {
 		if admin {
@@ -2164,7 +2178,7 @@ func homeKeyboardWithLabels(opsLabel, badLabel, mgrLabel string, admin bool) *te
 		return &telegram.InlineKeyboardMarkup{
 			InlineKeyboard: [][]telegram.InlineKeyboardButton{
 				{telegram.Btn("📊 状态", "status"), telegram.Btn(opsLabel, "ops_menu")},
-				{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn(badLabel, "ops_badacc:error:0")},
+				{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn(badLabel, badData)},
 				{telegram.Btn(mgrLabel, "mgr_menu"), telegram.Btn("👤 监控账号", "cfg_acc")},
 				{telegram.Btn("🔌 连接配置", "cfg_conn"), telegram.Btn("🎯 阈值", "cfg_thr")},
 				{telegram.Btn("▶️ 立即检查", "check_now"), telegram.Btn("🔁 开关监控", "toggle_mon")},
@@ -2176,7 +2190,7 @@ func homeKeyboardWithLabels(opsLabel, badLabel, mgrLabel string, admin bool) *te
 	return &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{telegram.Btn("📊 状态", "status"), telegram.Btn(opsLabel, "ops_menu")},
-			{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn(badLabel, "ops_badacc:error:0")},
+			{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn(badLabel, badData)},
 			{telegram.Btn("👤 监控账号", "cfg_acc"), telegram.Btn("🔌 连接配置", "cfg_conn")},
 			{telegram.Btn("🎯 阈值", "cfg_thr"), telegram.Btn("▶️ 立即检查", "check_now")},
 			{telegram.Btn("🔁 开关监控", "toggle_mon"), telegram.Btn("📡 切换数据源", "toggle_src")},
@@ -2199,25 +2213,23 @@ func (b *Bot) homeKeyboardFor(userID int64) *telegram.InlineKeyboardMarkup {
 	}
 	opsLabel := "🛠 运维视图"
 	badLabel := "📋 异常账号"
+	badData := "ops_badacc:error:0"
 	mgrLabel := "🧰 账号管理"
 	if !b.isAdmin(userID) {
 		mgrLabel = "🧰 账号浏览"
 	}
 	if cli, _, err := b.userClient(userID, 4*time.Second); err == nil && cli != nil {
 		if st, err := cli.GetDashboardStats(context.Background()); err == nil && st != nil {
-			if st.ErrorAccounts > 0 {
-				badLabel = fmt.Sprintf("📋 异常 %v", st.ErrorAccounts)
-				opsLabel = "🛠 运维 ⚠"
-			} else if st.RatelimitAccounts > 0 {
-				badLabel = fmt.Sprintf("📋 限速 %v", st.RatelimitAccounts)
-				opsLabel = "🛠 运维 ⚠"
-			}
-			if b.isAdmin(userID) && (st.ErrorAccounts > 0 || st.RatelimitAccounts > 0) {
+			opsL, badL, data, issues := browse.DashboardTriage(st)
+			opsLabel = "🛠 " + opsL
+			badLabel = "📋 " + badL
+			badData = data
+			if b.isAdmin(userID) && issues {
 				mgrLabel = "🧰 管理修复"
 			}
 		}
 	}
-	return homeKeyboardWithLabels(opsLabel, badLabel, mgrLabel, b.isAdmin(userID))
+	return homeKeyboardWithLabelsData(opsLabel, badLabel, badData, mgrLabel, b.isAdmin(userID))
 }
 
 func connKeyboard() *telegram.InlineKeyboardMarkup {

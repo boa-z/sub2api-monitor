@@ -78,6 +78,7 @@ func (b *Bot) homeText(userID int64) string {
 func (b *Bot) homeComponents(userID int64) []discord.Component {
 	opsLabel := "运维"
 	badLabel := "异常账号"
+	badData := "ops_badacc:error:0"
 	mgrLabel := "管理"
 	if !b.isAdmin(userID) {
 		mgrLabel = "账号浏览"
@@ -85,14 +86,11 @@ func (b *Bot) homeComponents(userID int64) []discord.Component {
 	if b.canOpsRead(userID) {
 		if cli, _, err := b.userClient(userID, 4*time.Second); err == nil && cli != nil {
 			if st, err := cli.GetDashboardStats(context.Background()); err == nil && st != nil {
-				if st.ErrorAccounts > 0 {
-					badLabel = fmt.Sprintf("异常 %v", st.ErrorAccounts)
-					opsLabel = "运维⚠"
-				} else if st.RatelimitAccounts > 0 {
-					badLabel = fmt.Sprintf("限速 %v", st.RatelimitAccounts)
-					opsLabel = "运维⚠"
-				}
-				if b.isAdmin(userID) && (st.ErrorAccounts > 0 || st.RatelimitAccounts > 0) {
+				opsL, badL, data, issues := browse.DashboardTriage(st)
+				opsLabel = opsL
+				badLabel = badL
+				badData = data
+				if b.isAdmin(userID) && issues {
 					mgrLabel = "管理修复"
 				}
 			}
@@ -107,7 +105,7 @@ func (b *Bot) homeComponents(userID int64) []discord.Component {
 			),
 			discord.ActionRow(
 				discord.Button("看板", "ops_dash", 2),
-				discord.Button(badLabel, "ops_badacc:error:0", 2),
+				discord.Button(badLabel, badData, 2),
 				discord.Button("告警", "ops_alerts", 2),
 			),
 			discord.ActionRow(
@@ -131,7 +129,7 @@ func (b *Bot) homeComponents(userID int64) []discord.Component {
 				discord.Button("看板", "ops_dash", 2),
 			),
 			discord.ActionRow(
-				discord.Button(badLabel, "ops_badacc:error:0", 2),
+				discord.Button(badLabel, badData, 2),
 				discord.Button(mgrLabel, "mgr_menu", 2),
 				discord.Button("监控账号", "cfg_acc", 2),
 			),
@@ -974,6 +972,7 @@ func opsComponents() []discord.Component {
 // live error/rate-limit counts; canWrite controls bulk-heal visibility.
 func opsComponentsFor(stats *sub2api.DashboardStats, canWrite bool) []discord.Component {
 	badLabel := "异常账号"
+	badData := "ops_badacc:error:0"
 	rlLabel := "限速"
 	errLabel := "错误"
 	mgrLabel := "账号管理"
@@ -982,9 +981,8 @@ func opsComponentsFor(stats *sub2api.DashboardStats, canWrite bool) []discord.Co
 	}
 	olLabel := "过载"
 	if stats != nil {
-		if stats.ErrorAccounts > 0 {
-			badLabel = fmt.Sprintf("异常 %v", stats.ErrorAccounts)
-		}
+		_, bl, bd, _ := browse.DashboardTriage(stats)
+		badLabel, badData = bl, bd
 		if stats.RatelimitAccounts > 0 {
 			rlLabel = fmt.Sprintf("限速 %v", stats.RatelimitAccounts)
 		}
@@ -1008,7 +1006,7 @@ func opsComponentsFor(stats *sub2api.DashboardStats, canWrite bool) []discord.Co
 	hasIssues := stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0 || stats.OverloadAccounts > 0)
 	if hasIssues {
 		row := []discord.Component{
-			discord.Button(badLabel, "ops_badacc:error:0", 1),
+			discord.Button(badLabel, badData, 1),
 		}
 		if stats.RatelimitAccounts > 0 {
 			row = append(row, discord.Button(rlLabel, "ops_badacc:rl:0", 2))
@@ -1041,7 +1039,7 @@ func opsComponentsFor(stats *sub2api.DashboardStats, canWrite bool) []discord.Co
 		}
 	} else {
 		comps = append(comps, discord.ActionRow(
-			discord.Button(badLabel, "ops_badacc:error:0", 2),
+			discord.Button(badLabel, badData, 2),
 			discord.Button(mgrLabel, "mgr_menu", 2),
 			discord.Button("« 主面板", "home", 2),
 		))
@@ -1088,12 +1086,14 @@ func manageComponents() []discord.Component {
 
 func manageComponentsFor(stats *sub2api.DashboardStats, canWrite bool, browseStatus string) []discord.Component {
 	badLabel := "异常账号"
+	badData := "ops_badacc:error:0"
 	healLabel := "一键修复"
 	clearLabel := "批量清错"
 	rlLabel := "批量清限速"
 	if stats != nil {
+		_, bl, bd, _ := browse.DashboardTriage(stats)
+		badLabel, badData = bl, bd
 		if stats.ErrorAccounts > 0 {
-			badLabel = fmt.Sprintf("异常 %v", stats.ErrorAccounts)
 			clearLabel = fmt.Sprintf("清错 %v", stats.ErrorAccounts)
 		}
 		if stats.RatelimitAccounts > 0 {
@@ -1126,7 +1126,7 @@ func manageComponentsFor(stats *sub2api.DashboardStats, canWrite bool, browseSta
 		discord.ActionRow(
 			discord.Button("停调度", "mgr_browse:unsched:0", 2),
 			discord.Button("限速", "mgr_browse:rate_limited:0", 2),
-			discord.Button(badLabel, "ops_badacc:error:0", 2),
+			discord.Button(badLabel, badData, 2),
 		),
 	}
 	if canWrite {
@@ -2769,6 +2769,7 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 		comps = append(comps, discord.ActionRow(
 			discord.SuccessButton("全解上游", "oe:resolve_all:u"),
 			discord.SuccessButton("全解请求", "oe:resolve_all:r"),
+			discord.Button("修复关联", "oe:heal_related", 1),
 		))
 	}
 	comps = append(comps, discord.ActionRow(footer...))
@@ -2893,6 +2894,83 @@ func (b *Bot) resolveAllOpsErrors(ctx context.Context, userID int64, apiKind, la
 	}
 	return b.showErrorsView(ctx, userID, tab, pageNo,
 		fmt.Sprintf("✅ 批量标记%s错误：成功 %d · 失败 %d", label, okN, failN))
+}
+
+// collectUnresolvedErrorAccountIDs returns unique account IDs from unresolved ops errors.
+func collectUnresolvedErrorAccountIDs(pages ...*sub2api.OpsErrorPage) []int64 {
+	seen := map[int64]struct{}{}
+	var ids []int64
+	for _, page := range pages {
+		if page == nil {
+			continue
+		}
+		for _, e := range page.Items {
+			if e.Resolved || e.AccountID <= 0 {
+				continue
+			}
+			if _, ok := seen[e.AccountID]; ok {
+				continue
+			}
+			seen[e.AccountID] = struct{}{}
+			ids = append(ids, e.AccountID)
+		}
+	}
+	return ids
+}
+
+func (b *Bot) healRelatedFromErrors(ctx context.Context, userID int64) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 45*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), opsComponents()
+	}
+	up, e1 := cli.ListUpstreamErrors(ctx, 1, 20)
+	req, e2 := cli.ListRequestErrors(ctx, 1, 20)
+	if e1 != nil && e2 != nil {
+		return b.showErrorsView(ctx, userID, "all", 0, "❌ 拉取错误失败: "+e1.Error())
+	}
+	ids := collectUnresolvedErrorAccountIDs(up, req)
+	if len(ids) == 0 {
+		return b.showErrorsView(ctx, userID, "all", 0, "✅ 当前未解决错误没有关联账号可修复。")
+	}
+	const maxOps = 10
+	if len(ids) > maxOps {
+		ids = ids[:maxOps]
+	}
+	b.setBrowseView(userID, "problem", 0)
+	okN, failN := 0, 0
+	var fails []string
+	for _, id := range ids {
+		msg := b.healAccount(ctx, cli, id)
+		if strings.HasPrefix(msg, "❌") {
+			failN++
+			if len(fails) < 5 {
+				fails = append(fails, fmt.Sprintf("#%d %s", id, truncate(strings.TrimPrefix(msg, "❌ "), 40)))
+			}
+		} else {
+			okN++
+		}
+	}
+	var bld strings.Builder
+	bld.WriteString("**错误关联一键修复结果**\n\n")
+	fmt.Fprintf(&bld, "关联账号 `%d` 个\n✅ 成功 `%d` · ❌ 失败 `%d`\n", len(ids), okN, failN)
+	if len(fails) > 0 {
+		bld.WriteString("\n失败样例:\n")
+		for _, f := range fails {
+			bld.WriteString("• " + f + "\n")
+		}
+	}
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button("异常账号", "ops_badacc:error:0", 2),
+			discord.Button("错误列表", "ops_errors:all:0", 2),
+			discord.Button("批量修复", "mgr_bulk_heal", 1),
+		),
+		discord.ActionRow(
+			discord.Button("« 运维", "ops_menu", 2),
+			discord.Button("« 主面板", "home", 2),
+		),
+	}
+	return bld.String(), comps
 }
 
 func (b *Bot) showBadAccounts(ctx context.Context, userID int64) (string, []discord.Component) {

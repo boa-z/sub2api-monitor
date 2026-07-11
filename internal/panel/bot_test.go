@@ -1312,3 +1312,44 @@ func TestManageKeyboardTempDisabledBulk(t *testing.T) {
 		t.Fatal("temp scope should surface bulk clear_temp")
 	}
 }
+
+func TestCollectUnresolvedErrorAccountIDs(t *testing.T) {
+	up := &sub2api.OpsErrorPage{Items: []sub2api.OpsError{
+		{ID: 1, AccountID: 10, Resolved: false},
+		{ID: 2, AccountID: 10, Resolved: false},
+		{ID: 3, AccountID: 11, Resolved: true},
+		{ID: 4, AccountID: 0, Resolved: false},
+	}}
+	req := &sub2api.OpsErrorPage{Items: []sub2api.OpsError{
+		{ID: 5, AccountID: 12, Resolved: false},
+		{ID: 6, AccountID: 10, Resolved: false},
+	}}
+	ids := collectUnresolvedErrorAccountIDs(up, req)
+	if len(ids) != 2 {
+		t.Fatalf("ids=%v", ids)
+	}
+	// order: first seen 10 then 12
+	if ids[0] != 10 || ids[1] != 12 {
+		t.Fatalf("order %v", ids)
+	}
+}
+
+func TestDashboardTriageLabelsOnHome(t *testing.T) {
+	// pure helper coverage via browse package already; ensure TG wrapper compiles path
+	ops, bad, data, issues := browse.DashboardTriage(&sub2api.DashboardStats{OverloadAccounts: 4})
+	if !issues || data != "ops_badacc:ol:0" {
+		t.Fatal(ops, bad, data, issues)
+	}
+	kb := homeKeyboardWithLabelsData("🛠 "+ops, "📋 "+bad, data, "🧰 账号管理", true)
+	found := false
+	for _, row := range kb.InlineKeyboard {
+		for _, b := range row {
+			if b.CallbackData == "ops_badacc:ol:0" && strings.Contains(b.Text, "过载") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("home kb missing overload shortcut: %v", kb)
+	}
+}

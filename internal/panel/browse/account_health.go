@@ -2,6 +2,7 @@ package browse
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/boa/sub2api-monitor/internal/sub2api"
@@ -272,4 +273,26 @@ func HealAccount(ctx context.Context, cli *sub2api.Client, accountID int64, trun
 		msg += "\n⚠️ 部分失败: " + strings.Join(fail, "; ")
 	}
 	return msg
+}
+
+// DashboardTriage returns home/ops shortcut labels for the dominant failure mode.
+// Priority: error > rate_limited > overload. badData is a callback token suitable
+// for both Telegram and Discord (ops_badacc:<kind>:0).
+func DashboardTriage(st *sub2api.DashboardStats) (opsLabel, badLabel, badData string, issues bool) {
+	opsLabel = "运维"
+	badLabel = "异常账号"
+	badData = "ops_badacc:error:0"
+	if st == nil {
+		return opsLabel, badLabel, badData, false
+	}
+	if st.ErrorAccounts > 0 {
+		return "运维⚠", fmt.Sprintf("异常 %v", st.ErrorAccounts), "ops_badacc:error:0", true
+	}
+	if st.RatelimitAccounts > 0 {
+		return "运维⚠", fmt.Sprintf("限速 %v", st.RatelimitAccounts), "ops_badacc:rl:0", true
+	}
+	if st.OverloadAccounts > 0 {
+		return "运维⚠", fmt.Sprintf("过载 %v", st.OverloadAccounts), "ops_badacc:ol:0", true
+	}
+	return opsLabel, badLabel, badData, false
 }

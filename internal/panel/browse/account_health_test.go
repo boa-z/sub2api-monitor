@@ -119,3 +119,22 @@ func TestAccountIsUnhealthyAndFlags(t *testing.T) {
 		t.Fatal("disabled needs heal (enable)")
 	}
 }
+
+func TestDashboardTriage(t *testing.T) {
+	ops, bad, data, issues := DashboardTriage(nil)
+	if issues || data != "ops_badacc:error:0" || bad != "异常账号" {
+		t.Fatalf("nil: %s %s %s %v", ops, bad, data, issues)
+	}
+	ops, bad, data, issues = DashboardTriage(&sub2api.DashboardStats{OverloadAccounts: 3})
+	if !issues || data != "ops_badacc:ol:0" || bad != "过载 3" || ops != "运维⚠" {
+		t.Fatalf("overload: %s %s %s %v", ops, bad, data, issues)
+	}
+	ops, bad, data, issues = DashboardTriage(&sub2api.DashboardStats{RatelimitAccounts: 2, OverloadAccounts: 9})
+	if data != "ops_badacc:rl:0" || bad != "限速 2" {
+		t.Fatalf("rl priority over ol: %s %s %s", ops, bad, data)
+	}
+	ops, bad, data, issues = DashboardTriage(&sub2api.DashboardStats{ErrorAccounts: 1, RatelimitAccounts: 5, OverloadAccounts: 9})
+	if data != "ops_badacc:error:0" || bad != "异常 1" {
+		t.Fatalf("error wins: %s %s %s", ops, bad, data)
+	}
+}

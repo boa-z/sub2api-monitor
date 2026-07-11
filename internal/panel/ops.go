@@ -641,6 +641,14 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 			telegram.Btn("✅ 解决上游", "oe:resolve_all:u"),
 			telegram.Btn("✅ 解决请求", "oe:resolve_all:r"),
 		})
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("🛠 修复关联账号", "oe:heal_related"),
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+		})
+	} else {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+		})
 	}
 	rows = append(rows,
 		[]telegram.InlineKeyboardButton{
@@ -1377,6 +1385,94 @@ func channelsKeyboard(onN, okN, badN int) *telegram.InlineKeyboardMarkup {
 	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
+// collectUnresolvedErrorAccountIDs returns unique account IDs linked to unresolved ops errors.
+func collectUnresolvedErrorAccountIDs(pages ...*sub2api.OpsErrorPage) []int64 {
+	seen := map[int64]struct{}{}
+	var ids []int64
+	for _, page := range pages {
+		if page == nil {
+			continue
+		}
+		for _, e := range page.Items {
+			if e.Resolved || e.AccountID <= 0 {
+				continue
+			}
+			if _, ok := seen[e.AccountID]; ok {
+				continue
+			}
+			seen[e.AccountID] = struct{}{}
+			ids = append(ids, e.AccountID)
+		}
+	}
+	return ids
+}
+
+// healRelatedFromErrors heals unique accounts referenced by unresolved ops errors (admin write).
+func (b *Bot) healRelatedFromErrors(ctx context.Context, chatID, msgID, userID int64) error {
+	cli, _, err := b.userClient(userID, 45*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	up, e1 := cli.ListUpstreamErrors(ctx, 1, 20)
+	req, e2 := cli.ListRequestErrors(ctx, 1, 20)
+	if e1 != nil && e2 != nil {
+		return b.showErrorsNotice(ctx, chatID, msgID, userID, "❌ 拉取错误失败: "+telegram.EscapeHTML(e1.Error()))
+	}
+	ids := collectUnresolvedErrorAccountIDs(up, req)
+	if len(ids) == 0 {
+		return b.showErrorsNotice(ctx, chatID, msgID, userID, "✅ 当前未解决错误没有关联账号可修复。")
+	}
+	const maxOps = 10
+	if len(ids) > maxOps {
+		ids = ids[:maxOps]
+	}
+	// Scope bulk heal return target to problem accounts for follow-up bulk actions.
+	b.setBrowseView(userID, "problem", 0)
+	_ = b.editOrSend(ctx, chatID, msgID,
+		fmt.Sprintf("%s\n\n⏳ 修复关联账号 0/%d …", telegram.Bold("错误关联一键修复"), len(ids)), nil)
+
+	okN, failN := 0, 0
+	var fails []string
+	for i, id := range ids {
+		msg := b.healAccount(ctx, cli, id)
+		if strings.HasPrefix(msg, "❌") {
+			failN++
+			if len(fails) < 5 {
+				fails = append(fails, fmt.Sprintf("#%d %s", id, truncateRunes(strings.TrimPrefix(msg, "❌ "), 40)))
+			}
+		} else {
+			okN++
+		}
+		if (i+1)%3 == 0 || i+1 == len(ids) {
+			_ = b.editOrSend(ctx, chatID, msgID,
+				fmt.Sprintf("%s\n\n⏳ 处理中 %d/%d\n✅ %d · ❌ %d",
+					telegram.Bold("错误关联一键修复"), i+1, len(ids), okN, failN), nil)
+		}
+	}
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold("错误关联一键修复结果") + "\n\n")
+	fmt.Fprintf(&bld, "关联账号 %s 个（本次 %d）\n", telegram.Code(strconv.Itoa(len(ids))), len(ids))
+	fmt.Fprintf(&bld, "✅ 成功 %s · ❌ 失败 %s\n", telegram.Code(strconv.Itoa(okN)), telegram.Code(strconv.Itoa(failN)))
+	if len(fails) > 0 {
+		bld.WriteString("\n失败样例:\n")
+		for _, f := range fails {
+			bld.WriteString("• " + telegram.EscapeHTML(f) + "\n")
+		}
+	}
+	rows := [][]telegram.InlineKeyboardButton{
+		{
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			telegram.Btn("❌ 错误列表", "ops_errors:all:0"),
+		},
+		{
+			telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
+			telegram.Btn("« 运维", "ops_menu"),
+		},
+		{telegram.Btn("« 主面板", "home")},
+	}
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
 func (b *Bot) showBadAccounts(ctx context.Context, chatID, msgID, userID int64) error {
 	return b.showBadAccountsView(ctx, chatID, msgID, userID, "error", 0, "")
 }
@@ -1599,7 +1695,7 @@ func adminHealthSnapshot(ctx context.Context, cli *sub2api.Client) (line string,
 	}
 	line = fmt.Sprintf("实例健康: 正常 %s · 异常 %s · 限速 %s · 过载 %s",
 		itoa(st.NormalAccounts), itoa(st.ErrorAccounts), itoa(st.RatelimitAccounts), itoa(st.OverloadAccounts))
-	issues = st.ErrorAccounts > 0 || st.RatelimitAccounts > 0
+	issues = st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 || st.OverloadAccounts > 0
 	return line, issues
 }
 
