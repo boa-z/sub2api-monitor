@@ -558,13 +558,18 @@ func (b *Bot) forceCheck(ctx context.Context, userID int64) string {
 }
 
 func (b *Bot) showDashboard(ctx context.Context, userID int64) string {
+	text, _ := b.showDashboardView(ctx, userID)
+	return text
+}
+
+func (b *Bot) showDashboardView(ctx context.Context, userID int64) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
-		return "❌ " + err.Error()
+		return "❌ " + err.Error(), opsComponents()
 	}
 	st, err := cli.GetDashboardStats(ctx)
 	if err != nil {
-		return "看板失败: " + err.Error()
+		return "看板失败: " + err.Error(), opsComponents()
 	}
 	var bld strings.Builder
 	bld.WriteString("**实例看板**\n\n")
@@ -586,7 +591,44 @@ func (b *Bot) showDashboard(ctx context.Context, userID int64) string {
 	if traf, err := cli.GetRealtimeTraffic(ctx, "5min"); err == nil && traf != nil {
 		fmt.Fprintf(&bld, "流量(%s): QPS `%.3f`\n", traf.WindowLabel(), traf.CurrentQPS())
 	}
-	return bld.String()
+	return bld.String(), dashboardComponents(st)
+}
+
+func dashboardComponents(st *sub2api.DashboardStats) []discord.Component {
+	jump := []discord.Component{}
+	if st != nil {
+		if st.ErrorAccounts > 0 {
+			jump = append(jump, discord.Button(fmt.Sprintf("异常 %v", st.ErrorAccounts), "ops_badacc:error:0", 1))
+		}
+		if st.RatelimitAccounts > 0 {
+			jump = append(jump, discord.Button(fmt.Sprintf("限速 %v", st.RatelimitAccounts), "ops_badacc:rl:0", 2))
+		}
+		if st.OverloadAccounts > 0 && st.RatelimitAccounts == 0 {
+			jump = append(jump, discord.Button(fmt.Sprintf("过载 %v", st.OverloadAccounts), "ops_badacc:rl:0", 2))
+		}
+	}
+	if len(jump) == 0 {
+		jump = append(jump, discord.Button("异常账号", "ops_badacc:error:0", 2))
+	}
+	if len(jump) < 3 {
+		jump = append(jump, discord.Button("错误列表", "ops_errors:all:0", 2))
+	}
+	if len(jump) < 3 {
+		jump = append(jump, discord.Button("管理", "mgr_menu", 2))
+	}
+	return []discord.Component{
+		discord.ActionRow(
+			discord.Button("刷新", "ops_dash", 2),
+			discord.Button("« 运维", "ops_menu", 2),
+			discord.Button("« 主面板", "home", 2),
+		),
+		discord.ActionRow(jump...),
+		discord.ActionRow(
+			discord.Button("可用性", "ops_avail", 2),
+			discord.Button("告警", "ops_alerts", 2),
+			discord.Button("并发", "ops_conc", 2),
+		),
+	}
 }
 
 func (b *Bot) showAvailability(ctx context.Context, userID int64) string {
@@ -1652,6 +1694,7 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 	}
 	okN, failN := 0, 0
 	var fails []string
+	var failIDs []int64
 	for i := 0; i < n; i++ {
 		a := items[i]
 		var opErr error
@@ -1677,6 +1720,9 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 			if len(fails) < 5 {
 				fails = append(fails, fmt.Sprintf("#%d %s", a.ID, truncate(opErr.Error(), 40)))
 			}
+			if len(failIDs) < 3 {
+				failIDs = append(failIDs, a.ID)
+			}
 		} else {
 			okN++
 		}
@@ -1699,7 +1745,15 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 			bld.WriteString("• " + f + "\n")
 		}
 	}
-	comps := []discord.Component{
+	comps := []discord.Component{}
+	if len(failIDs) > 0 {
+		row := []discord.Component{}
+		for _, id := range failIDs {
+			row = append(row, discord.Button(fmt.Sprintf("管理 #%d", id), fmt.Sprintf("mgr_acc:%d", id), 1))
+		}
+		comps = append(comps, discord.ActionRow(row...))
+	}
+	comps = append(comps,
 		discord.ActionRow(
 			discord.Button("异常账号", "ops_badacc:error:0", 2),
 			discord.Button("浏览", "mgr_browse:error:0", 2),
@@ -1709,7 +1763,7 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 			discord.Button("« 运维", "ops_menu", 2),
 			discord.Button("« 主面板", "home", 2),
 		),
-	}
+	)
 	return bld.String(), comps
 }
 

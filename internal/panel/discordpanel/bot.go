@@ -299,7 +299,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, b.showDashboard(ctx, uid), opsViewComponents("ops_dash"))
+		text, comps := b.showDashboardView(ctx, uid)
+		return b.update(ctx, it, text, comps)
 	case data == "ops_avail":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))

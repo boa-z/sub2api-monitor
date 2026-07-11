@@ -660,6 +660,7 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 
 	okN, failN := 0, 0
 	var fails []string
+	var failIDs []int64
 	for i := 0; i < n; i++ {
 		a := items[i]
 		var opErr error
@@ -685,6 +686,9 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 			if len(fails) < 5 {
 				fails = append(fails, fmt.Sprintf("#%d %s", a.ID, truncateRunes(opErr.Error(), 40)))
 			}
+			if len(failIDs) < 3 {
+				failIDs = append(failIDs, a.ID)
+			}
 		} else {
 			okN++
 		}
@@ -708,19 +712,26 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 			bld.WriteString("• " + telegram.EscapeHTML(f) + "\n")
 		}
 	}
-	kb := &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{
-				telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
-				telegram.Btn("📚 账号浏览", "mgr_browse"),
-			},
-			{
-				telegram.Btn("« 管理菜单", "mgr_menu"),
-				telegram.Btn("« 运维", "ops_menu"),
-			},
-			{telegram.Btn("« 主面板", "home")},
-		},
+	rows := [][]telegram.InlineKeyboardButton{}
+	if len(failIDs) > 0 {
+		var failRow []telegram.InlineKeyboardButton
+		for _, id := range failIDs {
+			failRow = append(failRow, telegram.Btn(fmt.Sprintf("管理 #%d", id), fmt.Sprintf("mgr_acc:%d", id)))
+		}
+		rows = append(rows, failRow)
 	}
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			telegram.Btn("📚 账号浏览", "mgr_browse"),
+		},
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("« 管理菜单", "mgr_menu"),
+			telegram.Btn("« 运维", "ops_menu"),
+		},
+		[]telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")},
+	)
+	kb := &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
 }
 

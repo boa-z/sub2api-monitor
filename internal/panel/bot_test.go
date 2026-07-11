@@ -562,3 +562,37 @@ func TestOpsMenuTextContainsHints(t *testing.T) {
 		t.Fatal(text)
 	}
 }
+
+func TestDashboardKeyboard(t *testing.T) {
+	kb := dashboardKeyboard(&sub2api.DashboardStats{ErrorAccounts: 3, RatelimitAccounts: 2})
+	if kb == nil || len(kb.InlineKeyboard) < 2 {
+		t.Fatal("empty keyboard")
+	}
+	foundErr, foundRL := false, false
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			if btn.CallbackData == "ops_badacc:error:0" {
+				foundErr = true
+			}
+			if btn.CallbackData == "ops_badacc:rl:0" {
+				foundRL = true
+			}
+		}
+	}
+	if !foundErr || !foundRL {
+		t.Fatalf("missing jumps err=%v rl=%v", foundErr, foundRL)
+	}
+	// empty stats still has fallback
+	kb2 := dashboardKeyboard(nil)
+	ok := false
+	for _, row := range kb2.InlineKeyboard {
+		for _, btn := range row {
+			if btn.CallbackData == "ops_badacc:error:0" {
+				ok = true
+			}
+		}
+	}
+	if !ok {
+		t.Fatal("nil stats should still offer badacc")
+	}
+}

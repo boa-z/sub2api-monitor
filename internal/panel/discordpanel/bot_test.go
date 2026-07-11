@@ -241,3 +241,20 @@ func TestOpsErrorViewMemory(t *testing.T) {
 		t.Fatalf("after setAwait %s %d", kind, page)
 	}
 }
+
+func TestDashboardComponents(t *testing.T) {
+	comps := dashboardComponents(&sub2api.DashboardStats{ErrorAccounts: 4, RatelimitAccounts: 1})
+	if len(comps) < 2 {
+		t.Fatal("expected jump rows")
+	}
+	if !containsCustomID(comps, "ops_badacc:error:0") {
+		t.Fatal("missing error jump")
+	}
+	if !containsCustomID(comps, "ops_badacc:rl:0") {
+		t.Fatal("missing rl jump")
+	}
+	comps2 := dashboardComponents(nil)
+	if !containsCustomID(comps2, "ops_badacc:error:0") {
+		t.Fatal("nil stats fallback")
+	}
+}

@@ -57,6 +57,44 @@ func opsViewKeyboard(refreshData string) *telegram.InlineKeyboardMarkup {
 	}
 }
 
+// dashboardKeyboard builds contextual shortcuts from live stats.
+func dashboardKeyboard(stats *sub2api.DashboardStats) *telegram.InlineKeyboardMarkup {
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("🔄 刷新", "ops_dash"), telegram.Btn("« 运维菜单", "ops_menu")},
+	}
+	var jump []telegram.InlineKeyboardButton
+	if stats != nil {
+		if stats.ErrorAccounts > 0 {
+			jump = append(jump, telegram.Btn(fmt.Sprintf("📋 异常 %v", stats.ErrorAccounts), "ops_badacc:error:0"))
+		}
+		if stats.RatelimitAccounts > 0 {
+			jump = append(jump, telegram.Btn(fmt.Sprintf("⏱ 限速 %v", stats.RatelimitAccounts), "ops_badacc:rl:0"))
+		}
+		if stats.OverloadAccounts > 0 && len(jump) < 3 {
+			// overload often overlaps rate_limited; still offer rl tab
+			if stats.RatelimitAccounts == 0 {
+				jump = append(jump, telegram.Btn(fmt.Sprintf("过载 %v", stats.OverloadAccounts), "ops_badacc:rl:0"))
+			}
+		}
+	}
+	if len(jump) == 0 {
+		jump = append(jump, telegram.Btn("📋 异常账号", "ops_badacc:error:0"))
+	}
+	rows = append(rows, jump)
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("❌ 错误列表", "ops_errors:all:0"),
+			telegram.Btn("🧰 账号管理", "mgr_menu"),
+		},
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("✅ 可用性", "ops_avail"),
+			telegram.Btn("🚨 告警", "ops_alerts"),
+		},
+		[]telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")},
+	)
+	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
 // opsMenuText builds the ops hub text; when cli is available includes a live health line.
 func (b *Bot) opsMenuText(ctx context.Context, userID int64) string {
 	var bld strings.Builder
@@ -153,7 +191,7 @@ func (b *Bot) showDashboard(ctx context.Context, chatID, msgID, userID int64) er
 			telegram.EscapeHTML(traf.WindowLabel()),
 			telegram.Code(fmt.Sprintf("%.3f", traf.CurrentQPS())))
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsViewKeyboard("ops_dash"))
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), dashboardKeyboard(stats))
 }
 
 func (b *Bot) showAvailability(ctx context.Context, chatID, msgID, userID int64) error {
