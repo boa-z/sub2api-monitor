@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/boa/sub2api-monitor/internal/panel/browse"
 	"github.com/boa/sub2api-monitor/internal/sub2api"
 	"github.com/boa/sub2api-monitor/internal/telegram"
 	"github.com/boa/sub2api-monitor/internal/userstore"
@@ -47,35 +48,6 @@ func (b *Bot) showManageMenu(ctx context.Context, chatID, msgID int64) error {
 	return b.editOrSend(ctx, chatID, msgID, b.manageMenuText(), manageKeyboard())
 }
 
-// parseBrowseFilter decodes browser status tokens.
-// Forms: all|active|error|... | search:kw | plat:openai | plat:openai:active
-func parseBrowseFilter(status string) sub2api.AccountListFilter {
-	f := sub2api.AccountListFilter{}
-	s := strings.TrimSpace(status)
-	if s == "" || s == "all" {
-		return f
-	}
-	if strings.HasPrefix(s, "search:") {
-		f.Search = strings.TrimPrefix(s, "search:")
-		return f
-	}
-	if strings.HasPrefix(s, "plat:") {
-		rest := strings.TrimPrefix(s, "plat:")
-		parts := strings.SplitN(rest, ":", 2)
-		f.Platform = parts[0]
-		if len(parts) == 2 && parts[1] != "" && parts[1] != "all" {
-			f.Status = parts[1]
-		}
-		return f
-	}
-	if s == "unsched" || s == "rate_limited" {
-		// special client-side filters
-		return f
-	}
-	f.Status = s
-	return f
-}
-
 func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int64, status string, page int) error {
 	cli, _, err := b.userClient(userID, 15*time.Second)
 	if err != nil {
@@ -96,15 +68,7 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 	}
 
 	var bld strings.Builder
-	title := filterToken
-	switch {
-	case title == "" || title == "all":
-		title = "全部"
-	case strings.HasPrefix(title, "search:"):
-		title = "搜索:" + strings.TrimPrefix(title, "search:")
-	case strings.HasPrefix(title, "plat:"):
-		title = "平台:" + strings.TrimPrefix(title, "plat:")
-	}
+	title := browse.Title(filterToken)
 	bld.WriteString(telegram.Bold("账号浏览") + " · " + telegram.Code(title) + "\n")
 	fmt.Fprintf(&bld, "第 %d 页 · 共约 %s\n点账号进入管理\n\n", page+1, telegram.Code(itoa(total)))
 	if len(items) == 0 {
@@ -188,138 +152,24 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: kbRows})
 }
 
-// listBrowserAccounts returns one page of accounts for the manage browser.
-// Special filters unsched/rate_limited prefer API query params, with client-side fallback scan.
+// Thin wrappers keep existing call sites and tests on package panel.
+func parseBrowseFilter(status string) sub2api.AccountListFilter {
+	return browse.ParseFilter(status)
+}
+
 func listBrowserAccounts(ctx context.Context, cli *sub2api.Client, status string, page, pageSize int) ([]sub2api.Account, int64, error) {
-	if page < 0 {
-		page = 0
-	}
-	if pageSize <= 0 {
-		pageSize = 8
-	}
-	switch status {
-	case "unsched":
-		falseV := false
-		items, total, err := cli.ListAccountsEx(ctx, page+1, pageSize, sub2api.AccountListFilter{Schedulable: &falseV})
-		if err == nil {
-			filtered := make([]sub2api.Account, 0, len(items))
-			for _, a := range items {
-				if !a.Schedulable {
-					filtered = append(filtered, a)
-				}
-			}
-			if len(items) == 0 || len(filtered) == len(items) {
-				return filtered, total, nil
-			}
-		}
-		return scanAccountsPage(ctx, cli, page, pageSize, func(a sub2api.Account) bool { return !a.Schedulable })
-	case "rate_limited":
-		items, total, err := cli.ListAccountsEx(ctx, page+1, pageSize, sub2api.AccountListFilter{Status: "rate_limited"})
-		if err == nil && (total > 0 || len(items) > 0) {
-			return items, total, nil
-		}
-		return scanAccountsPage(ctx, cli, page, pageSize, isRateLimitedAccount)
-	default:
-		f := parseBrowseFilter(status)
-		return cli.ListAccountsEx(ctx, page+1, pageSize, f)
-	}
+	return browse.ListAccounts(ctx, cli, status, page, pageSize)
 }
 
 func isRateLimitedAccount(a sub2api.Account) bool {
-	if a.RateLimitedAt != nil || a.OverloadUntil != nil {
-		return true
-	}
-	st := strings.ToLower(a.Status)
-	return strings.Contains(st, "rate") || strings.Contains(st, "limit") || strings.Contains(st, "overload")
+	return browse.IsRateLimited(a)
 }
 
-// scanAccountsPage walks account list pages and returns the requested slice of matches.
-func scanAccountsPage(ctx context.Context, cli *sub2api.Client, page, pageSize int, match func(sub2api.Account) bool) ([]sub2api.Account, int64, error) {
-	const scanPage = 50
-	const maxScanPages = 10 // up to 500 accounts
-	var matched []sub2api.Account
-	for p := 1; p <= maxScanPages; p++ {
-		items, tot, err := cli.ListAccountsEx(ctx, p, scanPage, sub2api.AccountListFilter{})
-		if err != nil {
-			return nil, 0, err
-		}
-		for _, a := range items {
-			if match(a) {
-				matched = append(matched, a)
-			}
-		}
-		if len(items) < scanPage || int64(p*scanPage) >= tot {
-			break
-		}
-	}
-	start := page * pageSize
-	if start >= len(matched) {
-		return []sub2api.Account{}, int64(len(matched)), nil
-	}
-	end := start + pageSize
-	if end > len(matched) {
-		end = len(matched)
-	}
-	return matched[start:end], int64(len(matched)), nil
-}
+func browseToken(status string) string { return browse.Token(status) }
 
-// browseToken encodes status for callback_data (avoid extra colons for search).
-func browseToken(status string) string {
-	s := strings.TrimSpace(status)
-	if s == "" {
-		return "all"
-	}
-	// search:kw uses colon — encode as search|kw for callback
-	if strings.HasPrefix(s, "search:") {
-		return "search|" + strings.TrimPrefix(s, "search:")
-	}
-	if strings.HasPrefix(s, "plat:") {
-		// plat:openai or plat:openai:active
-		return strings.ReplaceAll(s, ":", "|")
-	}
-	return s
-}
+func parseBrowseCallback(rest string) (string, int) { return browse.ParseCallback(rest) }
 
-// parseBrowseCallback parses rest after mgr_browse:
-// formats: all:0 | active:1 | search|kw:0 | plat|openai:0 | plat|openai|active:0
-func parseBrowseCallback(rest string) (status string, page int) {
-	status = "all"
-	page = 0
-	if rest == "" {
-		return
-	}
-	// page is always last segment after final ':'
-	// but search|kw may contain no extra colon if we use form search|kw:page
-	parts := strings.Split(rest, ":")
-	if len(parts) == 1 {
-		status = decodeBrowseToken(parts[0])
-		return
-	}
-	// last is page
-	page, _ = strconv.Atoi(parts[len(parts)-1])
-	token := strings.Join(parts[:len(parts)-1], ":")
-	// also support plat:openai:0 (colon-based platform without pipe)
-	status = decodeBrowseToken(token)
-	return
-}
-
-func decodeBrowseToken(token string) string {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return "all"
-	}
-	if strings.HasPrefix(token, "search|") {
-		return "search:" + strings.TrimPrefix(token, "search|")
-	}
-	if strings.HasPrefix(token, "plat|") {
-		return "plat:" + strings.ReplaceAll(strings.TrimPrefix(token, "plat|"), "|", ":")
-	}
-	// already plat:openai form from buttons
-	if strings.HasPrefix(token, "plat:") {
-		return token
-	}
-	return token
-}
+func decodeBrowseToken(token string) string { return browse.DecodeToken(token) }
 
 func filterLabel(label, cur, val string) string {
 	curN := normalizeFilterForLabel(cur)
@@ -336,7 +186,6 @@ func normalizeFilterForLabel(s string) string {
 		return "all"
 	}
 	if strings.HasPrefix(s, "plat:") {
-		// highlight by platform only
 		rest := strings.TrimPrefix(s, "plat:")
 		return "plat:" + strings.Split(rest, ":")[0]
 	}
@@ -851,28 +700,9 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 
 // loadBulkTargets picks accounts for bulk actions.
 func (b *Bot) loadBulkTargets(ctx context.Context, cli *sub2api.Client, action string, maxOps int) ([]sub2api.Account, int64, string, error) {
-	switch action {
-	case "clear_rl":
-		items, total, err := listBrowserAccounts(ctx, cli, "rate_limited", 0, maxOps)
-		return items, total, "限速/过载账号", err
-	case "sched_on":
-		items, total, err := listBrowserAccounts(ctx, cli, "unsched", 0, maxOps)
-		if err != nil {
-			return nil, 0, "停调度账号", err
-		}
-		if len(items) > 0 {
-			return items, total, "停调度账号", nil
-		}
-		items, total, err = cli.ListAccountsEx(ctx, 1, maxOps, sub2api.AccountListFilter{Status: "error"})
-		return items, total, "error 账号（无停调度项时回退）", err
-	default:
-		items, total, err := cli.ListAccountsEx(ctx, 1, maxOps, sub2api.AccountListFilter{Status: "error"})
-		return items, total, "status=error 账号", err
-	}
+	return browse.LoadBulkTargets(ctx, cli, action, maxOps)
 }
 
-// healAccount clears error + rate limit, recovers state, enables schedulable.
-// Best-effort: continues on individual step failures and summarizes.
 func (b *Bot) healAccount(ctx context.Context, cli *sub2api.Client, accountID int64) string {
 	steps := []struct {
 		name string

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/boa/sub2api-monitor/internal/config"
+	"github.com/boa/sub2api-monitor/internal/sub2api"
 	"github.com/boa/sub2api-monitor/internal/userstore"
 )
 
@@ -96,5 +97,64 @@ func TestNotifyRecipientsDiscord(t *testing.T) {
 	rs := p.NotifyRecipients()
 	if len(rs) != 1 || rs[0] != "discord:99" {
 		t.Fatalf("got %v", rs)
+	}
+}
+
+func TestErrorTabLabelAndPageNav(t *testing.T) {
+	if errorTabLabel("上游", "u", "u") != "• 上游" {
+		t.Fatal(errorTabLabel("上游", "u", "u"))
+	}
+	if errorTabLabel("请求", "u", "r") != "请求" {
+		t.Fatal(errorTabLabel("请求", "u", "r"))
+	}
+	nav := errorPageNav("u", 0, &sub2api.OpsErrorPage{Total: 25, PageSize: 10, Items: make([]sub2api.OpsError, 10)})
+	if len(nav) != 1 || len(nav[0].Components) != 1 {
+		t.Fatalf("expected next only, got %+v", nav)
+	}
+	if nav[0].Components[0].CustomID != "ops_errors:u:1" {
+		t.Fatal(nav[0].Components[0].CustomID)
+	}
+}
+
+func TestFilterBtn(t *testing.T) {
+	if filterBtn("全部", "all", "all") != "• 全部" {
+		t.Fatal(filterBtn("全部", "all", "all"))
+	}
+	if filterBtn("error", "active", "error") != "error" {
+		t.Fatal(filterBtn("error", "active", "error"))
+	}
+	if filterBtn("openai", "plat:openai", "plat:openai") != "• openai" {
+		t.Fatal(filterBtn("openai", "plat:openai", "plat:openai"))
+	}
+}
+
+func TestParseTempDur(t *testing.T) {
+	if parseTempDur("15m") != 15*60 {
+		t.Fatal(parseTempDur("15m"))
+	}
+	if parseTempDur("1h") != 3600 {
+		t.Fatal(parseTempDur("1h"))
+	}
+	if parseTempDur("bad") != 0 {
+		t.Fatal(parseTempDur("bad"))
+	}
+}
+
+func TestOpsComponentsIncludeConcChannels(t *testing.T) {
+	foundConc, foundCh, foundErr := false, false, false
+	for _, row := range opsComponents() {
+		for _, c := range row.Components {
+			switch c.CustomID {
+			case "ops_conc":
+				foundConc = true
+			case "ops_channels":
+				foundCh = true
+			case "ops_errors:all:0":
+				foundErr = true
+			}
+		}
+	}
+	if !foundConc || !foundCh || !foundErr {
+		t.Fatalf("ops components missing: conc=%v ch=%v err=%v", foundConc, foundCh, foundErr)
 	}
 }

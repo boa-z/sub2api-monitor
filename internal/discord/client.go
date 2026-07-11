@@ -305,6 +305,27 @@ func PrimaryButton(label, customID string) Component { return Button(label, cust
 func DangerButton(label, customID string) Component  { return Button(label, customID, 4) }
 func SuccessButton(label, customID string) Component { return Button(label, customID, 3) }
 
+// StringSelect builds a type-3 string select menu (max 25 options).
+func StringSelect(customID, placeholder string, opts ...SelectOpt) Component {
+	if len(opts) > 25 {
+		opts = opts[:25]
+	}
+	return Component{Type: 3, CustomID: customID, Placeholder: placeholder, Options: opts}
+}
+
+func SelectOption(label, value, desc string) SelectOpt {
+	if len(label) > 100 {
+		label = label[:97] + "…"
+	}
+	if len(value) > 100 {
+		value = value[:100]
+	}
+	if len(desc) > 100 {
+		desc = desc[:97] + "…"
+	}
+	return SelectOpt{Label: label, Value: value, Description: desc}
+}
+
 type ApplicationCommand struct {
 	Name         string                     `json:"name"`
 	Description  string                     `json:"description"`

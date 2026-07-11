@@ -15,6 +15,7 @@ import (
 
 	"github.com/boa/sub2api-monitor/internal/config"
 	"github.com/boa/sub2api-monitor/internal/discord"
+	"github.com/boa/sub2api-monitor/internal/panel/browse"
 	"github.com/boa/sub2api-monitor/internal/sub2api"
 	"github.com/boa/sub2api-monitor/internal/userstore"
 )
@@ -276,22 +277,43 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, b.showDashboard(ctx, uid), opsComponents())
+		return b.update(ctx, it, b.showDashboard(ctx, uid), opsViewComponents("ops_dash"))
 	case data == "ops_avail":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, b.showAvailability(ctx, uid), opsComponents())
+		return b.update(ctx, it, b.showAvailability(ctx, uid), opsViewComponents("ops_avail"))
 	case data == "ops_alerts":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, b.showAlerts(ctx, uid), opsComponents())
-	case data == "ops_errors":
+		return b.update(ctx, it, b.showAlerts(ctx, uid), opsViewComponents("ops_alerts"))
+	case data == "ops_conc":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		text, comps := b.showErrors(ctx, uid)
+		return b.update(ctx, it, b.showConcurrency(ctx, uid), opsViewComponents("ops_conc"))
+	case data == "ops_channels":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		return b.update(ctx, it, b.showChannels(ctx, uid), opsViewComponents("ops_channels"))
+	case data == "ops_errors" || strings.HasPrefix(data, "ops_errors:"):
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		kind, page := "all", 0
+		if strings.HasPrefix(data, "ops_errors:") {
+			rest := strings.TrimPrefix(data, "ops_errors:")
+			parts := strings.Split(rest, ":")
+			if len(parts) >= 1 && parts[0] != "" {
+				kind = parts[0]
+			}
+			if len(parts) >= 2 {
+				page, _ = strconv.Atoi(parts[1])
+			}
+		}
+		text, comps := b.showErrorsView(ctx, uid, kind, page, "")
 		return b.update(ctx, it, text, comps)
 	case data == "ops_badacc":
 		if !b.isAdmin(uid) {
@@ -335,14 +357,7 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		}
 		status, page := "all", 0
 		if strings.HasPrefix(data, "mgr_browse:") {
-			rest := strings.TrimPrefix(data, "mgr_browse:")
-			parts := strings.Split(rest, ":")
-			if len(parts) >= 1 && parts[0] != "" {
-				status = parts[0]
-			}
-			if len(parts) >= 2 {
-				page, _ = strconv.Atoi(parts[1])
-			}
+			status, page = browse.ParseCallback(strings.TrimPrefix(data, "mgr_browse:"))
 		}
 		text, comps := b.accountBrowser(ctx, uid, status, page)
 		return b.update(ctx, it, text, comps)
@@ -358,17 +373,37 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
 		rest := strings.TrimPrefix(data, "mgr_act:")
+		// mgr_act:<action...>:<accountID> (action may contain colons, e.g. temp:15m)
+		idx := strings.LastIndex(rest, ":")
+		if idx <= 0 {
+			return b.update(ctx, it, manageMenuText(), manageComponents())
+		}
+		action := rest[:idx]
+		id, _ := strconv.ParseInt(rest[idx+1:], 10, 64)
+		if action == "temp_menu" {
+			return b.update(ctx, it, fmt.Sprintf("选择账号 #%d 临时停调度时长：", id), tempMenuComponents(id))
+		}
+		notice := b.doManageAction(ctx, uid, action, id)
+		if action == "confirm_unsched" || action == "confirm_disable" || action == "confirm_reset_quota" {
+			return b.update(ctx, it, notice, confirmComponents(action, id))
+		}
+		text, comps := b.manageAccount(ctx, uid, id, notice)
+		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "acc_live:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "acc_live:"), 10, 64)
+		text, comps := b.showAccountLive(ctx, uid, id, "")
+		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "live_act:"):
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		rest := strings.TrimPrefix(data, "live_act:")
 		action, idStr, ok := strings.Cut(rest, ":")
 		if !ok {
 			return b.update(ctx, it, manageMenuText(), manageComponents())
 		}
 		id, _ := strconv.ParseInt(idStr, 10, 64)
-		notice := b.doManageAction(ctx, uid, action, id)
-		if action == "confirm_unsched" || action == "confirm_disable" {
-			// notice is confirmation UI text handled inside
-			return b.update(ctx, it, notice, confirmComponents(action, id))
-		}
-		text, comps := b.manageAccount(ctx, uid, id, notice)
+		text, comps := b.handleLiveAction(ctx, uid, action, id)
 		return b.update(ctx, it, text, comps)
 	case data == "mgr_bulk_clear":
 		if !b.isAdmin(uid) {
