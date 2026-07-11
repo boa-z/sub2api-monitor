@@ -22,8 +22,9 @@ telegram:
   # api_base: "https://api.telegram.org"  # 可选代理镜像
 
   # ---------- Telegram 用户态面板 ----------
-  # 用户私聊 Bot 可自助配置 base_url / api_key / 监控账号
+  # 用户私聊 Bot 可自助配置：连接 / 账号（列表选择）/ 阈值 / 立即检查
   # 每位用户数据隔离，存于 users_path（默认 ./data/users.json）
+  # 启动时会 setMyCommands 注册命令菜单；密钥输入会尽量 deleteMessage
   panel:
     enabled: false # true 开启交互面板 + 按用户轮询用量
     # allow_user_ids:           # 白名单（Telegram 数字 ID）；非空时仅列表内用户可用

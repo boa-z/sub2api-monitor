@@ -90,6 +90,9 @@ func (c *UserUsageCollector) checkProfile(ctx context.Context, p *userstore.Prof
 		cooldown = 2 * time.Hour
 	}
 	chatIDs := []string{p.ChatID}
+	if p.ChatID == "" {
+		chatIDs = []string{fmt.Sprintf("%d", p.TelegramUserID)}
+	}
 
 	for _, a := range p.Accounts {
 		if !a.IsEnabled() {
@@ -98,11 +101,25 @@ func (c *UserUsageCollector) checkProfile(ctx context.Context, p *userstore.Prof
 		usage, err := cli.GetAccountUsage(ctx, a.ID, src, false)
 		if err != nil {
 			c.logger.Debug("usage fetch failed", "user", p.TelegramUserID, "account", a.ID, "err", err)
+			// soft degrade notice once per cooldown window
+			fpConn := fmt.Sprintf("user:%d:usage:acc:%d:fetch_error", p.TelegramUserID, a.ID)
+			_ = c.engine.Emit(ctx, alerter.Event{
+				Fingerprint: fpConn,
+				Severity:    alerter.SevP3,
+				Title:       "账号用量拉取失败",
+				Body: line("账号", fmt.Sprintf("#%d %s", a.ID, accountLabel(a))) +
+					line("错误", err.Error()),
+				ChatIDs:  chatIDs,
+				Cooldown: cooldown,
+			})
 			continue
 		}
-		label := a.Name
-		if label == "" {
-			label = fmt.Sprintf("#%d", a.ID)
+		label := accountLabel(a)
+		// prefer live name when stored name empty
+		if a.Name == "" {
+			if acc, err := cli.GetAccount(ctx, a.ID); err == nil && acc != nil && acc.Name != "" {
+				label = acc.Name
+			}
 		}
 		ths := a.Thresholds
 		if len(ths) == 0 {
@@ -164,6 +181,13 @@ func (c *UserUsageCollector) checkProfile(ctx context.Context, p *userstore.Prof
 		}
 	}
 	return nil
+}
+
+func accountLabel(a userstore.AccountWatch) string {
+	if a.Name != "" {
+		return a.Name
+	}
+	return fmt.Sprintf("#%d", a.ID)
 }
 
 // RunLoop ticks until ctx done.

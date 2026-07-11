@@ -219,6 +219,34 @@ func (c *Client) AnswerCallback(ctx context.Context, callbackID, text string, sh
 	return c.apiCall(ctx, "answerCallbackQuery", payload, nil)
 }
 
+// BotCommand is a Telegram bot command shown in the menu.
+type BotCommand struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
+// SetMyCommands registers the bot command menu (private chats).
+func (c *Client) SetMyCommands(ctx context.Context, commands []BotCommand) error {
+	if commands == nil {
+		commands = []BotCommand{}
+	}
+	return c.apiCall(ctx, "setMyCommands", map[string]any{
+		"commands": commands,
+		"scope":    map[string]any{"type": "all_private_chats"},
+	}, nil)
+}
+
+// DeleteMessage best-effort deletes a chat message (e.g. API key input).
+func (c *Client) DeleteMessage(ctx context.Context, chatID any, messageID int64) error {
+	if messageID <= 0 {
+		return nil
+	}
+	return c.apiCall(ctx, "deleteMessage", map[string]any{
+		"chat_id":    chatIDString(chatID),
+		"message_id": messageID,
+	}, nil)
+}
+
 // GetUpdates long-polls for updates.
 func (c *Client) GetUpdates(ctx context.Context, offset int64, timeoutSec int) ([]Update, error) {
 	if timeoutSec <= 0 {

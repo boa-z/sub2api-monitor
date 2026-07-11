@@ -156,13 +156,26 @@ telegram:
 
 ### 用户操作
 
-1. 私聊 Bot 发送 `/start`
-2. **连接配置** → 设置 Base URL、Admin API Key → 测试连接
-3. **监控账号** → 添加 Sub2API 账号 ID
-4. 保持「监控开启」；后台按 `check_interval` 拉用量，超阈值私聊提醒
-5. **立即检查** 可手动看当前各窗口使用率
+1. 私聊 Bot 发送 `/start`（会注册命令菜单）
+2. **连接配置** → 设置 Base URL、Admin API Key → **测试连接**（health + dashboard）
+3. **监控账号** → 手动输入 ID，或 **从列表选择**（分页拉取 Admin 账号）
+4. **阈值** → 按窗口（5h / 7d / Gemini…）设置使用率百分比；可重置为系统默认
+5. 保持「监控开启」；后台按 `check_interval` 拉用量，超阈值私聊提醒
+6. **立即检查** 查看各窗口使用率、重置时间、今日 req/token/cost，并标记已超阈值窗口
 
-常用命令：`/start` `/status` `/setbase` `/setkey` `/addaccount` `/delaccount` `/check` `/help`
+常用命令：`/start` `/status` `/check` `/setbase` `/setkey` `/addaccount` `/delaccount` `/thresholds` `/id` `/help` `/cancel`
+
+### 面板能力一览
+
+| 功能 | 说明 |
+|------|------|
+| 主面板 | 监控开关、数据源 passive/active、连接与账号摘要、阈值摘要 |
+| 连接配置 | Base URL / API Key / 测试连接 / 清除连接；密钥消息尽量自动删除 |
+| 监控账号 | 添加、列表选择、启停、删除、详情、重命名 |
+| 阈值 | 按窗口添加/修改/删除；写入或重置系统默认（来自 `checks.account_usage.default_thresholds`） |
+| 立即检查 | 用量快照 + 今日统计；超阈值窗口标 ⚠️ |
+| 权限 | `allow_user_ids` 白名单 / `allow_all` / `open_registration` / 回退默认 `chat_id` 所有者 |
+| 后台轮询 | `UserUsageCollector` 按用户隔离告警；拉取失败会发 P3 提示 |
 
 ### 数据模型
 
@@ -171,7 +184,8 @@ data/users.json
 └─ users[]
    ├─ telegram_user_id / chat_id
    ├─ base_url / admin_api_key   # 每用户独立连接
-   ├─ enabled / source
+   ├─ enabled / source           # passive|active
+   ├─ thresholds[]               # 用户级用量阈值（空=系统默认）
    └─ accounts[{id, name, thresholds?, enabled?}]
 ```
 
