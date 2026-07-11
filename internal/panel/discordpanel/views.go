@@ -2117,11 +2117,6 @@ func (b *Bot) showConcurrencyView(ctx context.Context, userID int64) (string, []
 	return bld.String(), comps
 }
 
-func (b *Bot) showChannels(ctx context.Context, userID int64) string {
-	text, _ := b.showChannelsView(ctx, userID)
-	return text
-}
-
 func (b *Bot) showTrafficView(ctx context.Context, userID int64, window string) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
@@ -2207,20 +2202,29 @@ func trafficComponents(window string) []discord.Component {
 	return comps
 }
 
-func (b *Bot) showChannelsView(ctx context.Context, userID int64) (string, []discord.Component) {
+func (b *Bot) showChannels(ctx context.Context, userID int64) string {
+	text, _ := b.showChannelsView(ctx, userID, "all")
+	return text
+}
+
+func (b *Bot) showChannelsView(ctx context.Context, userID int64, tab string) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
-		return "❌ " + err.Error(), opsComponents()
+		return "❌ " + err.Error(), b.homeComponents(userID)
 	}
 	items, err := cli.ListChannelMonitors(ctx)
 	if err != nil {
 		return "渠道探测失败: " + err.Error(), opsComponents()
 	}
-	var bld strings.Builder
-	bld.WriteString("**渠道探测**\n\n")
-	if len(items) == 0 {
-		return bld.String() + "无探测任务。", channelsComponents(0)
+	tab = normalizeChannelTab(tab)
+	if tab == "" {
+		tab = normalizeChannelTab(b.getChannelTab(userID))
 	}
+	if tab == "" {
+		tab = "all"
+	}
+	b.setChannelTab(userID, tab)
+
 	onN, okN, badN := 0, 0, 0
 	for _, m := range items {
 		if m.Enabled {
@@ -2232,17 +2236,25 @@ func (b *Bot) showChannelsView(ctx context.Context, userID int64) (string, []dis
 			okN++
 		}
 	}
-	fmt.Fprintf(&bld, "汇总: 启用 `%d` · 正常 `%d` · 异常状态 `%d` · 共 `%d`\n\n", onN, okN, badN, len(items))
-	sort.SliceStable(items, func(i, j int) bool {
-		bi, bj := channelIsBad(items[i]), channelIsBad(items[j])
+	filtered := filterChannelMonitors(items, tab)
+	sort.SliceStable(filtered, func(i, j int) bool {
+		bi := channelIsBad(filtered[i])
+		bj := channelIsBad(filtered[j])
 		if bi != bj {
 			return bi
 		}
-		return items[i].ID < items[j].ID
+		return filtered[i].ID < filtered[j].ID
 	})
-	for i, m := range items {
+
+	var bld strings.Builder
+	bld.WriteString("**渠道探测**\n")
+	fmt.Fprintf(&bld, "汇总: 启用 `%d` · 正常 `%d` · 异常 `%d` · 共 `%d`\n", onN, okN, badN, len(items))
+	fmt.Fprintf(&bld, "筛选: `%s` · 本页 `%d`\n点选任务查看详情\n\n", channelTabLabel(tab), len(filtered))
+
+	opts := make([]discord.SelectOpt, 0, min(25, len(filtered)))
+	for i, m := range filtered {
 		if i >= 12 {
-			fmt.Fprintf(&bld, "… 另有 %d 个\n", len(items)-12)
+			fmt.Fprintf(&bld, "… 另有 %d 个（可换筛选）\n", len(filtered)-12)
 			break
 		}
 		en := "OFF"
@@ -2257,7 +2269,7 @@ func (b *Bot) showChannelsView(ctx context.Context, userID int64) (string, []dis
 		if channelIsBad(m) {
 			flag = " ⚠"
 		}
-		fmt.Fprintf(&bld, "• [%s]%s #%d %s\n  %s / %s · %s · `%dms`\n  上次 %s",
+		fmt.Fprintf(&bld, "• [%s]%s `#%d` %s\n  %s / %s · %s · `%dms`\n  上次 %s",
 			en, flag, m.ID, truncate(m.Name, 18), m.Provider, truncate(m.PrimaryModel, 16),
 			m.PrimaryStatus, m.PrimaryLatencyMS, last)
 		if m.Availability7d > 0 {
@@ -2268,8 +2280,189 @@ func (b *Bot) showChannelsView(ctx context.Context, userID int64) (string, []dis
 			fmt.Fprintf(&bld, " · 7d %.1f%%", av)
 		}
 		bld.WriteString("\n")
+		if len(opts) < 25 {
+			label := fmt.Sprintf("#%d %s", m.ID, truncate(m.Name, 12))
+			if m.Name == "" {
+				label = fmt.Sprintf("#%d", m.ID)
+			}
+			if channelIsBad(m) {
+				label = "⚠ " + label
+			}
+			opts = append(opts, discord.SelectOption(label, fmt.Sprintf("ops_ch:%d", m.ID),
+				fmt.Sprintf("%s · %s", m.Provider, m.PrimaryStatus)))
+		}
 	}
-	return bld.String(), channelsComponents(badN)
+	if len(filtered) == 0 {
+		bld.WriteString("无匹配探测任务。")
+	}
+
+	comps := []discord.Component{}
+	if len(opts) > 0 {
+		comps = append(comps, discord.ActionRow(discord.StringSelect("select:ops_ch", "选择渠道任务…", opts...)))
+	}
+	tabRow := []discord.Component{}
+	for _, st := range []struct{ label, val string }{
+		{"全部", "all"},
+		{"启用", "on"},
+		{"正常", "ok"},
+		{"异常", "bad"},
+	} {
+		lab := st.label
+		if st.val == tab {
+			lab = "· " + lab
+		}
+		tabRow = append(tabRow, discord.Button(lab, "ops_channels:"+st.val, 2))
+	}
+	comps = append(comps, discord.ActionRow(tabRow...))
+	comps = append(comps, discord.ActionRow(
+		discord.Button("刷新", "ops_channels:"+tab, 2),
+		discord.Button("« 运维", "ops_menu", 2),
+		discord.Button("« 主面板", "home", 2),
+	))
+	nav2 := []discord.Component{
+		discord.Button("看板", "ops_dash", 2),
+		discord.Button("可用性", "ops_avail", 2),
+		discord.Button("告警", "ops_alerts", 2),
+	}
+	if badN > 0 {
+		nav2 = append(nav2, discord.Button("异常账号", "ops_badacc:error:0", 2))
+	}
+	comps = append(comps, discord.ActionRow(nav2...))
+	return bld.String(), comps
+}
+
+func (b *Bot) showChannelDetailView(ctx context.Context, userID, channelID int64) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), b.homeComponents(userID)
+	}
+	items, err := cli.ListChannelMonitors(ctx)
+	if err != nil {
+		return "渠道探测失败: " + err.Error(), opsComponents()
+	}
+	var m *sub2api.ChannelMonitor
+	for i := range items {
+		if items[i].ID == channelID {
+			mm := items[i]
+			m = &mm
+			break
+		}
+	}
+	if m == nil {
+		tab := normalizeChannelTab(b.getChannelTab(userID))
+		if tab == "" {
+			tab = "all"
+		}
+		return b.showChannelsView(ctx, userID, tab)
+	}
+	tab := normalizeChannelTab(b.getChannelTab(userID))
+	if tab == "" {
+		tab = "all"
+	}
+	b.setManageBack(userID, "ops_channels:"+tab)
+
+	var bld strings.Builder
+	fmt.Fprintf(&bld, "**渠道探测 `#%d`**\n\n", m.ID)
+	name := m.Name
+	if name == "" {
+		name = "(未命名)"
+	}
+	fmt.Fprintf(&bld, "名称: `%s`\n", truncate(name, 40))
+	en := "关闭"
+	if m.Enabled {
+		en = "启用"
+	}
+	fmt.Fprintf(&bld, "状态: `%s`", en)
+	if channelIsBad(*m) {
+		bld.WriteString(" · **异常**")
+	}
+	bld.WriteString("\n")
+	fmt.Fprintf(&bld, "提供商: `%s`\n", m.Provider)
+	fmt.Fprintf(&bld, "主模型: `%s`\n", truncate(m.PrimaryModel, 48))
+	fmt.Fprintf(&bld, "探测结果: `%s` · 延迟 `%d` ms\n", m.PrimaryStatus, m.PrimaryLatencyMS)
+	if m.IntervalSeconds > 0 {
+		fmt.Fprintf(&bld, "间隔: `%d` s\n", m.IntervalSeconds)
+	}
+	last := "(无)"
+	if m.LastCheckedAt != nil {
+		last = m.LastCheckedAt.Local().Format("2006-01-02 15:04:05")
+	}
+	fmt.Fprintf(&bld, "上次检查: `%s`\n", last)
+	if m.Availability7d > 0 {
+		av := m.Availability7d
+		if av <= 1 {
+			av *= 100
+		}
+		fmt.Fprintf(&bld, "7 日可用率: `%.1f%%`\n", av)
+	}
+	bld.WriteString("\n只读详情；触发/启停需上游 Admin 写接口支持后再开放。")
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button("🔄 刷新", fmt.Sprintf("ops_ch:%d", m.ID), 2),
+			discord.Button("« 渠道列表", "ops_channels:"+tab, 2),
+		),
+		discord.ActionRow(
+			discord.Button("异常账号", "ops_badacc:error:0", 2),
+			discord.Button("看板", "ops_dash", 2),
+			discord.Button("« 运维", "ops_menu", 2),
+		),
+	}
+	return bld.String(), comps
+}
+
+func normalizeChannelTab(tab string) string {
+	switch strings.ToLower(strings.TrimSpace(tab)) {
+	case "", "all", "全部":
+		return "all"
+	case "on", "enabled", "启用":
+		return "on"
+	case "ok", "healthy", "正常":
+		return "ok"
+	case "bad", "error", "fail", "异常":
+		return "bad"
+	default:
+		return "all"
+	}
+}
+
+func channelTabLabel(tab string) string {
+	switch normalizeChannelTab(tab) {
+	case "on":
+		return "启用"
+	case "ok":
+		return "正常"
+	case "bad":
+		return "异常"
+	default:
+		return "全部"
+	}
+}
+
+func filterChannelMonitors(items []sub2api.ChannelMonitor, tab string) []sub2api.ChannelMonitor {
+	tab = normalizeChannelTab(tab)
+	if tab == "all" {
+		out := make([]sub2api.ChannelMonitor, len(items))
+		copy(out, items)
+		return out
+	}
+	out := make([]sub2api.ChannelMonitor, 0, len(items))
+	for _, m := range items {
+		switch tab {
+		case "on":
+			if m.Enabled {
+				out = append(out, m)
+			}
+		case "ok":
+			if m.Enabled && !channelIsBad(m) {
+				out = append(out, m)
+			}
+		case "bad":
+			if channelIsBad(m) {
+				out = append(out, m)
+			}
+		}
+	}
+	return out
 }
 
 func channelIsBad(m sub2api.ChannelMonitor) bool {
@@ -3734,8 +3927,9 @@ func (b *Bot) showGroupsView(ctx context.Context, userID int64, page int, search
 	}
 	search = strings.TrimSpace(search)
 	b.setGroupSearch(userID, search)
+	platform := b.getGroupPlatform(userID)
 	const pageSize = 8
-	items, total, err := cli.ListGroupsEx(ctx, page+1, pageSize, sub2api.GroupListFilter{Search: search})
+	items, total, err := cli.ListGroupsEx(ctx, page+1, pageSize, sub2api.GroupListFilter{Search: search, Platform: platform})
 	if err != nil {
 		return "分组列表失败: " + err.Error(), manageComponents()
 	}
@@ -3743,6 +3937,9 @@ func (b *Bot) showGroupsView(ctx context.Context, userID int64, page int, search
 	bld.WriteString("**分组列表**（Sub2API）\n")
 	if search != "" {
 		fmt.Fprintf(&bld, "搜索: `%s`\n", truncate(search, 40))
+	}
+	if platform != "" {
+		fmt.Fprintf(&bld, "平台: `%s`\n", platform)
 	}
 	fmt.Fprintf(&bld, "第 %d 页 · 共 `%d`\n点选分组查看详情\n\n", page+1, total)
 	opts := make([]discord.SelectOpt, 0, len(items))
@@ -3783,6 +3980,26 @@ func (b *Bot) showGroupsView(ctx context.Context, userID int64, page int, search
 	if len(nav) > 0 {
 		comps = append(comps, discord.ActionRow(nav...))
 	}
+	platRow := []discord.Component{}
+	for _, st := range []struct {
+		label, val string
+	}{
+		{"全部", ""},
+		{"openai", "openai"},
+		{"anthropic", "anthropic"},
+		{"gemini", "gemini"},
+	} {
+		lab := st.label
+		if st.val == platform || (st.val == "" && platform == "") {
+			lab = "· " + lab
+		}
+		cb := "mgr_gplat"
+		if st.val != "" {
+			cb = "mgr_gplat:" + st.val
+		}
+		platRow = append(platRow, discord.Button(lab, cb, 2))
+	}
+	comps = append(comps, discord.ActionRow(platRow...))
 	action := []discord.Component{discord.Button("🔎 搜索", "mgr_group_search", 2)}
 	if search != "" {
 		action = append(action, discord.Button("清除搜索", "mgr_group_clear", 2))

@@ -45,9 +45,12 @@ type session struct {
 	BrowseStatus string
 	BrowsePage   int
 	// UserSearch/GroupSearch remember last instance user/group list query.
-	UserSearch  string
-	UserStatus  string
-	GroupSearch string
+	UserSearch    string
+	UserStatus    string
+	GroupSearch   string
+	GroupPlatform string
+	// ChannelTab remembers ops channel filter: all|on|ok|bad
+	ChannelTab string
 }
 
 // Bot is the interactive Telegram control panel.
@@ -341,11 +344,22 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return nil
 		}
 		return b.showConcurrency(ctx, chatID, msgID, cq.From.ID)
-	case data == "ops_channels":
+	case data == "ops_channels" || strings.HasPrefix(data, "ops_channels:"):
 		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
-		return b.showChannels(ctx, chatID, msgID, cq.From.ID)
+		tab := "all"
+		if strings.HasPrefix(data, "ops_channels:") {
+			tab = strings.TrimPrefix(data, "ops_channels:")
+		}
+		b.setChannelTab(cq.From.ID, tab)
+		return b.showChannels(ctx, chatID, msgID, cq.From.ID, tab)
+	case strings.HasPrefix(data, "ops_ch:"):
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "ops_ch:"), 10, 64)
+		return b.showChannelDetail(ctx, chatID, msgID, cq.From.ID, id)
 	case data == "ops_traf" || strings.HasPrefix(data, "ops_traf:"):
 		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
@@ -554,6 +568,16 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return nil
 		}
 		return b.showGroups(ctx, chatID, msgID, cq.From.ID, 0, "")
+	case data == "mgr_gplat" || strings.HasPrefix(data, "mgr_gplat:"):
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		plat := ""
+		if strings.HasPrefix(data, "mgr_gplat:") {
+			plat = strings.TrimPrefix(data, "mgr_gplat:")
+		}
+		b.setGroupPlatform(cq.From.ID, plat)
+		return b.showGroups(ctx, chatID, msgID, cq.From.ID, 0, b.getGroupSearch(cq.From.ID))
 	case strings.HasPrefix(data, "mgr_group:"):
 		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
@@ -2722,6 +2746,50 @@ func (b *Bot) getGroupSearch(userID int64) string {
 	return s.GroupSearch
 }
 
+func (b *Bot) setGroupPlatform(userID int64, platform string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.GroupPlatform = strings.ToLower(strings.TrimSpace(platform))
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getGroupPlatform(userID int64) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return ""
+	}
+	return s.GroupPlatform
+}
+
+func (b *Bot) setChannelTab(userID int64, tab string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.ChannelTab = strings.ToLower(strings.TrimSpace(tab))
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getChannelTab(userID int64) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return ""
+	}
+	return s.ChannelTab
+}
+
 func (b *Bot) setManageBack(userID int64, data string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -2791,8 +2859,10 @@ func (b *Bot) manageBackButton(userID int64) telegram.InlineKeyboardButton {
 		label = "« 看板"
 	case data == "ops_alerts":
 		label = "« 告警"
-	case data == "ops_channels":
+	case data == "ops_channels" || strings.HasPrefix(data, "ops_channels:"):
 		label = "« 渠道"
+	case strings.HasPrefix(data, "ops_ch:"):
+		label = "« 渠道详情"
 	case data == "ops_traf" || strings.HasPrefix(data, "ops_traf:"):
 		label = "« 流量"
 	case strings.HasPrefix(data, "ops_badacc"):

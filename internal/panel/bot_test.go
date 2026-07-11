@@ -1189,7 +1189,6 @@ func TestParseFlexibleDuration(t *testing.T) {
 	}
 }
 
-
 func TestParseUsersCallback(t *testing.T) {
 	page, search := parseUsersCallback("mgr_users")
 	if page != 0 || search != "" {
@@ -1221,5 +1220,41 @@ func TestParseGroupsCallback(t *testing.T) {
 	}
 	if groupsCallback(0, "x|y") != "mgr_groups|x y:0" {
 		t.Fatal(groupsCallback(0, "x|y"))
+	}
+}
+
+func TestFilterChannelMonitors(t *testing.T) {
+	items := []sub2api.ChannelMonitor{
+		{ID: 1, Enabled: true, PrimaryStatus: "ok"},
+		{ID: 2, Enabled: true, PrimaryStatus: "fail"},
+		{ID: 3, Enabled: false, PrimaryStatus: "fail"},
+	}
+	if n := len(filterChannelMonitors(items, "all")); n != 3 {
+		t.Fatalf("all=%d", n)
+	}
+	if n := len(filterChannelMonitors(items, "on")); n != 2 {
+		t.Fatalf("on=%d", n)
+	}
+	if n := len(filterChannelMonitors(items, "ok")); n != 1 {
+		t.Fatalf("ok=%d", n)
+	}
+	bad := filterChannelMonitors(items, "bad")
+	if len(bad) != 1 || bad[0].ID != 2 {
+		t.Fatalf("bad=%+v", bad)
+	}
+	if normalizeChannelTab("异常") != "bad" || channelTabLabel("bad") != "异常" {
+		t.Fatal(normalizeChannelTab("异常"), channelTabLabel("bad"))
+	}
+}
+
+func TestGroupPlatformSession(t *testing.T) {
+	b, _ := testBot(t)
+	b.setGroupPlatform(9, "OpenAI")
+	if b.getGroupPlatform(9) != "openai" {
+		t.Fatal(b.getGroupPlatform(9))
+	}
+	b.setChannelTab(9, "BAD")
+	if b.getChannelTab(9) != "bad" {
+		t.Fatal(b.getChannelTab(9))
 	}
 }

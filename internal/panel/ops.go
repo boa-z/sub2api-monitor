@@ -1044,7 +1044,7 @@ func trafficKeyboard(window string) *telegram.InlineKeyboardMarkup {
 	}
 }
 
-func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64) error {
+func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64, tab string) error {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
@@ -1053,12 +1053,15 @@ func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64) err
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "渠道探测失败: "+telegram.EscapeHTML(err.Error()), opsKeyboard())
 	}
-	var bld strings.Builder
-	bld.WriteString(telegram.Bold("渠道探测") + "\n\n")
-	if len(items) == 0 {
-		bld.WriteString("无探测任务。")
-		return b.editOrSend(ctx, chatID, msgID, bld.String(), channelsKeyboard(0, 0, 0))
+	tab = normalizeChannelTab(tab)
+	if tab == "" {
+		tab = normalizeChannelTab(b.getChannelTab(userID))
 	}
+	if tab == "" {
+		tab = "all"
+	}
+	b.setChannelTab(userID, tab)
+
 	onN, okN, badN := 0, 0, 0
 	for _, m := range items {
 		if m.Enabled {
@@ -1070,23 +1073,35 @@ func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64) err
 			okN++
 		}
 	}
-	fmt.Fprintf(&bld, "汇总: 启用 %s · 正常 %s · 异常状态 %s · 共 %s\n\n",
+	filtered := filterChannelMonitors(items, tab)
+
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold("渠道探测") + "\n")
+	fmt.Fprintf(&bld, "汇总: 启用 %s · 正常 %s · 异常 %s · 共 %s\n",
 		telegram.Code(strconv.Itoa(onN)),
 		telegram.Code(strconv.Itoa(okN)),
 		telegram.Code(strconv.Itoa(badN)),
 		telegram.Code(strconv.Itoa(len(items))),
 	)
-	sort.SliceStable(items, func(i, j int) bool {
-		bi := channelIsBad(items[i])
-		bj := channelIsBad(items[j])
+	fmt.Fprintf(&bld, "筛选: %s · 本页 %s\n点任务查看详情\n\n",
+		telegram.Code(channelTabLabel(tab)),
+		telegram.Code(strconv.Itoa(len(filtered))),
+	)
+	if len(filtered) == 0 {
+		bld.WriteString("无匹配探测任务。")
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		bi := channelIsBad(filtered[i])
+		bj := channelIsBad(filtered[j])
 		if bi != bj {
 			return bi
 		}
-		return items[i].ID < items[j].ID
+		return filtered[i].ID < filtered[j].ID
 	})
-	for i, m := range items {
-		if i >= 15 {
-			fmt.Fprintf(&bld, "… 另有 %d 个\n", len(items)-15)
+	rows := [][]telegram.InlineKeyboardButton{}
+	for i, m := range filtered {
+		if i >= 10 {
+			fmt.Fprintf(&bld, "… 另有 %d 个（可换筛选）\n", len(filtered)-10)
 			break
 		}
 		en := "OFF"
@@ -1113,7 +1128,6 @@ func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64) err
 			telegram.Code(last),
 		)
 		if m.Availability7d > 0 {
-			// API may return ratio (0-1) or percent (0-100)
 			av := m.Availability7d
 			if av <= 1 {
 				av *= 100
@@ -1121,8 +1135,191 @@ func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64) err
 			fmt.Fprintf(&bld, " · 7d %.1f%%", av)
 		}
 		bld.WriteString("\n")
+		label := fmt.Sprintf("#%d %s", m.ID, truncateRunes(m.Name, 10))
+		if m.Name == "" {
+			label = fmt.Sprintf("#%d", m.ID)
+		}
+		if channelIsBad(m) {
+			label = "⚠ " + label
+		}
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn(label, fmt.Sprintf("ops_ch:%d", m.ID)),
+		})
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), channelsKeyboard(onN, okN, badN))
+	// filter tabs
+	tabRow := []telegram.InlineKeyboardButton{}
+	for _, st := range []struct{ label, val string }{
+		{"全部", "all"},
+		{"启用", "on"},
+		{"正常", "ok"},
+		{"异常", "bad"},
+	} {
+		lab := st.label
+		if st.val == tab {
+			lab = "· " + lab
+		}
+		tabRow = append(tabRow, telegram.Btn(lab, "ops_channels:"+st.val))
+	}
+	rows = append(rows, tabRow)
+	rows = append(rows, []telegram.InlineKeyboardButton{
+		telegram.Btn("🔄 刷新", "ops_channels:"+tab),
+		telegram.Btn("« 运维菜单", "ops_menu"),
+	})
+	rows = append(rows, []telegram.InlineKeyboardButton{
+		telegram.Btn("📈 看板", "ops_dash"),
+		telegram.Btn("✅ 可用性", "ops_avail"),
+		telegram.Btn("🚨 告警", "ops_alerts"),
+	})
+	if badN > 0 {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			telegram.Btn("错误", "ops_errors:all:0"),
+		})
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{
+		telegram.Btn("« 主面板", "home"),
+	})
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (b *Bot) showChannelDetail(ctx context.Context, chatID, msgID, userID, channelID int64) error {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	items, err := cli.ListChannelMonitors(ctx)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "渠道探测失败: "+telegram.EscapeHTML(err.Error()), opsKeyboard())
+	}
+	var m *sub2api.ChannelMonitor
+	for i := range items {
+		if items[i].ID == channelID {
+			mm := items[i]
+			m = &mm
+			break
+		}
+	}
+	if m == nil {
+		tab := normalizeChannelTab(b.getChannelTab(userID))
+		if tab == "" {
+			tab = "all"
+		}
+		return b.showChannels(ctx, chatID, msgID, userID, tab)
+	}
+	tab := normalizeChannelTab(b.getChannelTab(userID))
+	if tab == "" {
+		tab = "all"
+	}
+	b.setManageBack(userID, "ops_channels:"+tab)
+
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold(fmt.Sprintf("渠道探测 #%d", m.ID)) + "\n\n")
+	name := m.Name
+	if name == "" {
+		name = "(未命名)"
+	}
+	fmt.Fprintf(&bld, "名称: %s\n", telegram.Code(truncateRunes(name, 40)))
+	en := "关闭"
+	if m.Enabled {
+		en = "启用"
+	}
+	fmt.Fprintf(&bld, "状态: %s", telegram.Code(en))
+	if channelIsBad(*m) {
+		bld.WriteString(" · " + telegram.Bold("异常"))
+	}
+	bld.WriteString("\n")
+	fmt.Fprintf(&bld, "提供商: %s\n", telegram.Code(m.Provider))
+	fmt.Fprintf(&bld, "主模型: %s\n", telegram.Code(truncateRunes(m.PrimaryModel, 48)))
+	fmt.Fprintf(&bld, "探测结果: %s · 延迟 %s ms\n",
+		telegram.Code(m.PrimaryStatus),
+		telegram.Code(itoa(m.PrimaryLatencyMS)),
+	)
+	if m.IntervalSeconds > 0 {
+		fmt.Fprintf(&bld, "间隔: %s s\n", telegram.Code(itoa(m.IntervalSeconds)))
+	}
+	last := "(无)"
+	if m.LastCheckedAt != nil {
+		last = m.LastCheckedAt.Local().Format("2006-01-02 15:04:05")
+	}
+	fmt.Fprintf(&bld, "上次检查: %s\n", telegram.Code(last))
+	if m.Availability7d > 0 {
+		av := m.Availability7d
+		if av <= 1 {
+			av *= 100
+		}
+		fmt.Fprintf(&bld, "7 日可用率: %s%%\n", telegram.Code(fmt.Sprintf("%.1f", av)))
+	}
+	bld.WriteString("\n只读详情；触发/启停需上游 Admin 写接口支持后再开放。")
+
+	kb := &telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{telegram.Btn("🔄 刷新", fmt.Sprintf("ops_ch:%d", m.ID))},
+			{
+				telegram.Btn("« 渠道列表", "ops_channels:"+tab),
+				telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			},
+			{
+				telegram.Btn("📈 看板", "ops_dash"),
+				telegram.Btn("« 运维菜单", "ops_menu"),
+			},
+		},
+	}
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
+}
+
+func normalizeChannelTab(tab string) string {
+	switch strings.ToLower(strings.TrimSpace(tab)) {
+	case "", "all", "全部":
+		return "all"
+	case "on", "enabled", "启用":
+		return "on"
+	case "ok", "healthy", "正常":
+		return "ok"
+	case "bad", "error", "fail", "异常":
+		return "bad"
+	default:
+		return "all"
+	}
+}
+
+func channelTabLabel(tab string) string {
+	switch normalizeChannelTab(tab) {
+	case "on":
+		return "启用"
+	case "ok":
+		return "正常"
+	case "bad":
+		return "异常"
+	default:
+		return "全部"
+	}
+}
+
+func filterChannelMonitors(items []sub2api.ChannelMonitor, tab string) []sub2api.ChannelMonitor {
+	tab = normalizeChannelTab(tab)
+	if tab == "all" {
+		out := make([]sub2api.ChannelMonitor, len(items))
+		copy(out, items)
+		return out
+	}
+	out := make([]sub2api.ChannelMonitor, 0, len(items))
+	for _, m := range items {
+		switch tab {
+		case "on":
+			if m.Enabled {
+				out = append(out, m)
+			}
+		case "ok":
+			if m.Enabled && !channelIsBad(m) {
+				out = append(out, m)
+			}
+		case "bad":
+			if channelIsBad(m) {
+				out = append(out, m)
+			}
+		}
+	}
+	return out
 }
 
 func channelIsBad(m sub2api.ChannelMonitor) bool {

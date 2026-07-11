@@ -144,6 +144,9 @@ func (c *Client) ListGroupsEx(ctx context.Context, page, pageSize int, f GroupLi
 	if pageSize <= 0 {
 		pageSize = 20
 	}
+	f.Search = strings.TrimSpace(f.Search)
+	f.Platform = strings.ToLower(strings.TrimSpace(f.Platform))
+	f.Status = strings.ToLower(strings.TrimSpace(f.Status))
 	q := url.Values{}
 	q.Set("page", strconv.Itoa(page))
 	q.Set("page_size", strconv.Itoa(pageSize))
@@ -166,14 +169,21 @@ func (c *Client) ListGroupsEx(ctx context.Context, page, pageSize int, f GroupLi
 	if err != nil {
 		return nil, 0, err
 	}
-	if f.Search == "" {
+	needLocal := false
+	if f.Search != "" && !listLooksGroupSearchAware(items, f.Search) {
+		needLocal = true
+	}
+	if f.Platform != "" && !listLooksGroupPlatformAware(items, f.Platform) {
+		needLocal = true
+	}
+	if f.Status != "" && !listLooksGroupStatusAware(items, f.Status) {
+		needLocal = true
+	}
+	if !needLocal {
 		return items, total, nil
 	}
-	if listLooksGroupSearchAware(items, f.Search) {
-		return items, total, nil
-	}
-	// API ignored search — limited client-side scan.
-	return c.searchGroupsLocal(ctx, page, pageSize, f.Search)
+	// API ignored filters — limited client-side scan.
+	return c.filterGroupsLocal(ctx, page, pageSize, f)
 }
 
 func (c *Client) ListUsers(ctx context.Context, page, pageSize int) ([]User, int64, error) {
@@ -428,7 +438,44 @@ func (c *Client) searchUsersLocal(ctx context.Context, page, pageSize int, q str
 	return c.filterUsersLocal(ctx, page, pageSize, UserListFilter{Search: q})
 }
 
-func (c *Client) searchGroupsLocal(ctx context.Context, page, pageSize int, q string) ([]Group, int64, error) {
+func groupMatchesFilter(g Group, f GroupListFilter) bool {
+	if f.Search != "" && !groupMatchesSearch(g, f.Search) {
+		return false
+	}
+	if f.Platform != "" && !strings.EqualFold(strings.TrimSpace(g.Platform), f.Platform) {
+		return false
+	}
+	if f.Status != "" && !strings.EqualFold(strings.TrimSpace(g.Status), f.Status) {
+		return false
+	}
+	return true
+}
+
+func listLooksGroupPlatformAware(items []Group, platform string) bool {
+	if len(items) == 0 {
+		return true
+	}
+	for _, g := range items {
+		if !strings.EqualFold(strings.TrimSpace(g.Platform), platform) {
+			return false
+		}
+	}
+	return true
+}
+
+func listLooksGroupStatusAware(items []Group, status string) bool {
+	if len(items) == 0 {
+		return true
+	}
+	for _, g := range items {
+		if !strings.EqualFold(strings.TrimSpace(g.Status), status) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Client) filterGroupsLocal(ctx context.Context, page, pageSize int, f GroupListFilter) ([]Group, int64, error) {
 	if page <= 0 {
 		page = 1
 	}
@@ -443,7 +490,7 @@ func (c *Client) searchGroupsLocal(ctx context.Context, page, pageSize int, q st
 			return nil, 0, err
 		}
 		for _, g := range items {
-			if groupMatchesSearch(g, q) {
+			if groupMatchesFilter(g, f) {
 				matched = append(matched, g)
 			}
 		}
@@ -461,6 +508,10 @@ func (c *Client) searchGroupsLocal(ctx context.Context, page, pageSize int, q st
 		end = len(matched)
 	}
 	return matched[start:end], total, nil
+}
+
+func (c *Client) searchGroupsLocal(ctx context.Context, page, pageSize int, q string) ([]Group, int64, error) {
+	return c.filterGroupsLocal(ctx, page, pageSize, GroupListFilter{Search: q})
 }
 
 func (c *Client) listUsersRawNoSearch(ctx context.Context, page, pageSize int) ([]User, int64, error) {

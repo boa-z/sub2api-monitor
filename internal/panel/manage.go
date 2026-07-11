@@ -1192,8 +1192,9 @@ func (b *Bot) showGroups(ctx context.Context, chatID, msgID, userID int64, page 
 	}
 	search = strings.TrimSpace(search)
 	b.setGroupSearch(userID, search)
+	platform := b.getGroupPlatform(userID)
 	const pageSize = 8
-	items, total, err := cli.ListGroupsEx(ctx, page+1, pageSize, sub2api.GroupListFilter{Search: search})
+	items, total, err := cli.ListGroupsEx(ctx, page+1, pageSize, sub2api.GroupListFilter{Search: search, Platform: platform})
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "分组列表失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 	}
@@ -1201,6 +1202,9 @@ func (b *Bot) showGroups(ctx context.Context, chatID, msgID, userID int64, page 
 	bld.WriteString(telegram.Bold("分组列表") + "（Sub2API）\n")
 	if search != "" {
 		fmt.Fprintf(&bld, "搜索: %s\n", telegram.Code(truncateRunes(search, 40)))
+	}
+	if platform != "" {
+		fmt.Fprintf(&bld, "平台: %s\n", telegram.Code(platform))
 	}
 	fmt.Fprintf(&bld, "第 %d 页 · 共 %s\n点分组查看详情\n\n", page+1, telegram.Code(itoa(total)))
 	rows := [][]telegram.InlineKeyboardButton{}
@@ -1238,6 +1242,26 @@ func (b *Bot) showGroups(ctx context.Context, chatID, msgID, userID int64, page 
 	if len(nav) > 0 {
 		rows = append(rows, nav)
 	}
+	platRow := []telegram.InlineKeyboardButton{}
+	for _, st := range []struct {
+		label, val string
+	}{
+		{"全部", ""},
+		{"openai", "openai"},
+		{"anthropic", "anthropic"},
+		{"gemini", "gemini"},
+	} {
+		lab := st.label
+		if st.val == platform || (st.val == "" && platform == "") {
+			lab = "· " + lab
+		}
+		cb := "mgr_gplat"
+		if st.val != "" {
+			cb = "mgr_gplat:" + st.val
+		}
+		platRow = append(platRow, telegram.Btn(lab, cb))
+	}
+	rows = append(rows, platRow)
 	action := []telegram.InlineKeyboardButton{telegram.Btn("🔎 搜索", "mgr_group_search")}
 	if search != "" {
 		action = append(action, telegram.Btn("清除搜索", "mgr_group_clear"))

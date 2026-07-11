@@ -801,7 +801,6 @@ func TestDiscordParseFlexibleDuration(t *testing.T) {
 	}
 }
 
-
 func TestParseUsersCallback(t *testing.T) {
 	page, search := parseUsersCallback("mgr_users|bob:0")
 	if page != 0 || search != "bob" {
@@ -813,5 +812,18 @@ func TestParseUsersCallback(t *testing.T) {
 	page, search = parseGroupsCallback("mgr_groups:4")
 	if page != 4 || search != "" {
 		t.Fatalf("%d %q", page, search)
+	}
+}
+
+func TestFilterChannelMonitors(t *testing.T) {
+	items := []sub2api.ChannelMonitor{
+		{ID: 1, Enabled: true, PrimaryStatus: "healthy"},
+		{ID: 2, Enabled: true, PrimaryStatus: "timeout"},
+	}
+	if len(filterChannelMonitors(items, "ok")) != 1 {
+		t.Fatal("ok")
+	}
+	if len(filterChannelMonitors(items, "bad")) != 1 {
+		t.Fatal("bad")
 	}
 }

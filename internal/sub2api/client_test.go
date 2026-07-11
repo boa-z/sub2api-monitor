@@ -195,7 +195,6 @@ func TestCompactUsageSummary(t *testing.T) {
 	}
 }
 
-
 func TestUserMatchesSearch(t *testing.T) {
 	u := User{ID: 42, Email: "Alice@Example.com", Username: "alice", Role: "user", Status: "active", Notes: "vip"}
 	if !userMatchesSearch(u, "42") {
@@ -239,5 +238,21 @@ func TestGroupMatchesSearch(t *testing.T) {
 	}
 	if groupMatchesSearch(g, "anthropic") {
 		t.Fatal("miss")
+	}
+}
+
+func TestGroupMatchesFilter(t *testing.T) {
+	g := Group{ID: 1, Name: "pro", Platform: "openai", Status: "active"}
+	if !groupMatchesFilter(g, GroupListFilter{Platform: "openai"}) {
+		t.Fatal("platform")
+	}
+	if groupMatchesFilter(g, GroupListFilter{Platform: "anthropic"}) {
+		t.Fatal("platform miss")
+	}
+	if !groupMatchesFilter(g, GroupListFilter{Search: "pro", Status: "active"}) {
+		t.Fatal("combo")
+	}
+	if listLooksGroupPlatformAware([]Group{g, {ID: 2, Platform: "gemini"}}, "openai") {
+		t.Fatal("mixed not aware")
 	}
 }

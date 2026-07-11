@@ -45,9 +45,11 @@ type session struct {
 	BrowseStatus string
 	BrowsePage   int
 	// UserSearch/GroupSearch remember last instance user/group list query.
-	UserSearch  string
-	UserStatus  string
-	GroupSearch string
+	UserSearch    string
+	UserStatus    string
+	GroupSearch   string
+	GroupPlatform string
+	ChannelTab    string
 }
 
 // Bot is the Discord interactive panel.
@@ -384,11 +386,23 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		}
 		text, comps := b.showConcurrencyView(ctx, uid)
 		return b.update(ctx, it, text, comps)
-	case data == "ops_channels":
+	case data == "ops_channels" || strings.HasPrefix(data, "ops_channels:"):
 		if !b.canOpsRead(uid) {
 			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
-		text, comps := b.showChannelsView(ctx, uid)
+		tab := "all"
+		if strings.HasPrefix(data, "ops_channels:") {
+			tab = strings.TrimPrefix(data, "ops_channels:")
+		}
+		b.setChannelTab(uid, tab)
+		text, comps := b.showChannelsView(ctx, uid, tab)
+		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "ops_ch:"):
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
+		}
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "ops_ch:"), 10, 64)
+		text, comps := b.showChannelDetailView(ctx, uid, id)
 		return b.update(ctx, it, text, comps)
 	case data == "ops_traf" || strings.HasPrefix(data, "ops_traf:"):
 		if !b.canOpsRead(uid) {
@@ -533,6 +547,17 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
 		text, comps := b.showGroupsView(ctx, uid, 0, "")
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_gplat" || strings.HasPrefix(data, "mgr_gplat:"):
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
+		}
+		plat := ""
+		if strings.HasPrefix(data, "mgr_gplat:") {
+			plat = strings.TrimPrefix(data, "mgr_gplat:")
+		}
+		b.setGroupPlatform(uid, plat)
+		text, comps := b.showGroupsView(ctx, uid, 0, b.getGroupSearch(uid))
 		return b.update(ctx, it, text, comps)
 	case strings.HasPrefix(data, "mgr_group:"):
 		if !b.canOpsRead(uid) {
@@ -1200,6 +1225,50 @@ func (b *Bot) getGroupSearch(userID int64) string {
 	return s.GroupSearch
 }
 
+func (b *Bot) setGroupPlatform(userID int64, platform string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.GroupPlatform = strings.ToLower(strings.TrimSpace(platform))
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getGroupPlatform(userID int64) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return ""
+	}
+	return s.GroupPlatform
+}
+
+func (b *Bot) setChannelTab(userID int64, tab string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.ChannelTab = strings.ToLower(strings.TrimSpace(tab))
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getChannelTab(userID int64) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return ""
+	}
+	return s.ChannelTab
+}
+
 // usersCallback / parseUsersCallback keep search across pages (shared with TG forms).
 func usersCallback(page int, search string) string {
 	search = strings.TrimSpace(search)
@@ -1337,8 +1406,10 @@ func (b *Bot) manageBackLabel(userID int64) (label, data string) {
 		label = "« 看板"
 	case data == "ops_alerts":
 		label = "« 告警"
-	case data == "ops_channels":
+	case data == "ops_channels" || strings.HasPrefix(data, "ops_channels:"):
 		label = "« 渠道"
+	case strings.HasPrefix(data, "ops_ch:"):
+		label = "« 渠道详情"
 	case data == "ops_traf" || strings.HasPrefix(data, "ops_traf:"):
 		label = "« 流量"
 	case strings.HasPrefix(data, "ops_badacc"):
