@@ -373,6 +373,9 @@ func (b *Bot) statusComponents(userID int64, issueIDs ...[]int64) []discord.Comp
 	if len(issueIDs) > 0 {
 		issues = issueIDs[0]
 	}
+	if len(issues) > 0 && b.canOpsWrite(userID) {
+		b.setBrowseView(userID, "problem", 0)
+	}
 	comps := []discord.Component{
 		discord.ActionRow(
 			discord.Button("刷新状态", "status", 2),
@@ -382,8 +385,12 @@ func (b *Bot) statusComponents(userID int64, issueIDs ...[]int64) []discord.Comp
 	}
 	if len(issues) > 0 {
 		var row []discord.Component
+		maxN := 4
+		if b.canOpsRead(userID) {
+			maxN = 2 // leave room for ops/heal rows (Discord max 5)
+		}
 		for i, id := range issues {
-			if i >= 4 {
+			if i >= maxN {
 				break
 			}
 			if b.canOpsRead(userID) {
@@ -405,18 +412,33 @@ func (b *Bot) statusComponents(userID int64, issueIDs ...[]int64) []discord.Comp
 		if b.isViewer(userID) {
 			mgrLabel = "账号浏览"
 		}
-		comps = append(comps,
-			discord.ActionRow(
-				discord.Button("运维", "ops_menu", 2),
-				discord.Button("异常账号", "ops_badacc:error:0", 2),
-				discord.Button("看板", "ops_dash", 2),
-			),
-			discord.ActionRow(
-				discord.Button(mgrLabel, "mgr_menu", 2),
-				discord.Button("连接", "cfg_conn", 2),
-				discord.Button("« 主面板", "home", 2),
-			),
-		)
+		if b.canOpsWrite(userID) && len(issues) > 0 {
+			comps = append(comps,
+				discord.ActionRow(
+					discord.Button("一键修复", "mgr_bulk_heal", 1),
+					discord.Button("异常账号", "ops_badacc:error:0", 2),
+					discord.Button("异常汇总", "mgr_browse:problem:0", 2),
+				),
+				discord.ActionRow(
+					discord.Button("运维", "ops_menu", 2),
+					discord.Button(mgrLabel, "mgr_menu", 2),
+					discord.Button("« 主面板", "home", 2),
+				),
+			)
+		} else {
+			comps = append(comps,
+				discord.ActionRow(
+					discord.Button("运维", "ops_menu", 2),
+					discord.Button("异常账号", "ops_badacc:error:0", 2),
+					discord.Button("看板", "ops_dash", 2),
+				),
+				discord.ActionRow(
+					discord.Button(mgrLabel, "mgr_menu", 2),
+					discord.Button("连接", "cfg_conn", 2),
+					discord.Button("« 主面板", "home", 2),
+				),
+			)
+		}
 	} else {
 		comps = append(comps, discord.ActionRow(
 			discord.Button("连接", "cfg_conn", 2),

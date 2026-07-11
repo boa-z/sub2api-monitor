@@ -1790,14 +1790,22 @@ func (b *Bot) statusKeyboardFor(userID int64, issueIDs ...[]int64) *telegram.Inl
 	if len(issueIDs) > 0 {
 		issues = issueIDs[0]
 	}
+	if len(issues) > 0 && b.canOpsWrite(userID) {
+		// Scope bulk heal from status to problem accounts.
+		b.setBrowseView(userID, "problem", 0)
+	}
 	rows := [][]telegram.InlineKeyboardButton{
 		{telegram.Btn("🔄 刷新状态", "status"), telegram.Btn("▶️ 立即检查", "check_now")},
 	}
 	// watched issue shortcuts
 	if len(issues) > 0 {
 		var row []telegram.InlineKeyboardButton
+		maxN := 4
+		if b.canOpsWrite(userID) {
+			maxN = 2 // leave room for heal row
+		}
 		for i, id := range issues {
-			if i >= 4 {
+			if i >= maxN {
 				break
 			}
 			if b.canOpsRead(userID) {
@@ -1818,14 +1826,25 @@ func (b *Bot) statusKeyboardFor(userID int64, issueIDs ...[]int64) *telegram.Inl
 		telegram.Btn("👤 监控账号", "cfg_acc"), telegram.Btn("🔌 连接", "cfg_conn"),
 	})
 	if b.canOpsRead(userID) {
-		rows = append(rows, []telegram.InlineKeyboardButton{
-			telegram.Btn("🛠 运维视图", "ops_menu"),
-			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
-		})
-		rows = append(rows, []telegram.InlineKeyboardButton{
-			telegram.Btn("📈 看板", "ops_dash"),
-			telegram.Btn("🧰 账号浏览", "mgr_menu"),
-		})
+		if b.canOpsWrite(userID) && len(issues) > 0 {
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
+				telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			})
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn("🛠 运维视图", "ops_menu"),
+				telegram.Btn("📚 异常汇总", "mgr_browse:problem:0"),
+			})
+		} else {
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn("🛠 运维视图", "ops_menu"),
+				telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			})
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn("📈 看板", "ops_dash"),
+				telegram.Btn("🧰 账号浏览", "mgr_menu"),
+			})
+		}
 	}
 	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")})
 	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
