@@ -793,7 +793,7 @@ func (b *Bot) bulkAccountActionPrompt(ctx context.Context, chatID, msgID, userID
 		return b.editOrSend(ctx, chatID, msgID, "拉取账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 	}
 	if len(items) == 0 {
-		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有可处理的账号（"+telegram.EscapeHTML(scopeLabel)+"）。", manageKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有可处理的账号（"+telegram.EscapeHTML(scopeLabel)+"）。", b.bulkNavKeyboard(userID))
 	}
 	n := len(items)
 	if n > maxOps {
@@ -807,7 +807,12 @@ func (b *Bot) bulkAccountActionPrompt(ctx context.Context, chatID, msgID, userID
 	cancelRows := [][]telegram.InlineKeyboardButton{
 		{telegram.Btn(fmt.Sprintf("✅ 确认处理 %d 个", n), confirmData)},
 	}
-	if st, pg := b.getBrowseView(userID); st != "" {
+	// Prefer return to the view that launched bulk (badacc / browse).
+	if back := b.getManageBack(userID); strings.HasPrefix(back, "ops_badacc") {
+		cancelRows = append(cancelRows, []telegram.InlineKeyboardButton{
+			telegram.Btn("« 返回异常列表", back),
+		})
+	} else if st, pg := b.getBrowseView(userID); st != "" && st != "all" {
 		tok := browseToken(st)
 		cancelRows = append(cancelRows, []telegram.InlineKeyboardButton{
 			telegram.Btn("« 返回浏览", fmt.Sprintf("mgr_browse:%s:%d", tok, pg)),
@@ -864,7 +869,7 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 		return b.editOrSend(ctx, chatID, msgID, "拉取账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 	}
 	if len(items) == 0 {
-		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有可处理的账号（"+telegram.EscapeHTML(scopeLabel)+"）。", manageKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有可处理的账号（"+telegram.EscapeHTML(scopeLabel)+"）。", b.bulkNavKeyboard(userID))
 	}
 	title := map[string]string{
 		"clear_err": "批量清错",
@@ -949,13 +954,17 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 		}
 		rows = append(rows, failRow)
 	}
+	badBtn := telegram.Btn("📋 异常账号", "ops_badacc:error:0")
+	if back := b.getManageBack(userID); strings.HasPrefix(back, "ops_badacc") {
+		badBtn = telegram.Btn("📋 返回异常列表", back)
+	}
 	browseBtn := telegram.Btn("📚 账号浏览", "mgr_browse")
-	if st, pg := b.getBrowseView(userID); st != "" {
+	if st, pg := b.getBrowseView(userID); st != "" && st != "all" {
 		browseBtn = telegram.Btn("📚 返回浏览", fmt.Sprintf("mgr_browse:%s:%d", browseToken(st), pg))
 	}
 	rows = append(rows,
 		[]telegram.InlineKeyboardButton{
-			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			badBtn,
 			browseBtn,
 		},
 		[]telegram.InlineKeyboardButton{
@@ -966,6 +975,28 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userI
 	)
 	kb := &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
+}
+
+// bulkCancelKeyboard builds cancel/back rows for bulk prompt empty or cancel.
+func (b *Bot) bulkNavKeyboard(userID int64) *telegram.InlineKeyboardMarkup {
+	rows := [][]telegram.InlineKeyboardButton{}
+	if back := b.getManageBack(userID); strings.HasPrefix(back, "ops_badacc") {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("« 返回异常列表", back),
+		})
+	} else if st, pg := b.getBrowseView(userID); st != "" && st != "all" {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("« 返回浏览", fmt.Sprintf("mgr_browse:%s:%d", browseToken(st), pg)),
+		})
+	}
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("« 管理菜单", "mgr_menu"),
+			telegram.Btn("« 运维", "ops_menu"),
+		},
+		[]telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")},
+	)
+	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 // loadBulkTargets picks accounts for bulk actions, scoped to the operator's last browser filter when compatible.

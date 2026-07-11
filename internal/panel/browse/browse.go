@@ -293,6 +293,24 @@ func NormalizeBadKind(kind string) string {
 	}
 }
 
+// StatusFromBadKind maps a bad-account tab kind to a browser status filter so
+// bulk manage actions opened from that tab reuse the same account set.
+// "all" maps to "all" (not a bulk scope override).
+func StatusFromBadKind(kind string) string {
+	switch NormalizeBadKind(kind) {
+	case "rl":
+		return "rate_limited"
+	case "ol":
+		return "overload"
+	case "unsched":
+		return "unsched"
+	case "all":
+		return "all"
+	default:
+		return "error"
+	}
+}
+
 // LoadBadAccountsPage returns one page of problematic accounts.
 // kind: error|rl|unsched|all (page is 0-based).
 func LoadBadAccountsPage(ctx context.Context, cli *sub2api.Client, kind string, page, pageSize int) (items []sub2api.Account, total int64, title, scope string, err error) {

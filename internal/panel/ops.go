@@ -1369,6 +1369,9 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 	}
 	kind = browse.NormalizeBadKind(kind)
 	const pageSize = 8
+	// Sync browser filter so bulk actions from this tab reuse the same scope.
+	// Re-set ManageBack after setBrowseView (which would point at mgr_browse).
+	b.setBrowseView(userID, browse.StatusFromBadKind(kind), page)
 	b.setManageBack(userID, fmt.Sprintf("ops_badacc:%s:%d", kind, page))
 
 	items, total, title, scope, err := browse.LoadBadAccountsPage(ctx, cli, kind, page, pageSize)

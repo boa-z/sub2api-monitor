@@ -2783,6 +2783,9 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 	}
 	kind = browse.NormalizeBadKind(kind)
 	const pageSize = 8
+	// Sync browser filter so bulk actions from this tab reuse the same scope.
+	b.setBrowseView(userID, browse.StatusFromBadKind(kind), page)
+	b.setManageBack(userID, fmt.Sprintf("ops_badacc:%s:%d", kind, page))
 
 	items, total, title, scope, err := browse.LoadBadAccountsPage(ctx, cli, kind, page, pageSize)
 	if err != nil {
@@ -3609,6 +3612,25 @@ func (b *Bot) handleLiveAction(ctx context.Context, userID int64, action string,
 	return b.showAccountLive(ctx, userID, accountID, notice)
 }
 
+// bulkNavComponents builds cancel/back components after bulk empty/result.
+func (b *Bot) bulkNavComponents(userID int64) []discord.Component {
+	row := []discord.Component{}
+	if back := b.getManageBack(userID); strings.HasPrefix(back, "ops_badacc") {
+		row = append(row, discord.Button("« 异常列表", back, 2))
+	} else if st, pg := b.getBrowseView(userID); st != "" && st != "all" {
+		row = append(row, discord.Button("« 浏览", fmt.Sprintf("mgr_browse:%s:%d", browse.Token(st), pg), 2))
+	}
+	row = append(row,
+		discord.Button("« 管理", "mgr_menu", 2),
+		discord.Button("« 运维", "ops_menu", 2),
+		discord.Button("« 主面板", "home", 2),
+	)
+	if len(row) > 5 {
+		row = row[:5]
+	}
+	return []discord.Component{discord.ActionRow(row...)}
+}
+
 // loadDiscordBulkTargets selects accounts for bulk ops (scoped to browser filter when compatible).
 func (b *Bot) loadDiscordBulkTargets(ctx context.Context, cli *sub2api.Client, userID int64, action string, maxOps int) ([]sub2api.Account, int64, string, error) {
 	status, _ := b.getBrowseView(userID)
@@ -3626,7 +3648,7 @@ func (b *Bot) bulkActionPrompt(ctx context.Context, userID int64, action, title,
 		return "拉取账号失败: " + err.Error(), manageComponents()
 	}
 	if len(items) == 0 {
-		return "✅ 当前没有可处理的账号（" + scope + "）。", manageComponents()
+		return "✅ 当前没有可处理的账号（" + scope + "）。", b.bulkNavComponents(userID)
 	}
 	n := len(items)
 	if n > maxOps {
@@ -3642,7 +3664,10 @@ func (b *Bot) bulkActionPrompt(ctx context.Context, userID int64, action, title,
 		discord.DangerButton(fmt.Sprintf("确认处理 %d 个", n), confirmID),
 		discord.Button("取消", "mgr_menu", 2),
 	}
-	if st, pg := b.getBrowseView(userID); st != "" {
+	// Prefer return to the view that launched bulk (badacc / browse).
+	if back := b.getManageBack(userID); strings.HasPrefix(back, "ops_badacc") {
+		row = append(row, discord.Button("« 异常列表", back, 2))
+	} else if st, pg := b.getBrowseView(userID); st != "" && st != "all" {
 		tok := browse.Token(st)
 		row = append(row, discord.Button("« 浏览", fmt.Sprintf("mgr_browse:%s:%d", tok, pg), 2))
 	}
@@ -3664,7 +3689,7 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 		return "拉取失败: " + err.Error(), manageComponents()
 	}
 	if len(items) == 0 {
-		return "✅ 当前没有可处理的账号（" + scope + "）", manageComponents()
+		return "✅ 当前没有可处理的账号（" + scope + "）", b.bulkNavComponents(userID)
 	}
 	n := len(items)
 	if n > maxOps {
@@ -3731,13 +3756,17 @@ func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action
 		}
 		comps = append(comps, discord.ActionRow(row...))
 	}
+	badBtn := discord.Button("异常账号", "ops_badacc:error:0", 2)
+	if back := b.getManageBack(userID); strings.HasPrefix(back, "ops_badacc") {
+		badBtn = discord.Button("« 异常列表", back, 2)
+	}
 	browseBtn := discord.Button("浏览", "mgr_browse:error:0", 2)
-	if st, pg := b.getBrowseView(userID); st != "" {
+	if st, pg := b.getBrowseView(userID); st != "" && st != "all" {
 		browseBtn = discord.Button("« 浏览", fmt.Sprintf("mgr_browse:%s:%d", browse.Token(st), pg), 2)
 	}
 	comps = append(comps,
 		discord.ActionRow(
-			discord.Button("异常账号", "ops_badacc:error:0", 2),
+			badBtn,
 			browseBtn,
 			discord.Button("« 管理", "mgr_menu", 2),
 		),

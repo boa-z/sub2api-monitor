@@ -137,3 +137,20 @@ func TestBulkScopeCompatible(t *testing.T) {
 		t.Fatal("all not scoped")
 	}
 }
+
+func TestStatusFromBadKind(t *testing.T) {
+	cases := map[string]string{
+		"error":   "error",
+		"rl":      "rate_limited",
+		"ol":      "overload",
+		"unsched": "unsched",
+		"all":     "all",
+		"":        "error",
+		"weird":   "error",
+	}
+	for in, want := range cases {
+		if got := StatusFromBadKind(in); got != want {
+			t.Fatalf("StatusFromBadKind(%q)=%q want %q", in, got, want)
+		}
+	}
+}
