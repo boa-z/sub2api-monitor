@@ -601,6 +601,14 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		if err != nil {
 			return b.tg.SendChat(ctx, chatID, "切换失败: "+telegram.EscapeHTML(err.Error()), nil)
 		}
+		// Prefer detail view when account still watched (toggle from detail)
+		if p, ok := b.users.Get(cq.From.ID); ok {
+			for _, a := range p.Accounts {
+				if a.ID == id {
+					return b.editOrSend(ctx, chatID, msgID, b.accountDetailText(ctx, cq.From.ID, id), b.accountDetailKeyboard(cq.From.ID, id))
+				}
+			}
+		}
 		return b.editOrSend(ctx, chatID, msgID, b.accountsText(cq.From.ID), b.accountsKeyboard(cq.From.ID))
 	case strings.HasPrefix(data, "acc:"):
 		// account detail
@@ -1883,8 +1891,18 @@ func (b *Bot) accountsKeyboard(userID int64) *telegram.InlineKeyboardMarkup {
 }
 
 func (b *Bot) accountDetailKeyboard(userID, id int64) *telegram.InlineKeyboardMarkup {
+	tog := "⏸ 暂停监控"
+	if p, ok := b.users.Get(userID); ok {
+		for _, a := range p.Accounts {
+			if a.ID == id && !a.IsEnabled() {
+				tog = "▶️ 启用监控"
+				break
+			}
+		}
+	}
 	rows := [][]telegram.InlineKeyboardButton{
-		{telegram.Btn("📡 实时状态/用量", fmt.Sprintf("acc_live:%d", id))},
+		{telegram.Btn("📡 实时状态/用量", fmt.Sprintf("acc_live:%d", id)), telegram.Btn("🔄 刷新", fmt.Sprintf("acc:%d", id))},
+		{telegram.Btn(tog, fmt.Sprintf("tog_acc:%d", id))},
 	}
 	if b.canOpsRead(userID) {
 		label := "🧰 管理操作"

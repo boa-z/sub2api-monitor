@@ -238,7 +238,7 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 	case data == "cfg_acc":
 		return b.update(ctx, it, b.accountsText(uid), b.accountsComponents(uid))
 	case data == "cfg_thr":
-		return b.update(ctx, it, b.thresholdsText(uid), thrComponents())
+		return b.update(ctx, it, b.thresholdsText(uid), b.thrComponents(uid))
 	case data == "help":
 		return b.update(ctx, it, helpText(), b.homeComponents(uid))
 	case data == "check_now":
@@ -623,21 +623,27 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		rest := strings.TrimPrefix(data, "thr_set:")
 		win, pctStr, ok := strings.Cut(rest, ":")
 		if !ok {
-			return b.update(ctx, it, b.thresholdsText(uid), thrComponents())
+			return b.update(ctx, it, b.thresholdsText(uid), b.thrComponents(uid))
 		}
 		pct, _ := strconv.ParseFloat(pctStr, 64)
 		_ = b.setThreshold(uid, win, pct, "P2")
-		return b.update(ctx, it, "✅ 已设置\n\n"+b.thresholdsText(uid), thrComponents())
+		return b.update(ctx, it, "✅ 已设置\n\n"+b.thresholdsText(uid), b.thrComponents(uid))
 	case strings.HasPrefix(data, "thr_del:"):
 		win := strings.TrimPrefix(data, "thr_del:")
 		_ = b.deleteThreshold(uid, win)
-		return b.update(ctx, it, "✅ 已删除\n\n"+b.thresholdsText(uid), thrComponents())
+		return b.update(ctx, it, "✅ 已删除\n\n"+b.thresholdsText(uid), b.thrComponents(uid))
+	case data == "thr_apply_defs":
+		_, _ = b.users.Update(uid, func(p *userstore.Profile) error {
+			p.Thresholds = append([]config.UsageThreshold(nil), b.defaults...)
+			return nil
+		})
+		return b.update(ctx, it, "✅ 已写入系统默认阈值\n\n"+b.thresholdsText(uid), b.thrComponents(uid))
 	case data == "thr_reset":
 		_, _ = b.users.Update(uid, func(p *userstore.Profile) error {
 			p.Thresholds = nil
 			return nil
 		})
-		return b.update(ctx, it, "✅ 已重置为系统默认\n\n"+b.thresholdsText(uid), thrComponents())
+		return b.update(ctx, it, "✅ 已重置为系统默认\n\n"+b.thresholdsText(uid), b.thrComponents(uid))
 	default:
 		return b.update(ctx, it, "未知操作: "+data, b.homeComponents(uid))
 	}

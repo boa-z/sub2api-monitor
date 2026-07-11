@@ -750,29 +750,85 @@ func (b *Bot) thresholdsText(userID int64) string {
 	return bld.String()
 }
 
-func thrComponents() []discord.Component {
-	return []discord.Component{
+func (b *Bot) thrComponents(userID int64) []discord.Component {
+	comps := []discord.Component{
 		discord.ActionRow(
 			discord.Button("添加/改阈值", "thr_add", 1),
+			discord.Button("写入系统默认", "thr_apply_defs", 2),
 			discord.Button("重置默认", "thr_reset", 2),
 		),
-		discord.ActionRow(
-			discord.DangerButton("删 5h", "thr_del:five_hour"),
-			discord.DangerButton("删 7d", "thr_del:seven_day"),
-		),
-		discord.ActionRow(discord.Button("« 主面板", "home", 2)),
 	}
+	// dynamic delete buttons for current effective thresholds
+	var ths []config.UsageThreshold
+	if p, ok := b.users.Get(userID); ok && len(p.Thresholds) > 0 {
+		ths = p.Thresholds
+	} else {
+		ths = b.defaults
+	}
+	row := []discord.Component{}
+	for _, t := range ths {
+		w := sub2api.NormalizeWindow(t.Window)
+		if w == "" {
+			continue
+		}
+		label := "删 " + w
+		switch w {
+		case "five_hour":
+			label = "删 5h"
+		case "seven_day":
+			label = "删 7d"
+		case "seven_day_sonnet":
+			label = "删 7d-s"
+		case "seven_day_fable":
+			label = "删 7d-f"
+		case "gemini_shared_daily":
+			label = "删 g-sh"
+		case "gemini_pro_daily":
+			label = "删 g-pro"
+		case "gemini_flash_daily":
+			label = "删 g-fl"
+		}
+		row = append(row, discord.DangerButton(truncate(label, 20), "thr_del:"+w))
+		if len(row) == 3 {
+			comps = append(comps, discord.ActionRow(row...))
+			row = nil
+		}
+		if len(comps) >= 4 { // leave room for home row
+			break
+		}
+	}
+	if len(row) > 0 && len(comps) < 4 {
+		comps = append(comps, discord.ActionRow(row...))
+	}
+	comps = append(comps, discord.ActionRow(discord.Button("« 主面板", "home", 2)))
+	if len(comps) > 5 {
+		comps = comps[:5]
+	}
+	return comps
 }
 
 func thrWindowComponents() []discord.Component {
+	// quick presets for common windows + percent combos
 	return []discord.Component{
 		discord.ActionRow(
+			discord.Button("5h≥70%", "thr_set:five_hour:70", 2),
 			discord.Button("5h≥80%", "thr_set:five_hour:80", 2),
 			discord.Button("5h≥90%", "thr_set:five_hour:90", 2),
 		),
 		discord.ActionRow(
+			discord.Button("7d≥70%", "thr_set:seven_day:70", 2),
 			discord.Button("7d≥80%", "thr_set:seven_day:80", 2),
 			discord.Button("7d≥90%", "thr_set:seven_day:90", 2),
+		),
+		discord.ActionRow(
+			discord.Button("7d-s≥80%", "thr_set:seven_day_sonnet:80", 2),
+			discord.Button("7d-f≥80%", "thr_set:seven_day_fable:80", 2),
+			discord.Button("g-pro≥80%", "thr_set:gemini_pro_daily:80", 2),
+		),
+		discord.ActionRow(
+			discord.Button("g-sh≥80%", "thr_set:gemini_shared_daily:80", 2),
+			discord.Button("g-fl≥80%", "thr_set:gemini_flash_daily:80", 2),
+			discord.Button("max≥90%", "thr_set:max:90", 2),
 		),
 		discord.ActionRow(discord.Button("« 阈值", "cfg_thr", 2)),
 	}
@@ -1105,15 +1161,7 @@ func (b *Bot) deleteThreshold(userID int64, window string) error {
 }
 
 func normalizeWindow(w string) string {
-	w = strings.TrimSpace(strings.ToLower(w))
-	switch w {
-	case "5h", "5_hour", "5hour", "five-hour":
-		return "five_hour"
-	case "7d", "7_day", "7day", "seven-day":
-		return "seven_day"
-	default:
-		return w
-	}
+	return sub2api.NormalizeWindow(w)
 }
 
 func (b *Bot) testConnection(ctx context.Context, userID int64) string {
