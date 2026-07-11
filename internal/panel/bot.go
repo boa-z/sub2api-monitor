@@ -48,6 +48,7 @@ type session struct {
 	UserSearch    string
 	UserStatus    string
 	UserRole      string
+	UserHotOnly   bool
 	GroupSearch   string
 	GroupPlatform string
 	// ChannelTab remembers ops channel filter: all|on|ok|bad
@@ -590,6 +591,13 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			role = strings.TrimPrefix(data, "mgr_urole:")
 		}
 		b.setUserRole(cq.From.ID, role)
+		return b.showUsers(ctx, chatID, msgID, cq.From.ID, 0, b.getUserSearch(cq.From.ID))
+
+	case data == "mgr_uhot":
+		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		b.toggleUserHotOnly(cq.From.ID)
 		return b.showUsers(ctx, chatID, msgID, cq.From.ID, 0, b.getUserSearch(cq.From.ID))
 	case strings.HasPrefix(data, "mgr_user:"):
 		if b.denyIfNotOpsRead(ctx, chatID, msgID, cq.From.ID, cq.ID) {
@@ -2849,6 +2857,41 @@ func (b *Bot) getUserRole(userID int64) string {
 		return ""
 	}
 	return s.UserRole
+}
+
+func (b *Bot) setUserHotOnly(userID int64, hot bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.UserHotOnly = hot
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getUserHotOnly(userID int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return false
+	}
+	return s.UserHotOnly
+}
+
+func (b *Bot) toggleUserHotOnly(userID int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.UserHotOnly = !s.UserHotOnly
+	s.UpdatedAt = time.Now()
+	return s.UserHotOnly
 }
 
 func (b *Bot) setGroupSearch(userID int64, search string) {

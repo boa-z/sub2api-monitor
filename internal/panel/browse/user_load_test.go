@@ -67,3 +67,15 @@ func TestCountAccountOpsErrors(t *testing.T) {
 		t.Fatal(CountAccountOpsErrors(items, 10))
 	}
 }
+
+func TestFilterHotUsers(t *testing.T) {
+	items := []sub2api.User{
+		{ID: 1, CurrentConcurrency: 8, Concurrency: 10},
+		{ID: 2, CurrentConcurrency: 1, Concurrency: 10},
+		{ID: 3, CurrentConcurrency: 10, Concurrency: 10},
+	}
+	hot := FilterHotUsers(items)
+	if len(hot) != 2 {
+		t.Fatalf("%v", hot)
+	}
+}

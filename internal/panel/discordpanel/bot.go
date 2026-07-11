@@ -48,6 +48,7 @@ type session struct {
 	UserSearch    string
 	UserStatus    string
 	UserRole      string
+	UserHotOnly   bool
 	GroupSearch   string
 	GroupPlatform string
 	ChannelTab    string
@@ -552,6 +553,14 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 			role = strings.TrimPrefix(data, "mgr_urole:")
 		}
 		b.setUserRole(uid, role)
+		text, comps := b.showUsersView(ctx, uid, 0, b.getUserSearch(uid))
+		return b.update(ctx, it, text, comps)
+
+	case data == "mgr_uhot":
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
+		}
+		b.toggleUserHotOnly(uid)
 		text, comps := b.showUsersView(ctx, uid, 0, b.getUserSearch(uid))
 		return b.update(ctx, it, text, comps)
 	case strings.HasPrefix(data, "mgr_user:"):
@@ -1283,6 +1292,41 @@ func (b *Bot) getUserRole(userID int64) string {
 		return ""
 	}
 	return s.UserRole
+}
+
+func (b *Bot) setUserHotOnly(userID int64, hot bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.UserHotOnly = hot
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getUserHotOnly(userID int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return false
+	}
+	return s.UserHotOnly
+}
+
+func (b *Bot) toggleUserHotOnly(userID int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.UserHotOnly = !s.UserHotOnly
+	s.UpdatedAt = time.Now()
+	return s.UserHotOnly
 }
 
 func (b *Bot) setGroupSearch(userID int64, search string) {

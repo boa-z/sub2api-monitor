@@ -74,3 +74,17 @@ func CountAccountOpsErrors(items []sub2api.OpsError, accountID int64) int {
 	}
 	return n
 }
+
+// FilterHotUsers keeps only users whose concurrency quota looks saturated.
+func FilterHotUsers(items []sub2api.User) []sub2api.User {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]sub2api.User, 0, len(items))
+	for _, u := range items {
+		if UserIsHot(u.CurrentConcurrency, u.Concurrency) {
+			out = append(out, u)
+		}
+	}
+	return out
+}

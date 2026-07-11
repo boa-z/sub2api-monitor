@@ -4560,8 +4560,40 @@ func (b *Bot) showUsersView(ctx context.Context, userID int64, page int, search 
 	b.setUserSearch(userID, search)
 	status := b.getUserStatus(userID)
 	role := b.getUserRole(userID)
+	hotOnly := b.getUserHotOnly(userID)
 	const pageSize = 8
-	items, total, err := cli.ListUsersEx(ctx, page+1, pageSize, sub2api.UserListFilter{Search: search, Status: status, Role: role})
+	var items []sub2api.User
+	var total int64
+	if hotOnly {
+		const scanPages, scanSize = 5, 50
+		var pooled []sub2api.User
+		for p := 1; p <= scanPages; p++ {
+			batch, tot, e := cli.ListUsersEx(ctx, p, scanSize, sub2api.UserListFilter{Search: search, Status: status, Role: role})
+			if e != nil {
+				err = e
+				break
+			}
+			pooled = append(pooled, batch...)
+			if len(batch) == 0 || int64(p*scanSize) >= tot {
+				break
+			}
+		}
+		if err == nil {
+			hot := browse.FilterHotUsers(pooled)
+			total = int64(len(hot))
+			start := page * pageSize
+			if start > len(hot) {
+				start = len(hot)
+			}
+			end := start + pageSize
+			if end > len(hot) {
+				end = len(hot)
+			}
+			items = hot[start:end]
+		}
+	} else {
+		items, total, err = cli.ListUsersEx(ctx, page+1, pageSize, sub2api.UserListFilter{Search: search, Status: status, Role: role})
+	}
 	if err != nil {
 		return "用户列表失败: " + err.Error(), manageComponents()
 	}
@@ -4575,6 +4607,9 @@ func (b *Bot) showUsersView(ctx context.Context, userID int64, page int, search 
 	}
 	if role != "" {
 		fmt.Fprintf(&bld, "角色筛选: `%s`\n", role)
+	}
+	if hotOnly {
+		fmt.Fprintf(&bld, "筛选: `仅偏热`（并发≥%.0f%% 或打满，客户端扫描）\n", browse.HotLoadThreshold)
 	}
 	fmt.Fprintf(&bld, "第 %d 页 · 共 `%d`\n点选用户查看详情\n\n", page+1, total)
 	opts := make([]discord.SelectOpt, 0, len(items))
@@ -4639,6 +4674,11 @@ func (b *Bot) showUsersView(ctx context.Context, userID int64, page int, search 
 		}
 		stRow = append(stRow, discord.Button(lab, cb, 2))
 	}
+	hotLab := "🔥偏热"
+	if hotOnly {
+		hotLab = "·🔥偏热"
+	}
+	stRow = append(stRow, discord.Button(hotLab, "mgr_uhot", 2))
 	comps = append(comps, discord.ActionRow(stRow...))
 	roleRow := []discord.Component{}
 	for _, st := range []struct {
@@ -4795,6 +4835,15 @@ func (b *Bot) showGroupsView(ctx context.Context, userID int64, page int, search
 	if err != nil {
 		return "分组列表失败: " + err.Error(), manageComponents()
 	}
+	// best-effort concurrency map for heat marks
+	hotByGroup := map[int64]sub2api.ConcurrencyBucket{}
+	if snap, err := cli.GetConcurrency(ctx); err == nil && snap != nil && snap.Enabled {
+		for _, v := range snap.Group {
+			if v.GroupID > 0 {
+				hotByGroup[v.GroupID] = v
+			}
+		}
+	}
 	var bld strings.Builder
 	bld.WriteString("**分组列表**（Sub2API）\n")
 	if search != "" {
@@ -4810,8 +4859,18 @@ func (b *Bot) showGroupsView(ctx context.Context, userID int64, page int, search
 		if g.IsExclusive {
 			excl = " · 独占"
 		}
-		fmt.Fprintf(&bld, "• `#%d` %s [`%s`/`%s`] ×`%.2f`%s\n",
-			g.ID, truncate(g.Name, 20), g.Platform, g.Status, g.RateMultiplier, excl)
+		hotMark := ""
+		if bkt, ok := hotByGroup[g.ID]; ok {
+			if browse.IsHotLoad(bkt.LoadPercentage, bkt.WaitingInQueue) {
+				hotMark = " 🔥"
+			}
+			fmt.Fprintf(&bld, "• `#%d` %s [`%s`/`%s`] ×`%.2f`%s · 并发 `%d`/`%d` (%.0f%%)%s\n",
+				g.ID, truncate(g.Name, 16), g.Platform, g.Status, g.RateMultiplier, excl,
+				bkt.CurrentInUse, bkt.MaxCapacity, bkt.LoadPercentage, hotMark)
+		} else {
+			fmt.Fprintf(&bld, "• `#%d` %s [`%s`/`%s`] ×`%.2f`%s\n",
+				g.ID, truncate(g.Name, 20), g.Platform, g.Status, g.RateMultiplier, excl)
+		}
 		if g.Description != "" {
 			fmt.Fprintf(&bld, "  %s\n", truncate(g.Description, 60))
 		}
