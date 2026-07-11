@@ -946,3 +946,24 @@ func TestManageComponentsTempDisabledBulk(t *testing.T) {
 		t.Fatal("temp scope should surface bulk clear_temp")
 	}
 }
+
+func TestManageComponentsOverloadTriage(t *testing.T) {
+	comps := manageComponentsFor(&sub2api.DashboardStats{OverloadAccounts: 5}, true, "")
+	if !containsCustomID(comps, "ops_badacc:ol:0") {
+		t.Fatalf("missing ol triage: %+v", comps)
+	}
+	if !containsCustomID(comps, "mgr_bulk_heal") {
+		t.Fatalf("overload should prioritize heal: %+v", comps)
+	}
+}
+
+func TestCollectUnavailableAccountIDsDiscord(t *testing.T) {
+	ids := collectUnavailableAccountIDs([]sub2api.AccountRuntimeStatus{
+		{AccountID: 9, IsOverloaded: true},
+		{AccountID: 9, HasError: true},
+		{AccountID: 8, IsAvailable: false},
+	})
+	if len(ids) != 2 || ids[0] != 9 || ids[1] != 8 {
+		t.Fatalf("%v", ids)
+	}
+}

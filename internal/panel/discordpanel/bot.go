@@ -476,6 +476,13 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		_ = b.respondUpdate(ctx, it, "⏳ 正在修复错误关联账号…", nil)
 		text, comps := b.healRelatedFromErrors(ctx, uid)
 		return b.followupEdit(ctx, it, text, comps)
+	case data == "av:heal_related":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		_ = b.respondUpdate(ctx, it, "⏳ 正在修复可用性异常账号…", nil)
+		text, comps := b.healRelatedFromAvailability(ctx, uid)
+		return b.followupEdit(ctx, it, text, comps)
 	case strings.HasPrefix(data, "oe:r:"):
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))

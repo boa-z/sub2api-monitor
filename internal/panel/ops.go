@@ -42,6 +42,7 @@ func opsKeyboard() *telegram.InlineKeyboardMarkup {
 // canWrite controls bulk heal / write entry visibility for viewers.
 func opsKeyboardFor(stats *sub2api.DashboardStats, canWrite bool) *telegram.InlineKeyboardMarkup {
 	badLabel := "📋 异常账号"
+	badData := "ops_badacc:error:0"
 	rlLabel := "⏱ 限速"
 	errLabel := "❌ 错误"
 	mgrLabel := "🧰 账号管理"
@@ -50,9 +51,8 @@ func opsKeyboardFor(stats *sub2api.DashboardStats, canWrite bool) *telegram.Inli
 	}
 	olLabel := "过载"
 	if stats != nil {
-		if stats.ErrorAccounts > 0 {
-			badLabel = fmt.Sprintf("📋 异常 %v", stats.ErrorAccounts)
-		}
+		_, bl, bd, _ := browse.DashboardTriage(stats)
+		badLabel, badData = "📋 "+bl, bd
 		if stats.RatelimitAccounts > 0 {
 			rlLabel = fmt.Sprintf("⏱ 限速 %v", stats.RatelimitAccounts)
 		}
@@ -70,7 +70,7 @@ func opsKeyboardFor(stats *sub2api.DashboardStats, canWrite bool) *telegram.Inli
 	hasIssues := stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0 || stats.OverloadAccounts > 0)
 	if hasIssues {
 		row := []telegram.InlineKeyboardButton{
-			telegram.Btn(badLabel, "ops_badacc:error:0"),
+			telegram.Btn(badLabel, badData),
 		}
 		if stats.RatelimitAccounts > 0 {
 			row = append(row, telegram.Btn(rlLabel, "ops_badacc:rl:0"))
@@ -95,7 +95,7 @@ func opsKeyboardFor(stats *sub2api.DashboardStats, canWrite bool) *telegram.Inli
 		}
 	} else {
 		rows = append(rows, []telegram.InlineKeyboardButton{
-			telegram.Btn(badLabel, "ops_badacc:error:0"),
+			telegram.Btn(badLabel, badData),
 			telegram.Btn(mgrLabel, "mgr_menu"),
 		})
 	}
@@ -416,10 +416,38 @@ func (b *Bot) showAvailability(ctx context.Context, chatID, msgID, userID int64)
 	if len(accRow) > 0 {
 		rows = append(rows, accRow)
 	}
+	// count modes for triage shortcuts
+	nErr, nRL, nOL, nUnav := 0, 0, 0, 0
+	for _, st := range bad {
+		if st.HasError {
+			nErr++
+		}
+		if st.IsRateLimited {
+			nRL++
+		}
+		if st.IsOverloaded {
+			nOL++
+		}
+		if !st.IsAvailable {
+			nUnav++
+		}
+	}
 	b.setManageBack(userID, "ops_avail")
+	// primary badacc jump follows dominant failure mode from availability sample
+	badJumpLabel, badJumpData := "📋 异常账号", "ops_badacc:error:0"
+	switch {
+	case nErr > 0:
+		badJumpLabel, badJumpData = fmt.Sprintf("📋 异常 %d", nErr), "ops_badacc:error:0"
+	case nRL > 0:
+		badJumpLabel, badJumpData = fmt.Sprintf("📋 限速 %d", nRL), "ops_badacc:rl:0"
+	case nOL > 0:
+		badJumpLabel, badJumpData = fmt.Sprintf("📋 过载 %d", nOL), "ops_badacc:ol:0"
+	case nUnav > 0:
+		badJumpLabel = fmt.Sprintf("📋 不可用 %d", nUnav)
+	}
 	rows = append(rows,
 		[]telegram.InlineKeyboardButton{
-			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			telegram.Btn(badJumpLabel, badJumpData),
 			telegram.Btn("⏱ 限速", "ops_badacc:rl:0"),
 		},
 		[]telegram.InlineKeyboardButton{
@@ -429,7 +457,7 @@ func (b *Bot) showAvailability(ctx context.Context, chatID, msgID, userID int64)
 	)
 	if b.canOpsWrite(userID) && len(bad) > 0 {
 		rows = append(rows, []telegram.InlineKeyboardButton{
-			telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
+			telegram.Btn("🛠 修复本页账号", "av:heal_related"),
 			telegram.Btn("📈 看板", "ops_dash"),
 		})
 	} else {
@@ -1463,6 +1491,96 @@ func (b *Bot) healRelatedFromErrors(ctx context.Context, chatID, msgID, userID i
 		{
 			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
 			telegram.Btn("❌ 错误列表", "ops_errors:all:0"),
+		},
+		{
+			telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
+			telegram.Btn("« 运维", "ops_menu"),
+		},
+		{telegram.Btn("« 主面板", "home")},
+	}
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+// collectUnavailableAccountIDs returns unique account IDs marked unavailable/error/rl/ol.
+func collectUnavailableAccountIDs(statuses []sub2api.AccountRuntimeStatus) []int64 {
+	seen := map[int64]struct{}{}
+	var ids []int64
+	for _, st := range statuses {
+		if st.AccountID <= 0 {
+			continue
+		}
+		if !(st.HasError || st.IsRateLimited || st.IsOverloaded || !st.IsAvailable) {
+			continue
+		}
+		if _, ok := seen[st.AccountID]; ok {
+			continue
+		}
+		seen[st.AccountID] = struct{}{}
+		ids = append(ids, st.AccountID)
+	}
+	return ids
+}
+
+// healRelatedFromAvailability heals accounts listed as unavailable on the availability view.
+func (b *Bot) healRelatedFromAvailability(ctx context.Context, chatID, msgID, userID int64) error {
+	cli, _, err := b.userClient(userID, 45*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	av, err := cli.GetAccountAvailability(ctx)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "可用性失败: "+telegram.EscapeHTML(err.Error()), opsKeyboard())
+	}
+	var list []sub2api.AccountRuntimeStatus
+	if av != nil {
+		for _, st := range av.Account {
+			list = append(list, st)
+		}
+	}
+	ids := collectUnavailableAccountIDs(list)
+	if len(ids) == 0 {
+		return b.showAvailability(ctx, chatID, msgID, userID)
+	}
+	const maxOps = 10
+	if len(ids) > maxOps {
+		ids = ids[:maxOps]
+	}
+	b.setBrowseView(userID, "problem", 0)
+	_ = b.editOrSend(ctx, chatID, msgID,
+		fmt.Sprintf("%s\n\n⏳ 修复可用性异常账号 0/%d …", telegram.Bold("可用性关联一键修复"), len(ids)), nil)
+
+	okN, failN := 0, 0
+	var fails []string
+	for i, id := range ids {
+		msg := b.healAccount(ctx, cli, id)
+		if strings.HasPrefix(msg, "❌") {
+			failN++
+			if len(fails) < 5 {
+				fails = append(fails, fmt.Sprintf("#%d %s", id, truncateRunes(strings.TrimPrefix(msg, "❌ "), 40)))
+			}
+		} else {
+			okN++
+		}
+		if (i+1)%3 == 0 || i+1 == len(ids) {
+			_ = b.editOrSend(ctx, chatID, msgID,
+				fmt.Sprintf("%s\n\n⏳ 处理中 %d/%d\n✅ %d · ❌ %d",
+					telegram.Bold("可用性关联一键修复"), i+1, len(ids), okN, failN), nil)
+		}
+	}
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold("可用性关联一键修复结果") + "\n\n")
+	fmt.Fprintf(&bld, "关联账号 %s 个\n", telegram.Code(strconv.Itoa(len(ids))))
+	fmt.Fprintf(&bld, "✅ 成功 %s · ❌ 失败 %s\n", telegram.Code(strconv.Itoa(okN)), telegram.Code(strconv.Itoa(failN)))
+	if len(fails) > 0 {
+		bld.WriteString("\n失败样例:\n")
+		for _, f := range fails {
+			bld.WriteString("• " + telegram.EscapeHTML(f) + "\n")
+		}
+	}
+	rows := [][]telegram.InlineKeyboardButton{
+		{
+			telegram.Btn("🔄 可用性", "ops_avail"),
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
 		},
 		{
 			telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),

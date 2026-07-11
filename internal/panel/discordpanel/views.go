@@ -1067,8 +1067,8 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 		if st, err := cli.GetDashboardStats(ctx); err == nil && st != nil {
 			fmt.Fprintf(&bld, "健康: 正常 `%v` · 异常 `%v` · 限速 `%v` · 过载 `%v`\n",
 				st.NormalAccounts, st.ErrorAccounts, st.RatelimitAccounts, st.OverloadAccounts)
-			if st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 {
-				bld.WriteString("建议优先处理异常/限速，或使用批量操作。\n")
+			if st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 || st.OverloadAccounts > 0 {
+				bld.WriteString("建议优先处理异常/限速/过载，或使用批量操作。\n")
 			}
 			bld.WriteString("\n")
 		}
@@ -1156,7 +1156,7 @@ func manageComponentsFor(stats *sub2api.DashboardStats, canWrite bool, browseSta
 				),
 			)
 		default:
-			if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
+			if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0 || stats.OverloadAccounts > 0) {
 				comps = append(comps,
 					discord.ActionRow(
 						discord.Button(healLabel, "mgr_bulk_heal", 1),
@@ -1984,6 +1984,18 @@ func (b *Bot) showAvailabilityView(ctx context.Context, userID int64) (string, [
 			fmt.Fprintf(&bld, "• #%d %s [%s]\n", st.AccountID, truncate(st.AccountName, 16), strings.Join(flags, ","))
 		}
 	}
+	nErr, nRL, nOL := 0, 0, 0
+	for _, st := range bad {
+		if st.HasError {
+			nErr++
+		}
+		if st.IsRateLimited {
+			nRL++
+		}
+		if st.IsOverloaded {
+			nOL++
+		}
+	}
 	b.setManageBack(userID, "ops_avail")
 	comps := []discord.Component{
 		discord.ActionRow(
@@ -2006,15 +2018,28 @@ func (b *Bot) showAvailabilityView(ctx context.Context, userID int64) (string, [
 	if len(row) > 0 {
 		comps = append(comps, discord.ActionRow(row...))
 	}
+	badJumpLabel, badJumpData := "异常账号", "ops_badacc:error:0"
+	switch {
+	case nErr > 0:
+		badJumpLabel, badJumpData = fmt.Sprintf("异常 %d", nErr), "ops_badacc:error:0"
+	case nRL > 0:
+		badJumpLabel, badJumpData = fmt.Sprintf("限速 %d", nRL), "ops_badacc:rl:0"
+	case nOL > 0:
+		badJumpLabel, badJumpData = fmt.Sprintf("过载 %d", nOL), "ops_badacc:ol:0"
+	}
 	footer := []discord.Component{
-		discord.Button("异常账号", "ops_badacc:error:0", 2),
+		discord.Button(badJumpLabel, badJumpData, 2),
 		discord.Button("限速", "ops_badacc:rl:0", 2),
 		discord.Button("异常汇总", "mgr_browse:problem:0", 2),
 	}
 	if b.canOpsWrite(userID) && len(bad) > 0 {
-		footer = append(footer, discord.Button("一键修复", "mgr_bulk_heal", 1))
+		footer = append(footer, discord.Button("修复本页", "av:heal_related", 1))
 	} else {
 		footer = append(footer, discord.Button("错误", "ops_errors:all:0", 2))
+	}
+	// Discord max 5 buttons/row
+	if len(footer) > 5 {
+		footer = footer[:5]
 	}
 	comps = append(comps, discord.ActionRow(footer...))
 	if len(comps) > 5 {
@@ -2963,6 +2988,86 @@ func (b *Bot) healRelatedFromErrors(ctx context.Context, userID int64) (string, 
 		discord.ActionRow(
 			discord.Button("异常账号", "ops_badacc:error:0", 2),
 			discord.Button("错误列表", "ops_errors:all:0", 2),
+			discord.Button("批量修复", "mgr_bulk_heal", 1),
+		),
+		discord.ActionRow(
+			discord.Button("« 运维", "ops_menu", 2),
+			discord.Button("« 主面板", "home", 2),
+		),
+	}
+	return bld.String(), comps
+}
+
+// collectUnavailableAccountIDs returns unique account IDs marked unavailable/error/rl/ol.
+func collectUnavailableAccountIDs(statuses []sub2api.AccountRuntimeStatus) []int64 {
+	seen := map[int64]struct{}{}
+	var ids []int64
+	for _, st := range statuses {
+		if st.AccountID <= 0 {
+			continue
+		}
+		if !(st.HasError || st.IsRateLimited || st.IsOverloaded || !st.IsAvailable) {
+			continue
+		}
+		if _, ok := seen[st.AccountID]; ok {
+			continue
+		}
+		seen[st.AccountID] = struct{}{}
+		ids = append(ids, st.AccountID)
+	}
+	return ids
+}
+
+func (b *Bot) healRelatedFromAvailability(ctx context.Context, userID int64) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 45*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), opsComponents()
+	}
+	av, err := cli.GetAccountAvailability(ctx)
+	if err != nil {
+		return "可用性失败: " + err.Error(), opsComponents()
+	}
+	var list []sub2api.AccountRuntimeStatus
+	if av != nil {
+		for _, st := range av.Account {
+			list = append(list, st)
+		}
+	}
+	ids := collectUnavailableAccountIDs(list)
+	if len(ids) == 0 {
+		return b.showAvailabilityView(ctx, userID)
+	}
+	const maxOps = 10
+	if len(ids) > maxOps {
+		ids = ids[:maxOps]
+	}
+	b.setBrowseView(userID, "problem", 0)
+	okN, failN := 0, 0
+	var fails []string
+	for _, id := range ids {
+		msg := b.healAccount(ctx, cli, id)
+		if strings.HasPrefix(msg, "❌") {
+			failN++
+			if len(fails) < 5 {
+				fails = append(fails, fmt.Sprintf("#%d %s", id, truncate(strings.TrimPrefix(msg, "❌ "), 40)))
+			}
+		} else {
+			okN++
+		}
+	}
+	var bld strings.Builder
+	bld.WriteString("**可用性关联一键修复结果**\n\n")
+	fmt.Fprintf(&bld, "关联账号 `%d` 个\n✅ 成功 `%d` · ❌ 失败 `%d`\n", len(ids), okN, failN)
+	if len(fails) > 0 {
+		bld.WriteString("\n失败样例:\n")
+		for _, f := range fails {
+			bld.WriteString("• " + f + "\n")
+		}
+	}
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button("可用性", "ops_avail", 2),
+			discord.Button("异常账号", "ops_badacc:error:0", 2),
 			discord.Button("批量修复", "mgr_bulk_heal", 1),
 		),
 		discord.ActionRow(

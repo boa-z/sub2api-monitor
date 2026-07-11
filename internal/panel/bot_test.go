@@ -1353,3 +1353,54 @@ func TestDashboardTriageLabelsOnHome(t *testing.T) {
 		t.Fatalf("home kb missing overload shortcut: %v", kb)
 	}
 }
+
+func TestCollectUnavailableAccountIDs(t *testing.T) {
+	ids := collectUnavailableAccountIDs([]sub2api.AccountRuntimeStatus{
+		{AccountID: 1, HasError: true},
+		{AccountID: 1, HasError: true},
+		{AccountID: 2, IsRateLimited: true},
+		{AccountID: 3, IsOverloaded: true},
+		{AccountID: 4, IsAvailable: true},
+		{AccountID: 5, IsAvailable: false},
+		{AccountID: 0, HasError: true},
+	})
+	if len(ids) != 4 {
+		t.Fatalf("ids=%v", ids)
+	}
+	if ids[0] != 1 || ids[1] != 2 || ids[2] != 3 || ids[3] != 5 {
+		t.Fatalf("order %v", ids)
+	}
+}
+
+func TestManageKeyboardOverloadTriage(t *testing.T) {
+	kb := manageKeyboardFor(&sub2api.DashboardStats{OverloadAccounts: 6}, true, "")
+	found := false
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			if btn.CallbackData == "ops_badacc:ol:0" && strings.Contains(btn.Text, "过载") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("manage hub missing overload shortcut: %v", kb)
+	}
+}
+
+func TestOpsKeyboardOverloadTriage(t *testing.T) {
+	kb := opsKeyboardFor(&sub2api.DashboardStats{OverloadAccounts: 3}, true)
+	foundData, foundHeal := false, false
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			if btn.CallbackData == "ops_badacc:ol:0" {
+				foundData = true
+			}
+			if btn.CallbackData == "mgr_bulk_heal" {
+				foundHeal = true
+			}
+		}
+	}
+	if !foundData || !foundHeal {
+		t.Fatalf("ops kb ol=%v heal=%v kb=%v", foundData, foundHeal, kb)
+	}
+}

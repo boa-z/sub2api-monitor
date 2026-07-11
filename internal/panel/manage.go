@@ -23,12 +23,14 @@ func manageKeyboard() *telegram.InlineKeyboardMarkup {
 // browseStatus, when non-empty and not "all", annotates bulk labels with the active scope.
 func manageKeyboardFor(stats *sub2api.DashboardStats, canWrite bool, browseStatus string) *telegram.InlineKeyboardMarkup {
 	badLabel := "📋 异常账号"
+	badData := "ops_badacc:error:0"
 	healLabel := "🛠 批量一键修复"
 	clearLabel := "🧹 批量清错"
 	rlLabel := "⏱ 批量清限速"
 	if stats != nil {
+		_, bl, bd, _ := browse.DashboardTriage(stats)
+		badLabel, badData = "📋 "+bl, bd
 		if stats.ErrorAccounts > 0 {
-			badLabel = fmt.Sprintf("📋 异常 %v", stats.ErrorAccounts)
 			clearLabel = fmt.Sprintf("🧹 清错 %v", stats.ErrorAccounts)
 		}
 		if stats.RatelimitAccounts > 0 {
@@ -56,7 +58,7 @@ func manageKeyboardFor(stats *sub2api.DashboardStats, canWrite bool, browseStatu
 	}
 	rows := [][]telegram.InlineKeyboardButton{
 		{telegram.Btn("📚 账号浏览", "mgr_browse"), telegram.Btn("🔎 搜索账号", "mgr_search")},
-		{telegram.Btn(badLabel, "ops_badacc:error:0"), telegram.Btn("📈 看板", "ops_dash")},
+		{telegram.Btn(badLabel, badData), telegram.Btn("📈 看板", "ops_dash")},
 	}
 	if canWrite {
 		switch strings.TrimSpace(browseStatus) {
@@ -83,7 +85,7 @@ func manageKeyboardFor(stats *sub2api.DashboardStats, canWrite bool, browseStatu
 				},
 			)
 		default:
-			if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
+			if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0 || stats.OverloadAccounts > 0) {
 				rows = append(rows,
 					[]telegram.InlineKeyboardButton{
 						telegram.Btn(healLabel, "mgr_bulk_heal"),
@@ -140,7 +142,7 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 		if line, issues := adminHealthSnapshot(ctx, cli); line != "" {
 			bld.WriteString(line + "\n")
 			if issues {
-				bld.WriteString("建议优先处理异常/限速账号，或使用下方批量操作。\n")
+				bld.WriteString("建议优先处理异常/限速/过载账号，或使用下方批量操作。\n")
 			}
 			bld.WriteString("\n")
 		}
