@@ -393,6 +393,13 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		kind, page := browse.ParseBadAccCallback(rest)
 		text, comps := b.showBadAccountsView(ctx, uid, kind, page, "")
 		return b.update(ctx, it, text, comps)
+	case data == "ops_watch_errors":
+		if !b.canOpsWrite(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		_ = b.respondUpdate(ctx, it, "⏳ 正在添加 error 账号到监控…", nil)
+		text, comps := b.watchErrorAccounts(ctx, uid)
+		return b.followupEdit(ctx, it, text, comps)
 	case data == "oe:resolve_all:u":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -454,6 +461,7 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		} else {
 			status, page = b.getBrowseView(uid)
 		}
+		b.setBrowseView(uid, status, page)
 		text, comps := b.accountBrowser(ctx, uid, status, page)
 		return b.update(ctx, it, text, comps)
 	case strings.HasPrefix(data, "mgr_acc:"):

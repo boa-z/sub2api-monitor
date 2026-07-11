@@ -1212,9 +1212,14 @@ func (b *Bot) watchErrorAccounts(ctx context.Context, chatID, msgID, userID int6
 		}
 		added++
 	}
-	msg := fmt.Sprintf("✅ 已添加 %d 个异常账号到监控（跳过已存在 %d）\n\n%s",
-		added, skipped, b.accountsText(userID))
-	return b.editOrSend(ctx, chatID, msgID, msg, b.accountsKeyboard(userID))
+	watchN := 0
+	if p, ok := b.users.Get(userID); ok {
+		watchN = len(p.Accounts)
+	}
+	notice := fmt.Sprintf("✅ 已添加 %d 个异常账号到监控（跳过已存在 %d）\n当前监控列表共 %d 个账号",
+		added, skipped, watchN)
+	// Return to abnormal-account triage so bulk heal remains one tap away.
+	return b.showBadAccountsView(ctx, chatID, msgID, userID, "error", 0, notice)
 }
 
 // adminHealthLine returns a short instance health summary for admins (best-effort).

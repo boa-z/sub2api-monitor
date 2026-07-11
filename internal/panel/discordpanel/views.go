@@ -2325,6 +2325,7 @@ func (b *Bot) showBadAccounts(ctx context.Context, userID int64) (string, []disc
 
 // showBadAccountsView lists problematic accounts.
 // kind: error|rl|unsched|all; page is 0-based.
+// Layout is capped at Discord's 5 action-row limit (tabs + select + bulk + nav).
 func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string, page int, notice string) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
@@ -2360,48 +2361,46 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 			truncate(msg, 60),
 		)
 	}
+	bld.WriteString("\n下拉选择账号进入管理/实时操作。")
 
+	// Row budget (max 5):
+	// 1 tabs-A, 2 tabs-B+watch, 3 account select, 4 bulk (write), 5 nav/footer
 	comps := []discord.Component{
 		discord.ActionRow(
 			discord.Button(errorTabLabel("error", kind, "error"), "ops_badacc:error:0", 2),
 			discord.Button(errorTabLabel("限速", kind, "rl"), "ops_badacc:rl:0", 2),
 			discord.Button(errorTabLabel("过载", kind, "ol"), "ops_badacc:ol:0", 2),
 		),
-		discord.ActionRow(
-			discord.Button(errorTabLabel("停调度", kind, "unsched"), "ops_badacc:unsched:0", 2),
-			discord.Button(errorTabLabel("汇总", kind, "all"), "ops_badacc:all:0", 2),
-		),
 	}
-	// account actions: manage / live / contextual quick act (up to 5 rows)
-	for i, a := range items {
-		if i >= 5 {
-			break
-		}
-		row := []discord.Component{
-			discord.Button(fmt.Sprintf("查看 #%d", a.ID), fmt.Sprintf("mgr_acc:%d", a.ID), 1),
-			discord.Button("实时", fmt.Sprintf("acc_live:%d", a.ID), 2),
-		}
-		if canWrite {
-			quick, quickData := "修复", fmt.Sprintf("live_act:heal:%d", a.ID)
-			if kind == "rl" || kind == "ol" {
-				quick, quickData = "清限速", fmt.Sprintf("live_act:clear_rl:%d", a.ID)
-			} else if kind == "unsched" {
-				quick, quickData = "开调度", fmt.Sprintf("live_act:sched:%d", a.ID)
+	tabB := []discord.Component{
+		discord.Button(errorTabLabel("停调度", kind, "unsched"), "ops_badacc:unsched:0", 2),
+		discord.Button(errorTabLabel("汇总", kind, "all"), "ops_badacc:all:0", 2),
+	}
+	if canWrite {
+		tabB = append(tabB, discord.SuccessButton("一键监控 error", "ops_watch_errors"))
+	}
+	comps = append(comps, discord.ActionRow(tabB...))
+
+	if len(items) > 0 {
+		opts := make([]discord.SelectOpt, 0, len(items))
+		for _, a := range items {
+			if len(opts) >= 25 {
+				break
 			}
-			row = append(row, discord.Button(quick, quickData, 1))
+			name := a.Name
+			if name == "" {
+				name = fmt.Sprintf("#%d", a.ID)
+			}
+			desc := strings.TrimSpace(a.Platform + " · " + a.Status)
+			opts = append(opts, discord.SelectOption(
+				fmt.Sprintf("#%d %s", a.ID, truncate(name, 18)),
+				fmt.Sprintf("mgr_acc:%d", a.ID),
+				truncate(desc, 50),
+			))
 		}
-		comps = append(comps, discord.ActionRow(row...))
+		comps = append(comps, discord.ActionRow(discord.StringSelect("select:badacc", "选择账号管理…", opts...)))
 	}
-	nav := []discord.Component{}
-	if page > 0 {
-		nav = append(nav, discord.Button("« 上页", fmt.Sprintf("ops_badacc:%s:%d", kind, page-1), 2))
-	}
-	if int64((page+1)*pageSize) < total || len(items) == pageSize {
-		nav = append(nav, discord.Button("下页 »", fmt.Sprintf("ops_badacc:%s:%d", kind, page+1), 2))
-	}
-	if len(nav) > 0 {
-		comps = append(comps, discord.ActionRow(nav...))
-	}
+
 	if canWrite {
 		switch kind {
 		case "rl", "ol":
@@ -2421,15 +2420,64 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 			))
 		}
 	}
-	comps = append(comps,
-		discord.ActionRow(
-			discord.Button("刷新", fmt.Sprintf("ops_badacc:%s:%d", kind, page), 2),
-			discord.Button("« 运维", "ops_menu", 2),
-			discord.Button("« 管理", "mgr_menu", 2),
-			discord.Button("« 主面板", "home", 2),
-		),
+
+	nav := []discord.Component{
+		discord.Button("刷新", fmt.Sprintf("ops_badacc:%s:%d", kind, page), 2),
+	}
+	if page > 0 {
+		nav = append(nav, discord.Button("« 上页", fmt.Sprintf("ops_badacc:%s:%d", kind, page-1), 2))
+	}
+	if int64((page+1)*pageSize) < total || len(items) == pageSize {
+		nav = append(nav, discord.Button("下页 »", fmt.Sprintf("ops_badacc:%s:%d", kind, page+1), 2))
+	}
+	nav = append(nav,
+		discord.Button("« 运维", "ops_menu", 2),
+		discord.Button("« 主面板", "home", 2),
 	)
+	// Discord max 5 buttons per row
+	if len(nav) > 5 {
+		nav = nav[:5]
+	}
+	comps = append(comps, discord.ActionRow(nav...))
+
+	if len(comps) > 5 {
+		comps = comps[:5]
+	}
 	return bld.String(), comps
+}
+
+// watchErrorAccounts adds status=error accounts into the caller's watch list (self-service).
+func (b *Bot) watchErrorAccounts(ctx context.Context, userID int64) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 20*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), opsComponents()
+	}
+	items, _, err := cli.ListAccounts(ctx, 1, 50, "error")
+	if err != nil {
+		return "拉取失败: " + err.Error(), opsComponents()
+	}
+	added, skipped := 0, 0
+	for _, a := range items {
+		msg := b.addAccount(ctx, userID, strconv.FormatInt(a.ID, 10))
+		if strings.Contains(msg, "已在监控") || strings.Contains(msg, "已在列表") {
+			skipped++
+			continue
+		}
+		if strings.HasPrefix(msg, "✅") {
+			added++
+			continue
+		}
+		// other failures: skip silently for bulk UX
+	}
+	p, _ := b.users.Get(userID)
+	watchN := 0
+	if p != nil {
+		watchN = len(p.Accounts)
+	}
+	notice := fmt.Sprintf("✅ 已添加 %d 个异常账号到监控（跳过已存在 %d）\n当前监控列表共 %d 个账号", added, skipped, watchN)
+	// Stay on bad-accounts error tab with notice.
+	text, comps := b.showBadAccountsView(ctx, userID, "error", 0, notice)
+	return text, comps
 }
 
 func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, page int) (string, []discord.Component) {
@@ -2458,67 +2506,81 @@ func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, p
 	}
 
 	token := browse.Token(status)
+	// Discord max 5 rows: status filters | special | select | bulk | nav
 	comps := []discord.Component{
 		discord.ActionRow(
 			discord.Button(filterBtn("全部", status, "all"), "mgr_browse:all:0", 2),
 			discord.Button(filterBtn("active", status, "active"), "mgr_browse:active:0", 2),
 			discord.Button(filterBtn("error", status, "error"), "mgr_browse:error:0", 2),
+			discord.Button(filterBtn("限速", status, "rate_limited"), "mgr_browse:rate_limited:0", 2),
 		),
 		discord.ActionRow(
 			discord.Button(filterBtn("停调度", status, "unsched"), "mgr_browse:unsched:0", 2),
-			discord.Button(filterBtn("限速", status, "rate_limited"), "mgr_browse:rate_limited:0", 2),
 			discord.Button(filterBtn("过载", status, "overload"), "mgr_browse:overload:0", 2),
-		),
-		discord.ActionRow(
 			discord.Button(filterBtn("openai", status, "plat:openai"), "mgr_browse:"+browse.Token("plat:openai")+":0", 2),
-			discord.Button(filterBtn("anthropic", status, "plat:anthropic"), "mgr_browse:"+browse.Token("plat:anthropic")+":0", 2),
-			discord.Button(filterBtn("gemini", status, "plat:gemini"), "mgr_browse:"+browse.Token("plat:gemini")+":0", 2),
-			discord.Button(filterBtn("grok", status, "plat:grok"), "mgr_browse:"+browse.Token("plat:grok")+":0", 2),
+			discord.Button(filterBtn("claude", status, "plat:anthropic"), "mgr_browse:"+browse.Token("plat:anthropic")+":0", 2),
+			discord.Button("搜索", "mgr_search", 2),
 		),
 	}
-	// account select (up to 8) keeps button count low
 	if len(items) > 0 {
 		opts := make([]discord.SelectOpt, 0, len(items))
 		for _, a := range items {
-			if len(opts) >= 8 {
+			if len(opts) >= 25 {
 				break
 			}
+			name := a.Name
+			if name == "" {
+				name = fmt.Sprintf("#%d", a.ID)
+			}
 			opts = append(opts, discord.SelectOption(
-				fmt.Sprintf("#%d %s", a.ID, truncate(a.Name, 18)),
+				fmt.Sprintf("#%d %s", a.ID, truncate(name, 18)),
 				fmt.Sprintf("mgr_acc:%d", a.ID),
 				fmt.Sprintf("%s/%s", a.Platform, a.Status),
 			))
 		}
 		comps = append(comps, discord.ActionRow(discord.StringSelect("select:mgr_acc", "选择账号管理…", opts...)))
 	}
-	nav := []discord.Component{}
+
+	if b.canOpsWrite(userID) {
+		switch {
+		case status == "error" || strings.HasPrefix(status, "search:"):
+			comps = append(comps, discord.ActionRow(
+				discord.DangerButton("批量清错", "mgr_bulk_clear"),
+				discord.Button("一键修复", "mgr_bulk_heal", 1),
+				discord.SuccessButton("一键监控 error", "ops_watch_errors"),
+			))
+		case status == "rate_limited" || status == "overload":
+			comps = append(comps, discord.ActionRow(
+				discord.Button("批量清限速", "mgr_bulk_clear_rl", 2),
+				discord.Button("一键修复", "mgr_bulk_heal", 1),
+			))
+		case status == "unsched":
+			comps = append(comps, discord.ActionRow(
+				discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+			))
+		}
+	}
+
+	nav := []discord.Component{
+		discord.Button("刷新", fmt.Sprintf("mgr_browse:%s:%d", token, page), 2),
+	}
 	if page > 0 {
 		nav = append(nav, discord.Button("« 上页", fmt.Sprintf("mgr_browse:%s:%d", token, page-1), 2))
 	}
 	if int64((page+1)*pageSize) < total || len(items) == pageSize {
 		nav = append(nav, discord.Button("下页 »", fmt.Sprintf("mgr_browse:%s:%d", token, page+1), 2))
 	}
-	if len(nav) > 0 {
-		comps = append(comps, discord.ActionRow(nav...))
-	}
-	if b.canOpsWrite(userID) {
-		switch status {
-		case "error":
-			comps = append(comps, discord.ActionRow(
-				discord.DangerButton("批量清错", "mgr_bulk_clear"),
-				discord.Button("一键修复", "mgr_bulk_heal", 1),
-				discord.Button("批量恢复", "mgr_bulk_recover", 2),
-			))
-		case "rate_limited":
-			comps = append(comps, discord.ActionRow(discord.Button("批量清限速", "mgr_bulk_clear_rl", 2)))
-		case "unsched":
-			comps = append(comps, discord.ActionRow(discord.Button("批量开调度", "mgr_bulk_sched_on", 2)))
-		}
-	}
-	comps = append(comps, discord.ActionRow(
-		discord.Button("« 管理菜单", "mgr_menu", 2),
+	nav = append(nav,
+		discord.Button("« 管理", "mgr_menu", 2),
 		discord.Button("« 主面板", "home", 2),
-	))
+	)
+	if len(nav) > 5 {
+		nav = nav[:5]
+	}
+	comps = append(comps, discord.ActionRow(nav...))
+	if len(comps) > 5 {
+		comps = comps[:5]
+	}
 	return bld.String(), comps
 }
 
