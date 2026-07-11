@@ -189,7 +189,24 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 			enabled = append(enabled, a)
 		}
 	}
-	fmt.Fprintf(&bld, "监控账号: `%d` 个（启用 `%d`）\n\n", len(p.Accounts), len(enabled))
+	fmt.Fprintf(&bld, "监控账号: `%d` 个（启用 `%d`）\n", len(p.Accounts), len(enabled))
+	thsLine := p.Thresholds
+	srcLabel := "系统默认"
+	if len(thsLine) > 0 {
+		srcLabel = "自定义"
+	} else {
+		thsLine = b.defaults
+	}
+	fmt.Fprintf(&bld, "阈值(%s): ", srcLabel)
+	if len(thsLine) == 0 {
+		bld.WriteString("(无)\n\n")
+	} else {
+		parts := make([]string, 0, len(thsLine))
+		for _, t := range thsLine {
+			parts = append(parts, fmt.Sprintf("%s≥%.0f%%", t.Window, t.UtilizationGTE))
+		}
+		fmt.Fprintf(&bld, "`%s`\n\n", strings.Join(parts, ", "))
+	}
 	if !p.HasConnection() {
 		bld.WriteString("⚠️ 请先配置连接信息")
 		return bld.String(), nil
@@ -914,12 +931,17 @@ func (b *Bot) forceCheckView(ctx context.Context, userID int64) (string, []disco
 		return "请先添加监控账号", b.homeComponents(userID)
 	}
 	src := p.EffectiveSource()
+	force := strings.EqualFold(src, "active")
 	thsDefault := p.Thresholds
 	if len(thsDefault) == 0 {
 		thsDefault = b.defaults
 	}
 	var bld strings.Builder
-	bld.WriteString("**立即检查** · `" + src + "`\n\n")
+	forceLabel := "缓存"
+	if force {
+		forceLabel = "强制刷新"
+	}
+	fmt.Fprintf(&bld, "**立即检查** · `%s` · `%s`\n\n", src, forceLabel)
 	warnN := 0
 	var issueIDs []int64
 	for _, a := range p.Accounts {
@@ -940,7 +962,7 @@ func (b *Bot) forceCheckView(ctx context.Context, userID int64) (string, []disco
 		if name == "" {
 			name = fmt.Sprintf("#%d", a.ID)
 		}
-		usage, err := cli.GetAccountUsage(ctx, a.ID, src, false)
+		usage, err := cli.GetAccountUsage(ctx, a.ID, src, force)
 		if err != nil {
 			fmt.Fprintf(&bld, "• #%d 失败: %s\n", a.ID, truncate(err.Error(), 60))
 			warnN++
@@ -957,20 +979,13 @@ func (b *Bot) forceCheckView(ctx context.Context, userID int64) (string, []disco
 			ths = thsDefault
 		}
 		for _, th := range ths {
-			thMap[strings.ToLower(th.Window)] = th.UtilizationGTE
+			thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
 		}
 		for _, w := range usage.Windows() {
 			mark := ""
-			key := strings.ToLower(w.Window)
-			if thr, ok := thMap[key]; ok && w.Utilization >= thr {
+			if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
 				mark = " ⚠"
 				hitThr = true
-			}
-			if key == "five_hour" {
-				if thr, ok := thMap["5h"]; ok && w.Utilization >= thr {
-					mark = " ⚠"
-					hitThr = true
-				}
 			}
 			fmt.Fprintf(&bld, "  `%s` %.1f%%%s", w.Window, w.Utilization, mark)
 			if w.ResetsAt != nil {
@@ -2337,8 +2352,29 @@ func (b *Bot) showAccountLive(ctx context.Context, userID, accountID int64, noti
 	if p != nil {
 		src = p.EffectiveSource()
 	}
-	fmt.Fprintf(&bld, "\n用量数据源: `%s`\n", src)
-	if usage, err := cli.GetAccountUsage(ctx, accountID, src, false); err != nil {
+	force := strings.EqualFold(src, "active")
+	forceLabel := "缓存"
+	if force {
+		forceLabel = "强制刷新"
+	}
+	fmt.Fprintf(&bld, "\n用量数据源: `%s` · `%s`\n", src, forceLabel)
+	thMap := map[string]float64{}
+	if p != nil {
+		ths := p.Thresholds
+		if len(ths) == 0 {
+			ths = b.defaults
+		}
+		for _, a := range p.Accounts {
+			if a.ID == accountID && len(a.Thresholds) > 0 {
+				ths = a.Thresholds
+				break
+			}
+		}
+		for _, th := range ths {
+			thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
+		}
+	}
+	if usage, err := cli.GetAccountUsage(ctx, accountID, src, force); err != nil {
 		fmt.Fprintf(&bld, "用量: %s\n", err.Error())
 	} else {
 		wins := usage.Windows()
@@ -2346,11 +2382,18 @@ func (b *Bot) showAccountLive(ctx context.Context, userID, accountID int64, noti
 			bld.WriteString("用量窗口: (无数据)\n")
 		}
 		for _, w := range wins {
+			mark := ""
+			if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
+				mark = " ⚠"
+			}
 			reset := ""
 			if w.ResetsAt != nil {
 				reset = " · " + w.ResetsAt.Local().Format("01-02 15:04")
 			}
-			fmt.Fprintf(&bld, "• %s: `%.1f%%`%s\n", w.Window, w.Utilization, reset)
+			fmt.Fprintf(&bld, "• %s: `%.1f%%`%s%s\n", w.Window, w.Utilization, reset, mark)
+		}
+		if usage.Error != "" {
+			fmt.Fprintf(&bld, "提示: %s\n", truncate(usage.Error, 80))
 		}
 	}
 	if today, err := cli.GetAccountTodayStats(ctx, accountID); err == nil && today != nil {

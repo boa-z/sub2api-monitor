@@ -1396,8 +1396,30 @@ func (b *Bot) showAccountLiveWithNotice(ctx context.Context, chatID, msgID, user
 	if p != nil {
 		src = p.EffectiveSource()
 	}
-	fmt.Fprintf(&bld, "\n用量数据源: %s\n", telegram.Code(src))
-	if usage, err := cli.GetAccountUsage(ctx, accountID, src, false); err != nil {
+	force := strings.EqualFold(src, "active")
+	forceLabel := "缓存"
+	if force {
+		forceLabel = "强制刷新"
+	}
+	fmt.Fprintf(&bld, "\n用量数据源: %s · %s\n", telegram.Code(src), telegram.Code(forceLabel))
+	thMap := map[string]float64{}
+	if p != nil {
+		ths := p.Thresholds
+		if len(ths) == 0 {
+			ths = b.defaults
+		}
+		// account-level overrides if watched
+		for _, a := range p.Accounts {
+			if a.ID == accountID && len(a.Thresholds) > 0 {
+				ths = a.Thresholds
+				break
+			}
+		}
+		for _, th := range ths {
+			thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
+		}
+	}
+	if usage, err := cli.GetAccountUsage(ctx, accountID, src, force); err != nil {
 		fmt.Fprintf(&bld, "用量: %s\n", telegram.EscapeHTML(err.Error()))
 	} else {
 		wins := usage.Windows()
@@ -1405,14 +1427,19 @@ func (b *Bot) showAccountLiveWithNotice(ctx context.Context, chatID, msgID, user
 			bld.WriteString("用量窗口: (无数据)\n")
 		}
 		for _, w := range wins {
+			mark := ""
+			if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
+				mark = " ⚠️"
+			}
 			reset := ""
 			if w.ResetsAt != nil {
 				reset = " · " + w.ResetsAt.Local().Format("01-02 15:04")
 			}
-			fmt.Fprintf(&bld, "• %s: %s%s\n",
+			fmt.Fprintf(&bld, "• %s: %s%s%s\n",
 				telegram.EscapeHTML(w.Window),
 				telegram.Code(fmt.Sprintf("%.1f%%", w.Utilization)),
 				telegram.EscapeHTML(reset),
+				mark,
 			)
 		}
 		if usage.Error != "" {

@@ -1012,10 +1012,15 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 		thsDefault = b.defaults
 	}
 
+	src := p.EffectiveSource()
+	force := strings.EqualFold(src, "active")
 	var bld strings.Builder
 	bld.WriteString(telegram.Bold("用量快照") + "\n")
-	fmt.Fprintf(&bld, "数据源: %s · %s\n\n", telegram.Code(p.EffectiveSource()), telegram.Code(time.Now().Local().Format("15:04:05")))
-	src := p.EffectiveSource()
+	forceLabel := "缓存"
+	if force {
+		forceLabel = "强制刷新"
+	}
+	fmt.Fprintf(&bld, "数据源: %s · %s · %s\n\n", telegram.Code(src), telegram.Code(forceLabel), telegram.Code(time.Now().Local().Format("15:04:05")))
 	checked := 0
 	warnN := 0
 	var issueIDs []int64
@@ -1041,7 +1046,7 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 				accBad = true
 			}
 		}
-		usage, err := cli.GetAccountUsage(ctx, a.ID, src, false)
+		usage, err := cli.GetAccountUsage(ctx, a.ID, src, force)
 		fmt.Fprintf(&bld, "• %s%s\n", telegram.EscapeHTML(fmt.Sprintf("#%d %s", a.ID, name)), telegram.EscapeHTML(statusLine))
 		hitThr := false
 		if err != nil {
@@ -1058,11 +1063,11 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 			}
 			thMap := map[string]float64{}
 			for _, th := range ths {
-				thMap[normalizeWindow(th.Window)] = th.UtilizationGTE
+				thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
 			}
 			for _, w := range windows {
 				mark := ""
-				if thr, ok := thMap[normalizeWindow(w.Window)]; ok && w.Utilization >= thr {
+				if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
 					mark = " ⚠️"
 					hitThr = true
 				}
