@@ -524,6 +524,12 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if action == "temp_menu" {
 			return b.update(ctx, it, fmt.Sprintf("选择账号 #%d 临时停调度时长：", id), tempMenuComponents(id))
 		}
+		if action == "temp_custom" {
+			return b.openModal(ctx, it, discord.NewModal(
+				fmt.Sprintf("modal_temp:%d", id), "临时停调度时长", "dur", "时长 如 30m/2h/1d",
+				"30m", 16,
+			))
+		}
 		notice := b.doManageAction(ctx, uid, action, id)
 		if action == "confirm_unsched" || action == "confirm_disable" || action == "confirm_reset_quota" {
 			return b.update(ctx, it, notice, confirmComponents(action, id))
@@ -838,7 +844,22 @@ func (b *Bot) handleModal(ctx context.Context, it *discord.Interaction, uid int6
 			text, comps := b.accountThresholdsView(uid, id)
 			return b.respond(ctx, it, fmt.Sprintf("✅ 已设置 `%s` ≥ `%.0f%%`\n\n", win, pct)+text, comps, false)
 		}
+		if strings.HasPrefix(it.Data.CustomID, "modal_temp:") {
+			if !b.isAdmin(uid) {
+				return b.respond(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid), true)
+			}
+			id, _ := strconv.ParseInt(strings.TrimPrefix(it.Data.CustomID, "modal_temp:"), 10, 64)
+			sec, label, err := parseFlexibleDuration(it.ModalValue("dur"))
+			if err != nil {
+				return b.respond(ctx, it, "❌ "+err.Error()+"\n示例: `30m` / `2h` / `1d` / `90`", tempMenuComponents(id), true)
+			}
+			_ = sec
+			notice := b.doManageAction(ctx, uid, "temp:"+label, id)
+			text, comps := b.manageAccount(ctx, uid, id, notice)
+			return b.respond(ctx, it, text, comps, false)
+		}
 		if strings.HasPrefix(it.Data.CustomID, "modal_rename:") {
+
 			id, _ := strconv.ParseInt(strings.TrimPrefix(it.Data.CustomID, "modal_rename:"), 10, 64)
 			name := strings.TrimSpace(it.ModalValue("name"))
 			msg := b.renameWatchAccount(uid, id, name)

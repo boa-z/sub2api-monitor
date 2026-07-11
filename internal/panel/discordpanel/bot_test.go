@@ -787,3 +787,16 @@ func TestThrWindowPickComponents(t *testing.T) {
 		t.Fatal(len(acc))
 	}
 }
+
+func TestDiscordParseFlexibleDuration(t *testing.T) {
+	sec, lab, err := parseFlexibleDuration("45m")
+	if err != nil || sec != 45*60 {
+		t.Fatalf("%v %s %v", sec, lab, err)
+	}
+	if parseTempDur("2h") != 2*3600 {
+		t.Fatal(parseTempDur("2h"))
+	}
+	if parseTempDur("bad") != 0 {
+		t.Fatal(parseTempDur("bad"))
+	}
+}

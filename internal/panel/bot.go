@@ -25,6 +25,7 @@ const (
 	awaitThrPct  = "set_threshold_pct" // window stored in session.Window
 	awaitRename  = "rename_account"    // account id in session.AccountID
 	awaitSearch  = "search_account"
+	awaitTempDur = "temp_unsched_dur" // account id in session.AccountID
 )
 
 type session struct {
@@ -249,7 +250,7 @@ func (b *Bot) handleMessage(ctx context.Context, m *telegram.InMessage) error {
 		b.setAwait(m.From.ID, awaitSearch, 0, "")
 		return b.tg.SendChat(ctx, m.Chat.ID, "请发送要搜索的账号关键词（名称/邮箱片段）\n/cancel 取消", cancelKeyboard())
 	case cmd == "/check" || cmd == "立即检查":
-		return b.forceCheck(ctx, m.Chat.ID, m.From.ID)
+		return b.forceCheck(ctx, m.Chat.ID, 0, m.From.ID)
 	default:
 		// free text when not awaiting → show menu
 		return b.sendHome(ctx, m.Chat.ID, m.From.ID)
@@ -675,8 +676,8 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		}
 		return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), b.homeKeyboardFor(cq.From.ID))
 	case data == "check_now":
-		_ = b.tg.SendChat(ctx, chatID, "⏳ 正在检查用量…", nil)
-		return b.forceCheck(ctx, chatID, cq.From.ID)
+		_ = b.editOrSend(ctx, chatID, msgID, "⏳ 正在检查用量…", nil)
+		return b.forceCheck(ctx, chatID, msgID, cq.From.ID)
 	case data == "help":
 		return b.editOrSend(ctx, chatID, msgID, helpText(), b.homeKeyboardFor(cq.From.ID))
 	case data == "cancel":
@@ -870,6 +871,15 @@ func (b *Bot) handleAwait(ctx context.Context, m *telegram.InMessage, s *session
 			return b.tg.SendChat(ctx, m.Chat.ID, "重命名失败: "+telegram.EscapeHTML(err.Error()), nil)
 		}
 		return b.tg.SendChat(ctx, m.Chat.ID, "✅ 已更新名称\n\n"+b.accountDetailText(ctx, m.From.ID, id), b.accountDetailKeyboard(m.From.ID, id))
+	case awaitTempDur:
+		id := s.AccountID
+		raw := strings.TrimSpace(text)
+		sec, label, err := parseFlexibleDuration(raw)
+		if err != nil {
+			return b.tg.SendChat(ctx, m.Chat.ID, "❌ "+telegram.EscapeHTML(err.Error())+"\n示例: <code>30m</code> / <code>2h</code> / <code>90</code>（分钟）\n/cancel 取消", cancelKeyboard())
+		}
+		b.clearSession(m.From.ID)
+		return b.applyTempUnschedulableSec(ctx, m.Chat.ID, 0, m.From.ID, id, sec, label)
 	default:
 		b.clearSession(m.From.ID)
 		return b.sendHome(ctx, m.Chat.ID, m.From.ID)
@@ -1192,19 +1202,19 @@ func (b *Bot) testConnection(ctx context.Context, userID int64) string {
 	return "✅ 连接成功（health + dashboard OK）" + extra
 }
 
-func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
+func (b *Bot) forceCheck(ctx context.Context, chatID, msgID, userID int64) error {
 	p, ok := b.users.Get(userID)
 	if !ok || !p.HasConnection() {
-		return b.tg.SendChat(ctx, chatID, "请先配置连接（Base URL + API Key）", b.homeKeyboardFor(userID))
+		return b.editOrSend(ctx, chatID, msgID, "请先配置连接（Base URL + API Key）", b.homeKeyboardFor(userID))
 	}
 	if len(p.Accounts) == 0 {
-		return b.tg.SendChat(ctx, chatID, "请先添加监控账号", b.homeKeyboardFor(userID))
+		return b.editOrSend(ctx, chatID, msgID, "请先添加监控账号", b.homeKeyboardFor(userID))
 	}
 	cli, err := sub2api.NewClient(config.Sub2APIConfig{
 		BaseURL: p.BaseURL, AdminAPIKey: p.AdminAPIKey, JWT: p.JWT, Timeout: 25 * time.Second,
 	})
 	if err != nil {
-		return b.tg.SendChat(ctx, chatID, "错误: "+telegram.EscapeHTML(err.Error()), nil)
+		return b.editOrSend(ctx, chatID, msgID, "错误: "+telegram.EscapeHTML(err.Error()), nil)
 	}
 	thsDefault := p.Thresholds
 	if len(thsDefault) == 0 {
@@ -1307,7 +1317,7 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 	} else {
 		bld.WriteString("\n✅ 监控账号用量与状态正常。\n")
 	}
-	return b.tg.SendChat(ctx, chatID, bld.String(), checkResultKeyboard(b.canOpsWrite(userID), issueIDs, issueLabels))
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), checkResultKeyboard(b.canOpsWrite(userID), issueIDs, issueLabels))
 }
 
 // checkResultKeyboard offers per-account live/manage jumps after force check.

@@ -1158,3 +1158,33 @@ func TestWatchScopeCallbackAlias(t *testing.T) {
 		t.Fatal(browse.NormalizeBadKind("rl"))
 	}
 }
+
+func TestParseFlexibleDuration(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantSec int64
+		wantErr bool
+	}{
+		{"15m", 15 * 60, false},
+		{"2h", 2 * 3600, false},
+		{"1d", 86400, false},
+		{"90", 90 * 60, false},
+		{" 30 m ", 30 * 60, false},
+		{"0", 0, true},
+		{"", 0, true},
+		{"8d", 0, true},
+		{"30s", 0, true},
+	}
+	for _, tc := range cases {
+		sec, lab, err := parseFlexibleDuration(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("%q expected err, got %d %s", tc.in, sec, lab)
+			}
+			continue
+		}
+		if err != nil || sec != tc.wantSec {
+			t.Fatalf("%q got sec=%d lab=%s err=%v", tc.in, sec, lab, err)
+		}
+	}
+}

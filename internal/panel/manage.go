@@ -521,12 +521,18 @@ func (b *Bot) handleManageAction(ctx context.Context, chatID, msgID, userID int6
 					telegram.Btn("6 小时", fmt.Sprintf("mgr_act:temp:6h:%d", accountID)),
 					telegram.Btn("24 小时", fmt.Sprintf("mgr_act:temp:24h:%d", accountID)),
 				},
+				{telegram.Btn("✏️ 自定义时长", fmt.Sprintf("mgr_act:temp_custom:%d", accountID))},
 				{telegram.Btn("取消", fmt.Sprintf("mgr_acc:%d", accountID))},
 			},
 		}
 		return b.editOrSend(ctx, chatID, msgID,
 			fmt.Sprintf("为账号 #%d 设置临时停调度时长：", accountID),
 			kb)
+	case "temp_custom":
+		b.setAwait(userID, awaitTempDur, accountID, "")
+		return b.editOrSend(ctx, chatID, msgID,
+			fmt.Sprintf("请发送账号 #%d 临时停调度时长\n支持: <code>30m</code> / <code>2h</code> / <code>1d</code> / 纯数字分钟\n范围 1m–7d · /cancel 取消", accountID),
+			cancelKeyboard())
 	}
 
 	cli, _, err := b.userClient(userID, 25*time.Second)
@@ -676,6 +682,16 @@ func (b *Bot) bulkClearErrorsExecute(ctx context.Context, chatID, msgID, userID 
 func (b *Bot) applyTempUnschedulable(ctx context.Context, chatID, msgID, userID, accountID int64, durLabel string) error {
 	sec := parseDurationLabel(durLabel)
 	if sec <= 0 {
+		if s2, lab, err := parseFlexibleDuration(durLabel); err == nil {
+			return b.applyTempUnschedulableSec(ctx, chatID, msgID, userID, accountID, s2, lab)
+		}
+		return b.showManageAccount(ctx, chatID, msgID, userID, accountID, "❌ 无效时长")
+	}
+	return b.applyTempUnschedulableSec(ctx, chatID, msgID, userID, accountID, sec, durLabel)
+}
+
+func (b *Bot) applyTempUnschedulableSec(ctx context.Context, chatID, msgID, userID, accountID, sec int64, label string) error {
+	if sec <= 0 {
 		return b.showManageAccount(ctx, chatID, msgID, userID, accountID, "❌ 无效时长")
 	}
 	cli, _, err := b.userClient(userID, 20*time.Second)
@@ -683,10 +699,10 @@ func (b *Bot) applyTempUnschedulable(ctx context.Context, chatID, msgID, userID,
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
 	}
 	notice := ""
-	if _, err := cli.SetTempUnschedulable(ctx, accountID, sec, "panel:"+durLabel); err != nil {
+	if _, err := cli.SetTempUnschedulable(ctx, accountID, sec, "panel:"+label); err != nil {
 		notice = "❌ 设置临时停调度失败: " + telegram.EscapeHTML(err.Error())
 	} else {
-		notice = fmt.Sprintf("✅ 已设置临时停调度 %s", telegram.Code(durLabel))
+		notice = fmt.Sprintf("✅ 已设置临时停调度 %s", telegram.Code(label))
 	}
 	return b.showManageAccount(ctx, chatID, msgID, userID, accountID, notice)
 }
@@ -705,6 +721,63 @@ func parseDurationLabel(s string) int64 {
 	default:
 		return 0
 	}
+}
+
+// parseFlexibleDuration accepts 30m / 2h / 1d / bare minutes (1..10080).
+// Caps at 7 days; minimum 1 minute.
+func parseFlexibleDuration(raw string) (sec int64, label string, err error) {
+	s := strings.TrimSpace(strings.ToLower(raw))
+	s = strings.ReplaceAll(s, " ", "")
+	if s == "" {
+		return 0, "", fmt.Errorf("时长不能为空")
+	}
+	if p := parseDurationLabel(s); p > 0 {
+		return p, s, nil
+	}
+	if n, e := strconv.ParseInt(s, 10, 64); e == nil {
+		if n < 1 || n > 7*24*60 {
+			return 0, "", fmt.Errorf("分钟需在 1–10080（7 天）")
+		}
+		return n * 60, fmt.Sprintf("%dm", n), nil
+	}
+	var numStr, unit string
+	for i, r := range s {
+		if (r >= '0' && r <= '9') || r == '.' {
+			continue
+		}
+		numStr = s[:i]
+		unit = s[i:]
+		break
+	}
+	if numStr == "" || unit == "" {
+		return 0, "", fmt.Errorf("无法解析时长")
+	}
+	n, e := strconv.ParseFloat(numStr, 64)
+	if e != nil || n <= 0 {
+		return 0, "", fmt.Errorf("时长数字无效")
+	}
+	var mult float64
+	switch unit {
+	case "m", "min", "mins", "minute", "minutes":
+		mult = 60
+		label = fmt.Sprintf("%gm", n)
+	case "h", "hr", "hrs", "hour", "hours":
+		mult = 3600
+		label = fmt.Sprintf("%gh", n)
+	case "d", "day", "days":
+		mult = 86400
+		label = fmt.Sprintf("%gd", n)
+	default:
+		return 0, "", fmt.Errorf("未知单位 %s（用 m/h/d）", unit)
+	}
+	secF := n * mult
+	if secF < 60 {
+		return 0, "", fmt.Errorf("最短 1 分钟")
+	}
+	if secF > 7*24*3600 {
+		return 0, "", fmt.Errorf("最长 7 天")
+	}
+	return int64(secF + 0.5), label, nil
 }
 
 // bulkAccountActionPrompt previews error accounts then asks confirm for bulk action.
