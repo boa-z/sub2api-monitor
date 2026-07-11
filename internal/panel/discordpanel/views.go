@@ -22,6 +22,7 @@ func helpText() string {
 • **普通用户**：连接 / 监控账号 / 阈值 / 立即检查
 • **只读运维**：运维视图 / 看板 / 异常账号等只读（不可修复/调度/改角色）
 • **管理员**：运维写操作 + 账号管理（调度/清错/恢复/批量/一键修复/临时停调度/账号与用户搜索/面板用户）
+• 批量操作优先使用当前「账号浏览 / 异常 tab」筛选范围
 • 角色由 admin_user_ids 或 profile.role=admin|viewer|user 控制
 • 配置按用户隔离，存于 users.json（可与 Telegram 共享）
 • 按钮可弹出输入框（搜索 / Base URL / API Key / 添加账号 ID）；也可用斜杠命令
@@ -1052,6 +1053,9 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 			}
 			bld.WriteString("\n")
 		}
+	}
+	if st, _ := b.getBrowseView(userID); st != "" && st != "all" {
+		fmt.Fprintf(&bld, "当前筛选: `%s`（批量操作优先此范围）\n\n", browse.Title(st))
 	}
 	bld.WriteString("浏览（状态/平台/停调度/限速）、搜索、切换调度、清错/恢复/一键修复、临时停调度、批量处理（优先当前浏览/异常 tab 筛选）、实例用户/分组（搜索+详情只读）、面板用户角色（Admin API / Bot 权限）。")
 	return bld.String()

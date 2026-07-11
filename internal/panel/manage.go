@@ -100,6 +100,9 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 			bld.WriteString("\n")
 		}
 	}
+	if st, _ := b.getBrowseView(userID); st != "" && st != "all" {
+		fmt.Fprintf(&bld, "当前筛选: %s（批量操作优先此范围）\n\n", telegram.Code(browse.Title(st)))
+	}
 	bld.WriteString(`用你的 Admin API 管理实例（只对你配置的连接生效）：
 
 • 账号浏览 — 状态/平台筛选、搜索、分页
