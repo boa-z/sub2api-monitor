@@ -47,6 +47,7 @@ type session struct {
 	// UserSearch/GroupSearch remember last instance user/group list query.
 	UserSearch    string
 	UserStatus    string
+	UserRole      string
 	GroupSearch   string
 	GroupPlatform string
 	ChannelTab    string
@@ -539,6 +540,18 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 			st = strings.TrimPrefix(data, "mgr_ust:")
 		}
 		b.setUserStatus(uid, st)
+		text, comps := b.showUsersView(ctx, uid, 0, b.getUserSearch(uid))
+		return b.update(ctx, it, text, comps)
+
+	case data == "mgr_urole" || strings.HasPrefix(data, "mgr_urole:"):
+		if !b.canOpsRead(uid) {
+			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
+		}
+		role := ""
+		if strings.HasPrefix(data, "mgr_urole:") {
+			role = strings.TrimPrefix(data, "mgr_urole:")
+		}
+		b.setUserRole(uid, role)
 		text, comps := b.showUsersView(ctx, uid, 0, b.getUserSearch(uid))
 		return b.update(ctx, it, text, comps)
 	case strings.HasPrefix(data, "mgr_user:"):
@@ -1248,6 +1261,28 @@ func (b *Bot) getUserStatus(userID int64) string {
 		return ""
 	}
 	return s.UserStatus
+}
+
+func (b *Bot) setUserRole(userID int64, role string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.UserRole = strings.ToLower(strings.TrimSpace(role))
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getUserRole(userID int64) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		return ""
+	}
+	return s.UserRole
 }
 
 func (b *Bot) setGroupSearch(userID int64, search string) {

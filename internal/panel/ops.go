@@ -347,7 +347,25 @@ func (b *Bot) showAvailability(ctx context.Context, chatID, msgID, userID int64)
 	for k, bucket := range av.Platform {
 		plats = append(plats, row{k, bucket.TotalNum(), bucket.AvailableNum(), bucket.ErrorNum(), bucket.RateLimitNum()})
 	}
-	sort.Slice(plats, func(i, j int) bool { return plats[i].key < plats[j].key })
+	// worst platforms first (errors/rl), then name
+	sort.Slice(plats, func(i, j int) bool {
+		si, sj := browse.PlatformProblemScore(plats[i].err, plats[i].rl), browse.PlatformProblemScore(plats[j].err, plats[j].rl)
+		if si != sj {
+			return si > sj
+		}
+		// lower availability ratio ranks higher when both clean
+		ri, rj := 100.0, 100.0
+		if plats[i].tot > 0 {
+			ri = float64(plats[i].av) / float64(plats[i].tot) * 100
+		}
+		if plats[j].tot > 0 {
+			rj = float64(plats[j].av) / float64(plats[j].tot) * 100
+		}
+		if ri != rj {
+			return ri < rj
+		}
+		return plats[i].key < plats[j].key
+	})
 	bld.WriteString(telegram.Bold("平台") + "\n")
 	if len(plats) == 0 {
 		bld.WriteString("(无数据)\n")
@@ -357,13 +375,18 @@ func (b *Bot) showAvailability(ctx context.Context, chatID, msgID, userID int64)
 		if r.tot > 0 {
 			ratio = float64(r.av) / float64(r.tot) * 100
 		}
-		fmt.Fprintf(&bld, "• %s: %s/%s (%.0f%%) err=%s rl=%s\n",
+		mark := ""
+		if r.err > 0 || r.rl > 0 || (r.tot > 0 && ratio < 80) {
+			mark = " ⚠"
+		}
+		fmt.Fprintf(&bld, "• %s: %s/%s (%.0f%%) err=%s rl=%s%s\n",
 			telegram.EscapeHTML(r.key),
 			telegram.Code(strconv.Itoa(r.av)),
 			telegram.Code(strconv.Itoa(r.tot)),
 			ratio,
 			telegram.Code(strconv.Itoa(r.err)),
 			telegram.Code(strconv.Itoa(r.rl)),
+			mark,
 		)
 	}
 	// groups
@@ -387,12 +410,17 @@ func (b *Bot) showAvailability(ctx context.Context, chatID, msgID, userID int64)
 		if r.tot > 0 {
 			ratio = float64(r.av) / float64(r.tot) * 100
 		}
-		fmt.Fprintf(&bld, "• %s: %s/%s (%.0f%%) err=%s\n",
+		mark := ""
+		if r.err > 0 || (r.tot > 0 && ratio < 80) {
+			mark = " ⚠"
+		}
+		fmt.Fprintf(&bld, "• %s: %s/%s (%.0f%%) err=%s%s\n",
 			telegram.EscapeHTML(truncateRunes(r.key, 16)),
 			telegram.Code(strconv.Itoa(r.av)),
 			telegram.Code(strconv.Itoa(r.tot)),
 			ratio,
 			telegram.Code(strconv.Itoa(r.err)),
+			mark,
 		)
 	}
 	// problem accounts

@@ -1199,8 +1199,9 @@ func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page i
 	search = strings.TrimSpace(search)
 	b.setUserSearch(userID, search)
 	status := b.getUserStatus(userID)
+	role := b.getUserRole(userID)
 	const pageSize = 8
-	items, total, err := cli.ListUsersEx(ctx, page+1, pageSize, sub2api.UserListFilter{Search: search, Status: status})
+	items, total, err := cli.ListUsersEx(ctx, page+1, pageSize, sub2api.UserListFilter{Search: search, Status: status, Role: role})
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "用户列表失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
 	}
@@ -1211,6 +1212,9 @@ func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page i
 	}
 	if status != "" {
 		fmt.Fprintf(&bld, "状态筛选: %s\n", telegram.Code(status))
+	}
+	if role != "" {
+		fmt.Fprintf(&bld, "角色筛选: %s\n", telegram.Code(role))
 	}
 	fmt.Fprintf(&bld, "第 %d 页 · 共 %s\n点用户查看详情\n\n", page+1, telegram.Code(itoa(total)))
 	rows := [][]telegram.InlineKeyboardButton{}
@@ -1277,6 +1281,25 @@ func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page i
 		stRow = append(stRow, telegram.Btn(lab, cb))
 	}
 	rows = append(rows, stRow)
+	roleRow := []telegram.InlineKeyboardButton{}
+	for _, st := range []struct {
+		label, val string
+	}{
+		{"角色·全", ""},
+		{"admin", "admin"},
+		{"user", "user"},
+	} {
+		lab := st.label
+		if st.val == role || (st.val == "" && role == "") {
+			lab = "· " + lab
+		}
+		cb := "mgr_urole"
+		if st.val != "" {
+			cb = "mgr_urole:" + st.val
+		}
+		roleRow = append(roleRow, telegram.Btn(lab, cb))
+	}
+	rows = append(rows, roleRow)
 	action := []telegram.InlineKeyboardButton{telegram.Btn("🔎 搜索", "mgr_user_search")}
 	if search != "" {
 		action = append(action, telegram.Btn("清除搜索", "mgr_user_clear"))

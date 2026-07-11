@@ -2014,7 +2014,25 @@ func (b *Bot) showAvailabilityView(ctx context.Context, userID int64) (string, [
 	if len(plats) == 0 {
 		return "**可用性**\n```\n" + truncate(fmt.Sprintf("%+v", av), 900) + "\n```", opsViewComponents("ops_avail")
 	}
-	sort.Slice(plats, func(i, j int) bool { return plats[i].k < plats[j].k })
+	sort.Slice(plats, func(i, j int) bool {
+		si := browse.PlatformProblemScore(plats[i].v.ErrorNum(), plats[i].v.RateLimitNum())
+		sj := browse.PlatformProblemScore(plats[j].v.ErrorNum(), plats[j].v.RateLimitNum())
+		if si != sj {
+			return si > sj
+		}
+		ti, tj := plats[i].v.TotalNum(), plats[j].v.TotalNum()
+		ri, rj := 100.0, 100.0
+		if ti > 0 {
+			ri = float64(plats[i].v.AvailableNum()) / float64(ti) * 100
+		}
+		if tj > 0 {
+			rj = float64(plats[j].v.AvailableNum()) / float64(tj) * 100
+		}
+		if ri != rj {
+			return ri < rj
+		}
+		return plats[i].k < plats[j].k
+	})
 	for i, p := range plats {
 		if i >= 12 {
 			break
@@ -2025,8 +2043,12 @@ func (b *Bot) showAvailabilityView(ctx context.Context, userID int64) (string, [
 		if tot > 0 {
 			rate = float64(avn) / float64(tot) * 100
 		}
-		fmt.Fprintf(&bld, "• `%s` 可用 %d/%d (%.0f%%) · err %d · rl %d\n",
-			p.k, avn, tot, rate, p.v.ErrorNum(), p.v.RateLimitNum())
+		mark := ""
+		if p.v.ErrorNum() > 0 || p.v.RateLimitNum() > 0 || (tot > 0 && rate < 80) {
+			mark = " ⚠"
+		}
+		fmt.Fprintf(&bld, "• `%s` 可用 %d/%d (%.0f%%) · err %d · rl %d%s\n",
+			p.k, avn, tot, rate, p.v.ErrorNum(), p.v.RateLimitNum(), mark)
 	}
 	var bad []sub2api.AccountRuntimeStatus
 	for _, st := range av.Account {
@@ -4463,8 +4485,9 @@ func (b *Bot) showUsersView(ctx context.Context, userID int64, page int, search 
 	search = strings.TrimSpace(search)
 	b.setUserSearch(userID, search)
 	status := b.getUserStatus(userID)
+	role := b.getUserRole(userID)
 	const pageSize = 8
-	items, total, err := cli.ListUsersEx(ctx, page+1, pageSize, sub2api.UserListFilter{Search: search, Status: status})
+	items, total, err := cli.ListUsersEx(ctx, page+1, pageSize, sub2api.UserListFilter{Search: search, Status: status, Role: role})
 	if err != nil {
 		return "用户列表失败: " + err.Error(), manageComponents()
 	}
@@ -4475,6 +4498,9 @@ func (b *Bot) showUsersView(ctx context.Context, userID int64, page int, search 
 	}
 	if status != "" {
 		fmt.Fprintf(&bld, "状态筛选: `%s`\n", status)
+	}
+	if role != "" {
+		fmt.Fprintf(&bld, "角色筛选: `%s`\n", role)
 	}
 	fmt.Fprintf(&bld, "第 %d 页 · 共 `%d`\n点选用户查看详情\n\n", page+1, total)
 	opts := make([]discord.SelectOpt, 0, len(items))
@@ -4540,16 +4566,42 @@ func (b *Bot) showUsersView(ctx context.Context, userID int64, page int, search 
 		stRow = append(stRow, discord.Button(lab, cb, 2))
 	}
 	comps = append(comps, discord.ActionRow(stRow...))
-	action := []discord.Component{discord.Button("🔎 搜索", "mgr_user_search", 2)}
-	if search != "" {
-		action = append(action, discord.Button("清除搜索", "mgr_user_clear", 2))
+	roleRow := []discord.Component{}
+	for _, st := range []struct {
+		label, val string
+	}{
+		{"角色·全", ""},
+		{"admin", "admin"},
+		{"user", "user"},
+	} {
+		lab := st.label
+		if st.val == role || (st.val == "" && role == "") {
+			lab = "· " + lab
+		}
+		cb := "mgr_urole"
+		if st.val != "" {
+			cb = "mgr_urole:" + st.val
+		}
+		roleRow = append(roleRow, discord.Button(lab, cb, 2))
 	}
-	comps = append(comps, discord.ActionRow(action...))
+	// keep Discord ≤5 rows: role filters + search share one row; footer last
+	roleRow = append(roleRow, discord.Button("🔎 搜索", "mgr_user_search", 2))
+	if search != "" && len(roleRow) < 5 {
+		roleRow = append(roleRow, discord.Button("清除", "mgr_user_clear", 2))
+	}
+	if len(roleRow) > 5 {
+		roleRow = roleRow[:5]
+	}
+	comps = append(comps, discord.ActionRow(roleRow...))
 	comps = append(comps, discord.ActionRow(
 		discord.Button("分组", "mgr_groups", 2),
 		discord.Button("浏览账号", "mgr_browse:all:0", 2),
 		discord.Button("« 管理", "mgr_menu", 2),
 	))
+	if len(comps) > 5 {
+		// Prefer: select, nav?, status, role+search, footer
+		comps = comps[:5]
+	}
 	return bld.String(), comps
 }
 
