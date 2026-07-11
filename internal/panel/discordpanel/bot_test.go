@@ -662,3 +662,27 @@ func TestOpsComponentsIncludeTraffic(t *testing.T) {
 		t.Fatal("ops hub missing traffic")
 	}
 }
+
+func TestOpsComponentsForHealth(t *testing.T) {
+	comps := opsComponentsFor(&sub2api.DashboardStats{ErrorAccounts: 3, RatelimitAccounts: 2}, true)
+	if !containsCustomID(comps, "ops_badacc:error:0") || !containsCustomID(comps, "ops_badacc:rl:0") {
+		t.Fatalf("%+v", comps)
+	}
+	if !containsCustomID(comps, "mgr_bulk_heal") {
+		t.Fatal("issues should offer bulk heal")
+	}
+	if !containsCustomID(comps, "ops_traf") {
+		t.Fatal("traffic should remain")
+	}
+	if len(comps) > 5 {
+		t.Fatalf("rows=%d", len(comps))
+	}
+	comps2 := opsComponentsFor(nil, true)
+	if containsCustomID(comps2, "mgr_bulk_heal") {
+		t.Fatal("healthy should not force bulk heal")
+	}
+	comps3 := opsComponentsFor(&sub2api.DashboardStats{ErrorAccounts: 1}, false)
+	if containsCustomID(comps3, "mgr_bulk_heal") {
+		t.Fatal("viewer should not get bulk heal")
+	}
+}

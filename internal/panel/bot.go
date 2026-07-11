@@ -1394,6 +1394,7 @@ func (b *Bot) showAccountPicker(ctx context.Context, chatID, msgID, userID int64
 		{
 			telegram.Btn(pickFilterLabel(status, "rate_limited", "限速"), "pick_acc:rate_limited:0"),
 			telegram.Btn(pickFilterLabel(status, "unsched", "停调度"), "pick_acc:unsched:0"),
+			telegram.Btn(pickFilterLabel(status, "overload", "过载"), "pick_acc:overload:0"),
 		},
 	}
 	for _, acc := range items {

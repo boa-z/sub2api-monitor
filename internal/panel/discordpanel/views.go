@@ -717,6 +717,10 @@ func (b *Bot) accountPickerView(ctx context.Context, userID int64, status string
 			discord.Button(pickFilterBtn(status, "error", "error"), "pick_acc:error:0", 2),
 			discord.Button(pickFilterBtn(status, "rate_limited", "限速"), "pick_acc:rate_limited:0", 2),
 		),
+		discord.ActionRow(
+			discord.Button(pickFilterBtn(status, "unsched", "停调度"), "pick_acc:unsched:0", 2),
+			discord.Button(pickFilterBtn(status, "overload", "过载"), "pick_acc:overload:0", 2),
+		),
 	}
 	if len(items) > 0 {
 		opts := make([]discord.SelectOpt, 0, len(items))
@@ -899,29 +903,82 @@ func (b *Bot) opsMenuText(ctx context.Context, userID int64) string {
 }
 
 func (b *Bot) opsComponents(userID int64) []discord.Component {
-	_ = userID
-	return opsComponents()
+	var stats *sub2api.DashboardStats
+	if cli, _, err := b.userClient(userID, 5*time.Second); err == nil && cli != nil {
+		if st, err := cli.GetDashboardStats(context.Background()); err == nil {
+			stats = st
+		}
+	}
+	return opsComponentsFor(stats, b.canOpsWrite(userID))
 }
 
 func opsComponents() []discord.Component {
-	return []discord.Component{
+	return opsComponentsFor(nil, true)
+}
+
+// opsComponentsFor builds the ops hub. When stats are present, labels include
+// live error/rate-limit counts; canWrite controls bulk-heal visibility.
+func opsComponentsFor(stats *sub2api.DashboardStats, canWrite bool) []discord.Component {
+	badLabel := "异常账号"
+	rlLabel := "限速"
+	errLabel := "错误"
+	mgrLabel := "账号管理"
+	if !canWrite {
+		mgrLabel = "账号浏览"
+	}
+	if stats != nil {
+		if stats.ErrorAccounts > 0 {
+			badLabel = fmt.Sprintf("异常 %v", stats.ErrorAccounts)
+		}
+		if stats.RatelimitAccounts > 0 {
+			rlLabel = fmt.Sprintf("限速 %v", stats.RatelimitAccounts)
+		}
+	}
+	comps := []discord.Component{
 		discord.ActionRow(
 			discord.Button("看板", "ops_dash", 1),
 			discord.Button("可用性", "ops_avail", 2),
 			discord.Button("告警", "ops_alerts", 2),
 		),
 		discord.ActionRow(
-			discord.Button("错误", "ops_errors:all:0", 2),
+			discord.Button(errLabel, "ops_errors:all:0", 2),
 			discord.Button("并发", "ops_conc", 2),
 			discord.Button("流量", "ops_traf", 2),
 			discord.Button("渠道", "ops_channels", 2),
 		),
-		discord.ActionRow(
-			discord.Button("异常账号", "ops_badacc:error:0", 2),
-			discord.Button("账号管理", "mgr_menu", 2),
-			discord.Button("« 主面板", "home", 2),
-		),
 	}
+	if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
+		row := []discord.Component{
+			discord.Button(badLabel, "ops_badacc:error:0", 1),
+			discord.Button(rlLabel, "ops_badacc:rl:0", 2),
+		}
+		if canWrite {
+			row = append(row, discord.Button("一键修复", "mgr_bulk_heal", 1))
+		} else {
+			row = append(row, discord.Button(mgrLabel, "mgr_menu", 2))
+		}
+		comps = append(comps, discord.ActionRow(row...))
+		if canWrite {
+			comps = append(comps, discord.ActionRow(
+				discord.Button(mgrLabel, "mgr_menu", 2),
+				discord.Button("« 主面板", "home", 2),
+			))
+		} else {
+			comps = append(comps, discord.ActionRow(
+				discord.Button("« 主面板", "home", 2),
+			))
+		}
+	} else {
+		comps = append(comps, discord.ActionRow(
+			discord.Button(badLabel, "ops_badacc:error:0", 2),
+			discord.Button(mgrLabel, "mgr_menu", 2),
+			discord.Button("« 主面板", "home", 2),
+		))
+	}
+	if len(comps) > 5 {
+		comps = comps[:5]
+	}
+	return comps
 }
 
 func opsViewComponents(refresh string) []discord.Component {

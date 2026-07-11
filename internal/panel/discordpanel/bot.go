@@ -335,7 +335,7 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.canOpsRead(uid) {
 			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, b.opsMenuText(ctx, uid), opsComponents())
+		return b.update(ctx, it, b.opsMenuText(ctx, uid), b.opsComponents(uid))
 	case data == "ops_dash":
 		if !b.canOpsRead(uid) {
 			return b.update(ctx, it, "⛔ 需要运维查看权限", b.homeComponents(uid))
