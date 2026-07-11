@@ -55,3 +55,15 @@ func TestCountUserOpsErrors(t *testing.T) {
 		t.Fatalf("accs=%v", accs)
 	}
 }
+
+func TestCountAccountOpsErrors(t *testing.T) {
+	items := []sub2api.OpsError{
+		{AccountID: 10, Resolved: false},
+		{AccountID: 10, Resolved: true},
+		{AccountID: 11, Resolved: false},
+		{AccountID: 10, Resolved: false},
+	}
+	if CountAccountOpsErrors(items, 10) != 2 {
+		t.Fatal(CountAccountOpsErrors(items, 10))
+	}
+}

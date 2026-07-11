@@ -60,3 +60,17 @@ func CountUserOpsErrors(items []sub2api.OpsError, userID int64) (count int, acco
 	}
 	return count, accountIDs
 }
+
+// CountAccountOpsErrors counts unresolved ops errors for a Sub2API account id.
+func CountAccountOpsErrors(items []sub2api.OpsError, accountID int64) int {
+	if accountID <= 0 || len(items) == 0 {
+		return 0
+	}
+	n := 0
+	for _, e := range items {
+		if e.AccountID == accountID && !e.Resolved {
+			n++
+		}
+	}
+	return n
+}

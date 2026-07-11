@@ -1101,7 +1101,16 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 		if st, err := cli.GetDashboardStats(ctx); err == nil && st != nil {
 			fmt.Fprintf(&bld, "健康: 正常 `%v` · 异常 `%v` · 限速 `%v` · 过载 `%v`\n",
 				st.NormalAccounts, st.ErrorAccounts, st.RatelimitAccounts, st.OverloadAccounts)
-			if st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 || st.OverloadAccounts > 0 {
+			issues := st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 || st.OverloadAccounts > 0
+			if traf, err := cli.GetRealtimeTraffic(ctx, "5min"); err == nil && traf != nil && traf.Enabled {
+				qps, peak := traf.CurrentQPS(), traf.PeakQPS()
+				if browse.TrafficIsDropped(qps, peak) {
+					fmt.Fprintf(&bld, "流量: ⚠ 相对峰值下降约 `%d%%`（QPS `%.2f` / 峰值 `%.2f`）\n",
+						browse.TrafficDropPercent(qps, peak), qps, peak)
+					issues = true
+				}
+			}
+			if issues {
 				bld.WriteString("建议优先处理异常/限速/过载，或使用批量操作。\n")
 			}
 			bld.WriteString("\n")
@@ -3670,8 +3679,25 @@ func (b *Bot) manageAccount(ctx context.Context, userID, accountID int64, notice
 			if v.AccountID == accountID {
 				fmt.Fprintf(&bld, "并发: `%d/%d` (%.0f%%) wait=`%d`\n",
 					v.CurrentInUse, v.MaxCapacity, v.LoadPercentage, v.WaitingInQueue)
+				if browse.IsHotLoad(v.LoadPercentage, v.WaitingInQueue) {
+					bld.WriteString("⚠ 该账号并发偏热，可查并发视图或考虑临时停调度。\n")
+				}
 				break
 			}
+		}
+	}
+	{
+		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		var items []sub2api.OpsError
+		if page, err := cli.ListUpstreamErrors(cctx, 1, 20); err == nil && page != nil {
+			items = append(items, page.Items...)
+		}
+		if page, err := cli.ListRequestErrors(cctx, 1, 20); err == nil && page != nil {
+			items = append(items, page.Items...)
+		}
+		cancel()
+		if n := browse.CountAccountOpsErrors(items, accountID); n > 0 {
+			fmt.Fprintf(&bld, "近期未解决错误: 约 `%d` 条（见错误列表）\n", n)
 		}
 	}
 	watched := false

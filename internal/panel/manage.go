@@ -141,6 +141,17 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 	if cli, _, err := b.userClient(userID, 6*time.Second); err == nil && cli != nil {
 		if line, issues := adminHealthSnapshot(ctx, cli); line != "" {
 			bld.WriteString(line + "\n")
+			if traf, err := cli.GetRealtimeTraffic(ctx, "5min"); err == nil && traf != nil && traf.Enabled {
+				qps, peak := traf.CurrentQPS(), traf.PeakQPS()
+				if browse.TrafficIsDropped(qps, peak) {
+					fmt.Fprintf(&bld, "流量: ⚠ 相对峰值下降约 %s%%（QPS %s / 峰值 %s）\n",
+						telegram.Code(strconv.Itoa(browse.TrafficDropPercent(qps, peak))),
+						telegram.Code(fmt.Sprintf("%.2f", qps)),
+						telegram.Code(fmt.Sprintf("%.2f", peak)),
+					)
+					issues = true
+				}
+			}
 			if issues {
 				bld.WriteString("建议优先处理异常/限速/过载账号，或使用下方批量操作。\n")
 			}
@@ -438,8 +449,26 @@ func (b *Bot) showManageAccount(ctx context.Context, chatID, msgID, userID, acco
 					v.LoadPercentage,
 					telegram.Code(strconv.Itoa(v.WaitingInQueue)),
 				)
+				if browse.IsHotLoad(v.LoadPercentage, v.WaitingInQueue) {
+					bld.WriteString("⚠ 该账号并发偏热，可查并发视图或考虑临时停调度。\n")
+				}
 				break
 			}
+		}
+	}
+	// best-effort recent unresolved ops errors for this account
+	{
+		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		var items []sub2api.OpsError
+		if page, err := cli.ListUpstreamErrors(cctx, 1, 20); err == nil && page != nil {
+			items = append(items, page.Items...)
+		}
+		if page, err := cli.ListRequestErrors(cctx, 1, 20); err == nil && page != nil {
+			items = append(items, page.Items...)
+		}
+		cancel()
+		if n := browse.CountAccountOpsErrors(items, accountID); n > 0 {
+			fmt.Fprintf(&bld, "近期未解决错误: 约 %s 条（见错误列表）\n", telegram.Code(itoa(n)))
 		}
 	}
 
