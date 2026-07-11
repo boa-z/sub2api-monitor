@@ -1417,13 +1417,18 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 	for _, a := range items {
 		msg := a.ErrorMessage
 		if msg == "" {
-			msg = a.Status
+			msg = browse.AccountIssueLabel(browse.AccountIssueKind(a))
+			if msg == "正常" {
+				msg = a.Status
+			}
 		}
-		fmt.Fprintf(&bld, "• #%d %s [%s/%s] %s\n  %s\n",
+		flag := browse.StatusFlag(a)
+		parts := browse.StatusDetailParts(a)
+		fmt.Fprintf(&bld, "%s #%d %s · %s · %s\n  %s\n",
+			flag,
 			a.ID,
 			telegram.EscapeHTML(truncateRunes(a.Name, 16)),
-			telegram.EscapeHTML(a.Platform),
-			telegram.EscapeHTML(a.Status),
+			telegram.Code(strings.Join(parts, "/")),
 			schedLabel(a.Schedulable),
 			telegram.EscapeHTML(truncateRunes(msg, 70)),
 		)

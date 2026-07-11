@@ -280,30 +280,11 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 			statusBad = true
 			fmt.Fprintf(&bld, "%s `#%d` %s · %s\n", flag, snap.ID, truncate(name, 14), truncate(snap.AccountErr.Error(), 40))
 		} else if acc := snap.Account; acc != nil {
-			parts := []string{acc.Status}
-			if acc.Platform != "" {
-				parts = []string{acc.Platform, acc.Status}
-			}
-			if !acc.Schedulable {
-				parts = append(parts, "停调度")
-				flag = "⏸"
-				statusBad = true
-			}
-			if acc.RateLimitedAt != nil || strings.Contains(strings.ToLower(acc.Status), "rate") {
-				parts = append(parts, "限速")
-				flag = "⏱"
-				statusBad = true
-			}
-			if strings.EqualFold(acc.Status, "error") || acc.ErrorMessage != "" {
-				flag = "❌"
-				statusBad = true
-			}
-			if strings.EqualFold(acc.Status, "disabled") {
-				flag = "🚫"
-				statusBad = true
-			}
+			flag = browse.StatusFlag(*acc)
+			statusBad = browse.AccountIsUnhealthy(*acc)
+			parts := browse.StatusDetailParts(*acc)
 			fmt.Fprintf(&bld, "%s `#%d` %s · `%s`\n", flag, snap.ID, truncate(name, 14), strings.Join(parts, "/"))
-			if flag == "❌" && acc.ErrorMessage != "" {
+			if acc.ErrorMessage != "" && browse.AccountIssueKind(*acc) == browse.IssueError {
 				fmt.Fprintf(&bld, "   %s\n", truncate(acc.ErrorMessage, 48))
 			}
 		} else {
@@ -1722,12 +1703,15 @@ func (b *Bot) forceCheckView(ctx context.Context, userID int64) (string, []disco
 			name = fmt.Sprintf("#%d", snap.ID)
 		}
 		accBad := false
+		statusTag := ""
 		if acc := snap.Account; acc != nil {
-			if strings.EqualFold(acc.Status, "error") || acc.ErrorMessage != "" || acc.RateLimitedAt != nil || !acc.Schedulable {
-				accBad = true
+			accBad = browse.AccountIsUnhealthy(*acc)
+			if accBad {
+				statusTag = fmt.Sprintf(" %s`%s`", browse.StatusFlag(*acc), strings.Join(browse.StatusDetailParts(*acc), "/"))
 			}
 		} else if snap.AccountErr != nil {
 			accBad = true
+			statusTag = " 详情失败"
 		}
 		if snap.UsageErr != nil {
 			fmt.Fprintf(&bld, "• #%d 失败: %s\n", snap.ID, truncate(snap.UsageErr.Error(), 60))
@@ -1737,7 +1721,7 @@ func (b *Bot) forceCheckView(ctx context.Context, userID int64) (string, []disco
 			}
 			continue
 		}
-		fmt.Fprintf(&bld, "**#%d %s**\n", snap.ID, name)
+		fmt.Fprintf(&bld, "**#%d %s**%s\n", snap.ID, name, statusTag)
 		hitThr := false
 		thMap := map[string]float64{}
 		ths := thByID[snap.ID]
@@ -2949,10 +2933,14 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 	for _, a := range items {
 		msg := a.ErrorMessage
 		if msg == "" {
-			msg = a.Status
+			msg = browse.AccountIssueLabel(browse.AccountIssueKind(a))
+			if msg == "正常" {
+				msg = a.Status
+			}
 		}
-		fmt.Fprintf(&bld, "• #%d %s [%s/%s] %s\n  %s\n",
-			a.ID, truncate(a.Name, 16), a.Platform, a.Status, schedLabel(a.Schedulable),
+		fmt.Fprintf(&bld, "%s `#%d` %s · `%s` · %s\n  %s\n",
+			browse.StatusFlag(a), a.ID, truncate(a.Name, 16),
+			strings.Join(browse.StatusDetailParts(a), "/"), schedLabel(a.Schedulable),
 			truncate(msg, 60),
 		)
 	}
@@ -3129,7 +3117,7 @@ func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, p
 	if len(items) == 0 {
 		bld.WriteString("本页无账号。")
 		switch {
-		case status == "problem" || status == "error" || status == "rate_limited" || status == "overload" || status == "unsched":
+		case status == "problem" || status == "error" || status == "rate_limited" || status == "overload" || status == "unsched" || status == "temp" || status == "disabled":
 			bld.WriteString("\n当前筛选下没有问题账号，可切换「全部」或刷新。")
 		case strings.HasPrefix(status, "search:"):
 			bld.WriteString("\n未命中搜索，可换关键词或清除搜索。")
@@ -3138,7 +3126,9 @@ func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, p
 		}
 	}
 	for _, a := range items {
-		fmt.Fprintf(&bld, "• #%d %s [%s/%s] sched=%v\n", a.ID, truncate(a.Name, 16), a.Platform, a.Status, a.Schedulable)
+		fmt.Fprintf(&bld, "%s `#%d` %s · `%s` · sched=%v\n",
+			browse.StatusFlag(a), a.ID, truncate(a.Name, 16),
+			strings.Join(browse.StatusDetailParts(a), "/"), a.Schedulable)
 	}
 
 	token := browse.Token(status)

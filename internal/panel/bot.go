@@ -1363,13 +1363,12 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, msgID, userID int64) error
 		statusLine := ""
 		accBad := false
 		if acc := snap.Account; acc != nil {
-			statusLine = fmt.Sprintf(" [%s]", acc.Status)
-			if acc.Platform != "" {
-				statusLine = fmt.Sprintf(" [%s/%s]", acc.Platform, acc.Status)
+			parts := browse.StatusDetailParts(*acc)
+			statusLine = fmt.Sprintf(" [%s]", strings.Join(parts, "/"))
+			if flag := browse.StatusFlag(*acc); flag != "✅" {
+				statusLine = fmt.Sprintf(" %s[%s]", flag, strings.Join(parts, "/"))
 			}
-			if strings.EqualFold(acc.Status, "error") || acc.ErrorMessage != "" || acc.RateLimitedAt != nil || !acc.Schedulable {
-				accBad = true
-			}
+			accBad = browse.AccountIsUnhealthy(*acc)
 		} else if snap.AccountErr != nil {
 			accBad = true
 			statusLine = " [详情失败]"
@@ -1707,30 +1706,11 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 			statusBad = true
 			fmt.Fprintf(&bld, "%s #%d %s · %s\n", flag, snap.ID, telegram.EscapeHTML(truncateRunes(name, 14)), detail)
 		} else if acc := snap.Account; acc != nil {
-			parts := []string{acc.Status}
-			if acc.Platform != "" {
-				parts = []string{acc.Platform, acc.Status}
-			}
-			if !acc.Schedulable {
-				parts = append(parts, "停调度")
-				flag = "⏸"
-				statusBad = true
-			}
-			if acc.RateLimitedAt != nil || strings.Contains(strings.ToLower(acc.Status), "rate") {
-				parts = append(parts, "限速")
-				flag = "⏱"
-				statusBad = true
-			}
-			if strings.EqualFold(acc.Status, "error") || acc.ErrorMessage != "" {
-				flag = "❌"
-				statusBad = true
-				if acc.ErrorMessage != "" {
-					detail = telegram.EscapeHTML(truncateRunes(acc.ErrorMessage, 48))
-				}
-			}
-			if strings.EqualFold(acc.Status, "disabled") {
-				flag = "🚫"
-				statusBad = true
+			flag = browse.StatusFlag(*acc)
+			statusBad = browse.AccountIsUnhealthy(*acc)
+			parts := browse.StatusDetailParts(*acc)
+			if acc.ErrorMessage != "" && browse.AccountIssueKind(*acc) == browse.IssueError {
+				detail = telegram.EscapeHTML(truncateRunes(acc.ErrorMessage, 48))
 			}
 			detailLine := strings.Join(parts, "/")
 			fmt.Fprintf(&bld, "%s #%d %s · %s\n",
@@ -1739,7 +1719,7 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 				telegram.EscapeHTML(truncateRunes(name, 14)),
 				telegram.Code(detailLine),
 			)
-			if detail != "" && flag == "❌" {
+			if detail != "" {
 				fmt.Fprintf(&bld, "   %s\n", detail)
 			}
 		} else {

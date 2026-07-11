@@ -280,6 +280,11 @@ func LoadBulkTargetsScoped(ctx context.Context, cli *sub2api.Client, action stri
 	case "clear_temp":
 		items, total, err := ListAccounts(ctx, cli, "temp", 0, maxOps)
 		return items, total, "临时停调度账号", err
+	case "heal":
+		// Default heal target is the merged problem set (error+rl+ol+unsched+temp).
+		// Disabled stays out of problem merge; open disabled tab or enable bulk for those.
+		items, total, err := ListProblemAccounts(ctx, cli, 0, maxOps)
+		return items, total, "异常汇总", err
 	default:
 		items, total, err := ListAccounts(ctx, cli, "error", 0, maxOps)
 		return items, total, "status=error 账号", err
@@ -307,13 +312,20 @@ func bulkScopeCompatible(action, status string) bool {
 		return status == "disabled"
 	case "clear_temp":
 		return status == "temp" || status == "unsched" || status == "problem"
-	case "clear_err", "recover", "heal":
-		// error tab or other problem tabs; also allow overload/rate_limited for heal
+	case "clear_err", "recover":
 		switch status {
 		case "error", "rate_limited", "overload", "unsched", "temp":
 			return true
 		default:
 			// active/disabled etc. are not safe defaults for destructive bulk
+			return false
+		}
+	case "heal":
+		// Heal pipeline can recover disabled (enable) + temp + classic problem states.
+		switch status {
+		case "error", "rate_limited", "overload", "unsched", "temp", "disabled":
+			return true
+		default:
 			return false
 		}
 	default:

@@ -251,18 +251,21 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 	// For nav we encode statusOrAll carefully.
 
 	for _, a := range items {
-		label := fmt.Sprintf("#%d [%s] %s", a.ID, a.Status, truncateRunes(a.Name, 12))
+		flag := browse.StatusFlag(a)
+		parts := browse.StatusDetailParts(a)
+		statusCompact := strings.Join(parts, "/")
+		label := fmt.Sprintf("%s #%d %s", flag, a.ID, truncateRunes(a.Name, 10))
 		if a.Platform != "" {
-			label = fmt.Sprintf("#%d %s/%s %s", a.ID, truncateRunes(a.Platform, 6), a.Status, truncateRunes(a.Name, 10))
+			label = fmt.Sprintf("%s #%d %s/%s", flag, a.ID, truncateRunes(a.Platform, 6), truncateRunes(a.Name, 8))
 		}
 		kbRows = append(kbRows, []telegram.InlineKeyboardButton{
 			telegram.Btn(label, fmt.Sprintf("mgr_acc:%d", a.ID)),
 		})
-		fmt.Fprintf(&bld, "• #%d %s [%s/%s] %s\n",
+		fmt.Fprintf(&bld, "%s #%d %s · %s · %s\n",
+			flag,
 			a.ID,
 			telegram.EscapeHTML(truncateRunes(a.Name, 16)),
-			telegram.EscapeHTML(a.Platform),
-			telegram.EscapeHTML(a.Status),
+			telegram.Code(statusCompact),
 			schedLabel(a.Schedulable),
 		)
 	}

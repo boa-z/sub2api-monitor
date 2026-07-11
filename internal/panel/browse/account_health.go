@@ -63,14 +63,69 @@ func AccountIssueLabel(kind string) string {
 	}
 }
 
-// AccountNeedsHeal reports whether heal/clear/recover is likely useful.
+// AccountNeedsHeal reports whether heal/clear/recover/enable is likely useful.
 func AccountNeedsHeal(a sub2api.Account) bool {
 	switch AccountIssueKind(a) {
-	case IssueError, IssueRL, IssueOverload, IssueUnsched, IssueTemp:
+	case IssueError, IssueRL, IssueOverload, IssueUnsched, IssueTemp, IssueDisabled:
 		return true
 	default:
 		return false
 	}
+}
+
+// AccountIsUnhealthy reports status-level problems (not usage thresholds).
+func AccountIsUnhealthy(a sub2api.Account) bool {
+	return AccountIssueKind(a) != IssueOK
+}
+
+// StatusFlag returns a short emoji/status marker for triage lists.
+func StatusFlag(a sub2api.Account) string {
+	switch AccountIssueKind(a) {
+	case IssueError:
+		return "❌"
+	case IssueRL:
+		return "⏱"
+	case IssueOverload:
+		return "🔥"
+	case IssueUnsched:
+		return "⏸"
+	case IssueTemp:
+		return "⏳"
+	case IssueDisabled:
+		return "🚫"
+	default:
+		return "✅"
+	}
+}
+
+// StatusDetailParts builds compact status tokens for a one-line summary
+// (platform/status + secondary issue tags when useful).
+func StatusDetailParts(a sub2api.Account) []string {
+	parts := []string{a.Status}
+	if a.Platform != "" {
+		parts = []string{a.Platform, a.Status}
+	}
+	kind := AccountIssueKind(a)
+	// Annotate secondary signals that may not be obvious from status alone.
+	switch kind {
+	case IssueTemp:
+		parts = append(parts, "临时停")
+	case IssueUnsched:
+		parts = append(parts, "停调度")
+	case IssueRL:
+		if !strings.Contains(strings.ToLower(a.Status), "rate") && !strings.Contains(strings.ToLower(a.Status), "limit") {
+			parts = append(parts, "限速")
+		}
+	case IssueOverload:
+		if !strings.Contains(strings.ToLower(a.Status), "overload") {
+			parts = append(parts, "过载")
+		}
+	case IssueDisabled:
+		// status already carries disabled
+	case IssueError:
+		// status/error already shown
+	}
+	return parts
 }
 
 // Live quick-action tokens shared by Telegram / Discord live views.

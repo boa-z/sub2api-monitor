@@ -1,6 +1,7 @@
 package browse
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -86,5 +87,35 @@ func TestHealAccountNilTruncate(t *testing.T) {
 	// So just ensure LiveAction labels still work after heal addition.
 	if LiveActionLabel(LiveHeal) == "" {
 		t.Fatal("empty")
+	}
+}
+
+func TestAccountIsUnhealthyAndFlags(t *testing.T) {
+	now := time.Now()
+	if AccountIsUnhealthy(sub2api.Account{Status: "active", Schedulable: true}) {
+		t.Fatal("healthy active")
+	}
+	if !AccountIsUnhealthy(sub2api.Account{Status: "active", OverloadUntil: &now, Schedulable: true}) {
+		t.Fatal("overload should be unhealthy")
+	}
+	if !AccountIsUnhealthy(sub2api.Account{Status: "active", TempUnschedulableUntil: &now, Schedulable: true}) {
+		t.Fatal("temp should be unhealthy")
+	}
+	if !AccountIsUnhealthy(sub2api.Account{Status: "disabled"}) {
+		t.Fatal("disabled")
+	}
+	if StatusFlag(sub2api.Account{Status: "active", OverloadUntil: &now}) != "🔥" {
+		t.Fatal(StatusFlag(sub2api.Account{Status: "active", OverloadUntil: &now}))
+	}
+	if StatusFlag(sub2api.Account{Status: "active", TempUnschedulableUntil: &now}) != "⏳" {
+		t.Fatal("temp flag")
+	}
+	parts := StatusDetailParts(sub2api.Account{Platform: "openai", Status: "active", OverloadUntil: &now, Schedulable: true})
+	joined := strings.Join(parts, "/")
+	if !strings.Contains(joined, "过载") {
+		t.Fatalf("parts=%v", parts)
+	}
+	if !AccountNeedsHeal(sub2api.Account{Status: "disabled"}) {
+		t.Fatal("disabled needs heal (enable)")
 	}
 }

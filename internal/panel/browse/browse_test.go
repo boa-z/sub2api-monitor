@@ -225,3 +225,18 @@ func TestNormalizeBadKindTempDisabled(t *testing.T) {
 		t.Fatal(StatusFromBadKind("all"))
 	}
 }
+
+func TestBulkHealScopeDefaults(t *testing.T) {
+	if !bulkScopeCompatible("heal", "disabled") {
+		t.Fatal("heal should scope disabled (enable step)")
+	}
+	if !bulkScopeCompatible("heal", "temp") {
+		t.Fatal("heal+temp")
+	}
+	if bulkScopeCompatible("heal", "active") {
+		t.Fatal("heal should not blindly use active filter")
+	}
+	if bulkScopeCompatible("clear_err", "disabled") {
+		t.Fatal("clear_err should not scope disabled")
+	}
+}
