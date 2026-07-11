@@ -35,6 +35,26 @@ telegram:
     check_interval: 5m # 用户监控账号的检查间隔
     cooldown: 2h # 用户用量告警冷却
 
+# ---------- 可插拔通知通道（推荐） ----------
+# 与顶层 telegram: 并存；未写 notify: 时仍兼容仅配置 telegram.bot_token 的旧写法。
+# 新增通道：实现 notify.Channel，并在 internal/notify/factory 注册。
+notify:
+  # telegram:
+  #   enabled: true                 # 可覆盖/复用顶层 telegram 凭证
+  #   bot_token: ""
+  #   chat_id: ""
+  #   extra_chat_ids: []
+  feishu:
+    enabled: false
+    # 群自定义机器人 Webhook（运维告警推荐）
+    webhook_url: ""
+    # 若机器人开启了签名校验，填写签名密钥
+    webhook_secret: ""
+    # 以下为后续「应用身份发 IM」预留（当前仅 webhook 可用）
+    # app_id: ""
+    # app_secret: ""
+    # default_receive_ids: []
+
 poll:
   interval: 30s # 主循环间隔（各探针也可单独设 interval）
   jitter: 3s # 防惊群抖动

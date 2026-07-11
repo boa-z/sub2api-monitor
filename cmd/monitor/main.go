@@ -14,10 +14,11 @@ import (
 	"github.com/boa/sub2api-monitor/internal/alerter"
 	"github.com/boa/sub2api-monitor/internal/collector"
 	"github.com/boa/sub2api-monitor/internal/config"
+	"github.com/boa/sub2api-monitor/internal/notify"
+	"github.com/boa/sub2api-monitor/internal/notify/factory"
 	"github.com/boa/sub2api-monitor/internal/panel"
 	"github.com/boa/sub2api-monitor/internal/state"
 	"github.com/boa/sub2api-monitor/internal/sub2api"
-	"github.com/boa/sub2api-monitor/internal/telegram"
 	"github.com/boa/sub2api-monitor/internal/userstore"
 )
 
@@ -53,9 +54,10 @@ func main() {
 		"panel", cfg.Telegram.Panel.Enabled,
 	)
 
-	tg, err := telegram.New(cfg.Telegram)
+	// Pluggable notification channels (telegram / feishu / ...)
+	nb, err := factory.BuildFromConfig(cfg, logger)
 	if err != nil {
-		logger.Error("create telegram client", "err", err)
+		logger.Error("build notify channels", "err", err)
 		os.Exit(1)
 	}
 
@@ -66,7 +68,9 @@ func main() {
 	}
 	defer st.Close()
 
-	engine := alerter.New(cfg, st, tg, logger)
+	// Multi implements both Notifier.SendTo and MessageNotifier.Send
+	engine := alerter.New(cfg, st, nb.Multi, logger)
+	engine.SetMulti(nb.Multi)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -89,14 +93,16 @@ func main() {
 		logger.Info("global sub2api not fully configured; ops collectors skipped (panel-only mode ok)")
 	}
 
-	if cfg.Telegram.SendStartupMessage && tg.DefaultChatID() != "" {
-		_ = tg.Send(ctx, fmt.Sprintf(
-			"🟢 %s\n实例: %s\n版本: %s\n面板: %s",
-			telegram.Bold("sub2api-monitor started"),
-			telegram.Code(cfg.Instance),
-			telegram.Code(version),
-			telegram.Code(fmt.Sprintf("%v", cfg.Telegram.Panel.Enabled)),
-		))
+	if cfg.Telegram.SendStartupMessage {
+		_ = nb.Multi.Send(ctx, notify.Message{
+			Title: "sub2api-monitor started",
+			Text: fmt.Sprintf("🟢 sub2api-monitor started\n实例: %s\n版本: %s\n面板: %v\n通道: %s",
+				cfg.Instance, version, cfg.Telegram.Panel.Enabled, strings.Join(nb.Multi.EnabledNames(), ",")),
+			HTML: fmt.Sprintf("🟢 <b>sub2api-monitor started</b>\n实例: <code>%s</code>\n版本: <code>%s</code>\n面板: <code>%v</code>\n通道: <code>%s</code>",
+				notify.EscapeHTML(cfg.Instance), notify.EscapeHTML(version), cfg.Telegram.Panel.Enabled, notify.EscapeHTML(strings.Join(nb.Multi.EnabledNames(), ","))),
+			Markdown: fmt.Sprintf("🟢 **sub2api-monitor started**\n实例: `%s`\n版本: `%s`\n面板: `%v`\n通道: `%s`",
+				cfg.Instance, version, cfg.Telegram.Panel.Enabled, strings.Join(nb.Multi.EnabledNames(), ",")),
+		})
 	}
 
 	errCh := make(chan error, 4)
@@ -112,8 +118,12 @@ func main() {
 		}()
 	}
 
-	// User panel + per-user usage monitoring
+	// User panel requires Telegram client
 	if cfg.Telegram.Panel.Enabled {
+		if nb.Telegram == nil {
+			logger.Error("panel enabled but telegram channel not available")
+			os.Exit(1)
+		}
 		users, err := userstore.Open(cfg.Telegram.Panel.UsersPath)
 		if err != nil {
 			logger.Error("open user store", "err", err)
@@ -121,7 +131,7 @@ func main() {
 		}
 		defer users.Close()
 
-		bot := panel.New(tg, users, cfg, logger)
+		bot := panel.New(nb.Telegram, users, cfg, logger)
 		go func() {
 			errCh <- bot.Run(ctx)
 		}()

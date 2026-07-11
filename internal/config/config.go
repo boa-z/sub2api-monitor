@@ -12,12 +12,16 @@ import (
 type Config struct {
 	Instance string         `yaml:"instance"`
 	Sub2API  Sub2APIConfig  `yaml:"sub2api"`
+	// Telegram is the legacy top-level Telegram config (still supported).
+	// Prefer notify.telegram for new deployments; both are merged at runtime.
 	Telegram TelegramConfig `yaml:"telegram"`
-	Poll     PollConfig     `yaml:"poll"`
-	Alert    AlertConfig    `yaml:"alert"`
-	State    StateConfig    `yaml:"state"`
-	Checks   ChecksConfig   `yaml:"checks"`
-	Logging  LoggingConfig  `yaml:"logging"`
+	// Notify holds pluggable outbound channels (telegram / feishu / future).
+	Notify  NotifyConfig  `yaml:"notify"`
+	Poll    PollConfig    `yaml:"poll"`
+	Alert   AlertConfig   `yaml:"alert"`
+	State   StateConfig   `yaml:"state"`
+	Checks  ChecksConfig  `yaml:"checks"`
+	Logging LoggingConfig `yaml:"logging"`
 }
 
 type Sub2APIConfig struct {
@@ -39,6 +43,48 @@ type TelegramConfig struct {
 	MinSendInterval     time.Duration `yaml:"min_send_interval"`
 	// Panel is the interactive user control panel (Telegram private chat).
 	Panel PanelConfig `yaml:"panel"`
+}
+
+// ----- pluggable notify channels -----
+
+// NotifyConfig groups outbound push channels. When the notify: block is present
+// in YAML, HasExplicit is set so BuildFromConfig does not auto-enable legacy telegram.
+type NotifyConfig struct {
+	// set true by loader when the notify key exists (even if empty)
+	explicit bool `yaml:"-"`
+
+	Telegram NotifyTelegramConfig `yaml:"telegram"`
+	Feishu   FeishuConfig         `yaml:"feishu"`
+	// future: Webhook, Email, Slack, ...
+}
+
+func (n NotifyConfig) HasExplicit() bool { return n.explicit }
+
+// NotifyTelegramConfig is the channel-scoped telegram settings under notify.telegram.
+// Fields mirror TelegramConfig without the panel (panel stays top-level for UX).
+type NotifyTelegramConfig struct {
+	Enabled             bool          `yaml:"enabled"`
+	BotToken            string        `yaml:"bot_token"`
+	ChatID              string        `yaml:"chat_id"`
+	ExtraChatIDs        []string      `yaml:"extra_chat_ids"`
+	ParseMode           string        `yaml:"parse_mode"`
+	DisableNotification bool          `yaml:"disable_notification"`
+	APIBase             string        `yaml:"api_base"`
+	MinSendInterval     time.Duration `yaml:"min_send_interval"`
+}
+
+// FeishuConfig configures Feishu/Lark outbound alerts.
+type FeishuConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// WebhookURL is a group custom-bot webhook (recommended for ops alerts).
+	WebhookURL string `yaml:"webhook_url"`
+	// WebhookSecret enables signed webhook requests when the bot has signature verification on.
+	WebhookSecret string `yaml:"webhook_secret"`
+	// App credentials reserved for future IM message API (user/chat targeted).
+	AppID     string `yaml:"app_id"`
+	AppSecret string `yaml:"app_secret"`
+	// DefaultReceiveIDs used when app messaging is implemented.
+	DefaultReceiveIDs []string `yaml:"default_receive_ids"`
 }
 
 // PanelConfig controls the Telegram user-facing configuration UI.
@@ -209,8 +255,21 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("read config: %w", err)
 		}
 	} else {
+		// Detect whether notify: key is present before full unmarshal.
+		var probe map[string]any
+		if err := yaml.Unmarshal(data, &probe); err == nil {
+			if _, ok := probe["notify"]; ok {
+				cfg.Notify.explicit = true
+			}
+		}
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("parse config: %w", err)
+		}
+		// re-apply explicit flag (yaml may not preserve unexported via second decode)
+		if probe != nil {
+			if _, ok := probe["notify"]; ok {
+				cfg.Notify.explicit = true
+			}
 		}
 	}
 
@@ -316,6 +375,13 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("TELEGRAM_CHAT_ID"); v != "" {
 		cfg.Telegram.ChatID = v
 	}
+	if v := os.Getenv("FEISHU_WEBHOOK_URL"); v != "" {
+		cfg.Notify.Feishu.WebhookURL = v
+		cfg.Notify.Feishu.Enabled = true
+	}
+	if v := os.Getenv("FEISHU_WEBHOOK_SECRET"); v != "" {
+		cfg.Notify.Feishu.WebhookSecret = v
+	}
 	if v := os.Getenv("INSTANCE"); v != "" {
 		cfg.Instance = v
 	}
@@ -327,6 +393,12 @@ func applyEnv(cfg *Config) {
 func (c *Config) Validate() error {
 	// When panel is enabled, global sub2api can be optional (users bring their own).
 	panelOn := c.Telegram.Panel.Enabled
+	feishuOn := c.Notify.Feishu.Enabled && strings.TrimSpace(c.Notify.Feishu.WebhookURL) != ""
+	telegramToken := strings.TrimSpace(c.Telegram.BotToken)
+	if strings.TrimSpace(c.Notify.Telegram.BotToken) != "" {
+		telegramToken = strings.TrimSpace(c.Notify.Telegram.BotToken)
+	}
+	telegramOn := telegramToken != ""
 
 	if strings.TrimSpace(c.Sub2API.BaseURL) == "" && !panelOn {
 		return fmt.Errorf("sub2api.base_url is required")
@@ -335,11 +407,25 @@ func (c *Config) Validate() error {
 	if c.Sub2API.AdminAPIKey == "" && c.Sub2API.JWT == "" && !panelOn {
 		return fmt.Errorf("sub2api.admin_api_key or sub2api.jwt is required")
 	}
-	if strings.TrimSpace(c.Telegram.BotToken) == "" {
-		return fmt.Errorf("telegram.bot_token is required")
+
+	// Need at least one outbound channel.
+	if !telegramOn && !feishuOn {
+		return fmt.Errorf("at least one notify channel required (telegram.bot_token or notify.feishu.webhook_url)")
 	}
-	// default chat can be empty only if panel enabled or account_usage has per-target chats
-	if c.Telegram.ChatID == "" && len(c.Telegram.ExtraChatIDs) == 0 && !panelOn {
+	if panelOn && !telegramOn {
+		return fmt.Errorf("telegram.bot_token is required when panel is enabled")
+	}
+
+	// default chat can be empty only if panel enabled, feishu-only ops, or per-target chats
+	tgChat := c.Telegram.ChatID
+	if c.Notify.Telegram.ChatID != "" {
+		tgChat = c.Notify.Telegram.ChatID
+	}
+	extra := c.Telegram.ExtraChatIDs
+	if len(c.Notify.Telegram.ExtraChatIDs) > 0 {
+		extra = c.Notify.Telegram.ExtraChatIDs
+	}
+	if telegramOn && tgChat == "" && len(extra) == 0 && !panelOn && !feishuOn {
 		if !c.Checks.AccountUsage.Enabled || len(c.Checks.AccountUsage.Accounts) == 0 {
 			return fmt.Errorf("telegram.chat_id is required")
 		}

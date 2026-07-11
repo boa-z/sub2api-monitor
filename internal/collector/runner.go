@@ -2,7 +2,6 @@ package collector
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"math/rand"
 	"sync"
@@ -11,7 +10,7 @@ import (
 	"github.com/boa/sub2api-monitor/internal/alerter"
 	"github.com/boa/sub2api-monitor/internal/config"
 	"github.com/boa/sub2api-monitor/internal/sub2api"
-	"github.com/boa/sub2api-monitor/internal/telegram"
+	"github.com/boa/sub2api-monitor/internal/notify"
 )
 
 type Runner struct {
@@ -104,5 +103,5 @@ func runOnce(ctx context.Context, r Runner, logger *slog.Logger) {
 }
 
 func line(k, v string) string {
-	return fmt.Sprintf("%s: %s\n", k, telegram.Code(v))
+	return notify.LineHTML(k, v)
 }

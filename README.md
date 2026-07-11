@@ -195,6 +195,68 @@ Telegram 用户 ──getUpdates──► panel.Bot
                      alerter ──► telegram.Client ──► 该用户私聊
 ```
 
+## 多通道通知架构
+
+告警与推送已从 Telegram 解耦，便于接入飞书等第三方：
+
+```
+collector ──Emit──► alerter.Engine
+                       │ 格式化 plain/HTML/Markdown
+                       ▼
+                  notify.Multi (fan-out)
+                 /              \
+         telegram.Channel    feishu.Channel
+         (Bot API)           (Webhook 卡片)
+                 \              /
+              后续: webhook / email / slack ...
+```
+
+| 包 | 职责 |
+|----|------|
+| `internal/notify` | `Channel` 接口、`Message`、`Multi` fan-out、格式化 |
+| `internal/notify/factory` | 按配置装配通道 |
+| `internal/telegram` | Telegram Bot + `AsChannel()` 适配 |
+| `internal/notify/feishu` | 飞书自定义机器人 Webhook（签名可选） |
+
+### 配置示例
+
+```yaml
+# 旧写法仍然可用
+telegram:
+  bot_token: "123456:ABC..."
+  chat_id: "YOUR_CHAT_ID"
+
+# 推荐：显式通道
+notify:
+  telegram:
+    enabled: true
+    # bot_token / chat_id 可省略，自动回退顶层 telegram
+  feishu:
+    enabled: true
+    webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+    # webhook_secret: "签名密钥"   # 机器人开启校验时填写
+```
+
+同时启用时，**同一条告警会 fan-out 到所有通道**。  
+按通道路由可用 recipient 前缀：`telegram:123`、`feishu:oc_xxx`（飞书应用发 IM 预留）。
+
+### 扩展新通道
+
+1. 新建 `internal/notify/<name>`，实现：
+
+```go
+type Channel interface {
+    Name() string
+    Enabled() bool
+    Send(ctx context.Context, msg notify.Message) error
+}
+```
+
+2. 在 `internal/notify/factory/factory.go` 的 `BuildFromConfig` 注册  
+3. 在 `config.NotifyConfig` 增加配置段  
+
+`notify.Message` 同时带 `Text` / `HTML` / `Markdown`，通道按能力选择；`alerter` 负责去重、冷却、静默时段。
+
 ## 配置说明
 
 见 [`config.example.yaml`](config.example.yaml)。
