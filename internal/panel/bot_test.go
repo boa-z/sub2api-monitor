@@ -569,7 +569,6 @@ func TestWriteErrorItemsLiveHealButtons(t *testing.T) {
 	}
 }
 
-
 func TestOpsMenuTextContainsHints(t *testing.T) {
 	b, _ := testBot(t)
 	text := b.opsMenuText(context.Background(), 1001)
@@ -1005,5 +1004,14 @@ func TestManageKeyboardViewerHidesBulk(t *testing.T) {
 	}
 	if !strings.Contains(joined, "mgr_browse") {
 		t.Fatalf("viewer manage should keep browse: %s", joined)
+	}
+}
+
+func TestPickFilterLabel(t *testing.T) {
+	if pickFilterLabel("error", "error", "error") != "· error" {
+		t.Fatal(pickFilterLabel("error", "error", "error"))
+	}
+	if pickFilterLabel("all", "error", "error") != "error" {
+		t.Fatal("expected plain label")
 	}
 }

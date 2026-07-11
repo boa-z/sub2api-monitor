@@ -283,7 +283,27 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		b.setAwait(uid, awaitAPIKey, 0, "")
 		return b.update(ctx, it, "请使用 `/setkey key:<API Key>` 设置（建议在私密频道/DM）。", b.connComponents(uid))
 	case data == "add_acc_prompt":
-		return b.update(ctx, it, "请使用 `/addaccount id:<账号ID>` 添加监控账号。", b.accountsComponents(uid))
+		return b.update(ctx, it, "请使用 `/addaccount id:<账号ID>` 添加监控账号，或点「从列表选择」。", b.accountsComponents(uid))
+	case data == "pick_acc" || strings.HasPrefix(data, "pick_acc:"):
+		status, page := "all", 0
+		if strings.HasPrefix(data, "pick_acc:") {
+			status, page = browse.ParseCallback(strings.TrimPrefix(data, "pick_acc:"))
+		}
+		text, comps := b.accountPickerView(ctx, uid, status, page)
+		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "pick:"):
+		idStr := strings.TrimPrefix(data, "pick:")
+		msg := b.addAccount(ctx, uid, idStr)
+		// stay on picker if failure? refresh accounts on success
+		if strings.HasPrefix(msg, "✅") {
+			return b.update(ctx, it, msg+"\n\n"+b.accountsText(uid), b.accountsComponents(uid))
+		}
+		text, comps := b.accountPickerView(ctx, uid, "all", 0)
+		return b.update(ctx, it, msg+"\n\n"+text, comps)
+	case strings.HasPrefix(data, "acc:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "acc:"), 10, 64)
+		text, comps := b.accountDetailView(ctx, uid, id)
+		return b.update(ctx, it, text, comps)
 	case strings.HasPrefix(data, "del_acc:"):
 		idStr := strings.TrimPrefix(data, "del_acc:")
 		msg := b.delAccount(uid, idStr)
@@ -300,6 +320,15 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 			}
 			return fmt.Errorf("not found")
 		})
+		// if coming from detail-ish context, prefer detail when still watched
+		if p, ok := b.users.Get(uid); ok {
+			for _, a := range p.Accounts {
+				if a.ID == id {
+					text, comps := b.accountDetailView(ctx, uid, id)
+					return b.update(ctx, it, text, comps)
+				}
+			}
+		}
 		return b.update(ctx, it, b.accountsText(uid), b.accountsComponents(uid))
 	case data == "ops_menu":
 		if !b.canOpsRead(uid) {

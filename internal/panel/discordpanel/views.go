@@ -451,7 +451,7 @@ func (b *Bot) accountsText(userID int64) string {
 	var bld strings.Builder
 	bld.WriteString("**监控账号**\n\n")
 	if p == nil || len(p.Accounts) == 0 {
-		bld.WriteString("暂无账号。使用 `/addaccount id:123` 添加。")
+		bld.WriteString("暂无账号。可「从列表选择」或 `/addaccount id:123`。")
 		return bld.String()
 	}
 	for _, a := range p.Accounts {
@@ -465,30 +465,266 @@ func (b *Bot) accountsText(userID int64) string {
 		}
 		fmt.Fprintf(&bld, "• `#%d` %s · `%s`\n", a.ID, name, en)
 	}
+	bld.WriteString("\n下拉选择账号查看详情；也可切换启用/删除。")
 	return bld.String()
 }
 
 func (b *Bot) accountsComponents(userID int64) []discord.Component {
 	rows := []discord.Component{
-		discord.ActionRow(discord.Button("添加账号", "add_acc_prompt", 1)),
+		discord.ActionRow(
+			discord.PrimaryButton("从列表选择", "pick_acc"),
+			discord.Button("手动添加", "add_acc_prompt", 2),
+		),
 	}
-	if p, ok := b.users.Get(userID); ok {
-		n := 0
+	if p, ok := b.users.Get(userID); ok && len(p.Accounts) > 0 {
+		opts := make([]discord.SelectOpt, 0, len(p.Accounts))
 		for _, a := range p.Accounts {
-			if n >= 4 {
+			if len(opts) >= 20 {
 				break
 			}
-			label := fmt.Sprintf("删#%d", a.ID)
-			tog := fmt.Sprintf("切#%d", a.ID)
+			name := a.Name
+			if name == "" {
+				name = fmt.Sprintf("#%d", a.ID)
+			}
+			en := "启用"
+			if !a.IsEnabled() {
+				en = "暂停"
+			}
+			opts = append(opts, discord.SelectOption(
+				fmt.Sprintf("#%d %s", a.ID, truncate(name, 18)),
+				fmt.Sprintf("acc:%d", a.ID),
+				en,
+			))
+		}
+		rows = append(rows, discord.ActionRow(discord.StringSelect("select:acc", "选择监控账号…", opts...)))
+		// quick actions for first few accounts
+		n := 0
+		for _, a := range p.Accounts {
+			if n >= 2 { // keep under 5 action rows total with nav
+				break
+			}
+			tog := "暂停"
+			if !a.IsEnabled() {
+				tog = "启用"
+			}
 			rows = append(rows, discord.ActionRow(
-				discord.DangerButton(label, fmt.Sprintf("del_acc:%d", a.ID)),
-				discord.Button(tog, fmt.Sprintf("tog_acc:%d", a.ID), 2),
+				discord.Button(fmt.Sprintf("实时#%d", a.ID), fmt.Sprintf("acc_live:%d", a.ID), 1),
+				discord.Button(fmt.Sprintf("%s#%d", tog, a.ID), fmt.Sprintf("tog_acc:%d", a.ID), 2),
+				discord.DangerButton(fmt.Sprintf("删#%d", a.ID), fmt.Sprintf("del_acc:%d", a.ID)),
 			))
 			n++
 		}
 	}
 	rows = append(rows, discord.ActionRow(discord.Button("« 主面板", "home", 2)))
+	if len(rows) > 5 {
+		rows = rows[:5]
+	}
 	return rows
+}
+
+// accountDetailView shows a watched account with live status/usage.
+func (b *Bot) accountDetailView(ctx context.Context, userID, id int64) (string, []discord.Component) {
+	p, ok := b.users.Get(userID)
+	if !ok {
+		return "用户不存在", b.accountsComponents(userID)
+	}
+	var a *userstore.AccountWatch
+	for i := range p.Accounts {
+		if p.Accounts[i].ID == id {
+			a = &p.Accounts[i]
+			break
+		}
+	}
+	if a == nil {
+		return fmt.Sprintf("未找到监控账号 #%d", id), b.accountsComponents(userID)
+	}
+	var bld strings.Builder
+	fmt.Fprintf(&bld, "**监控账号 #%d**\n\n", id)
+	name := a.Name
+	if name == "" {
+		name = fmt.Sprintf("#%d", id)
+	}
+	en := "启用"
+	if !a.IsEnabled() {
+		en = "暂停"
+	}
+	fmt.Fprintf(&bld, "名称: `%s`\n监控状态: `%s`\n", name, en)
+	ths := a.Thresholds
+	if len(ths) == 0 {
+		bld.WriteString("阈值: 继承用户/系统默认\n")
+	} else {
+		bld.WriteString("账号级阈值:\n")
+		for _, t := range ths {
+			fmt.Fprintf(&bld, "  • `%s` ≥ `%.0f%%` (%s)\n", t.Window, t.UtilizationGTE, t.Severity)
+		}
+	}
+
+	// live enrich
+	if cli, _, err := b.userClient(userID, 12*time.Second); err == nil && cli != nil {
+		if acc, err := cli.GetAccount(ctx, id); err == nil && acc != nil {
+			bld.WriteString("\n**实例状态**\n")
+			fmt.Fprintf(&bld, "平台/类型: `%s` / `%s`\n状态: `%s` · 可调度: `%v`\n",
+				acc.Platform, acc.Type, acc.Status, acc.Schedulable)
+			if acc.ErrorMessage != "" {
+				fmt.Fprintf(&bld, "错误: %s\n", truncate(acc.ErrorMessage, 100))
+			}
+			if name == fmt.Sprintf("#%d", id) && acc.Name != "" {
+				// keep display only
+			}
+		} else if err != nil {
+			fmt.Fprintf(&bld, "\n实例状态: %s\n", truncate(err.Error(), 80))
+		}
+		src := p.EffectiveSource()
+		thMap := map[string]float64{}
+		thsEff := ths
+		if len(thsEff) == 0 {
+			thsEff = p.Thresholds
+			if len(thsEff) == 0 {
+				thsEff = b.defaults
+			}
+		}
+		for _, th := range thsEff {
+			thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
+		}
+		if usage, err := cli.GetAccountUsage(ctx, id, src, false); err == nil && usage != nil {
+			sum, hit := usage.CompactUsageSummary(thMap, 4)
+			if sum == "" {
+				sum = "(无窗口)"
+			}
+			mark := ""
+			if hit {
+				mark = " ⚠"
+			}
+			fmt.Fprintf(&bld, "\n用量(`%s`): `%s`%s\n", src, sum, mark)
+		} else if err != nil {
+			fmt.Fprintf(&bld, "\n用量: %s\n", truncate(err.Error(), 60))
+		}
+	}
+
+	togLabel := "暂停监控"
+	if !a.IsEnabled() {
+		togLabel = "启用监控"
+	}
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.PrimaryButton("实时用量", fmt.Sprintf("acc_live:%d", id)),
+			discord.Button(togLabel, fmt.Sprintf("tog_acc:%d", id), 2),
+			discord.DangerButton("移出监控", fmt.Sprintf("del_acc:%d", id)),
+		),
+	}
+	if b.canOpsRead(userID) {
+		label := "管理操作"
+		if b.isViewer(userID) {
+			label = "账号详情"
+		}
+		comps = append(comps, discord.ActionRow(
+			discord.Button(label, fmt.Sprintf("mgr_acc:%d", id), 2),
+		))
+	}
+	comps = append(comps, discord.ActionRow(
+		discord.Button("« 监控账号", "cfg_acc", 2),
+		discord.Button("« 主面板", "home", 2),
+	))
+	if len(comps) > 5 {
+		comps = comps[:5]
+	}
+	return bld.String(), comps
+}
+
+// accountPickerView lists Sub2API accounts to add to the watch list.
+func (b *Bot) accountPickerView(ctx context.Context, userID int64, status string, page int) (string, []discord.Component) {
+	p, ok := b.users.Get(userID)
+	if !ok || !p.HasConnection() {
+		return "❌ 请先配置连接后再从列表选择", b.connComponents(userID)
+	}
+	cli, err := sub2api.NewClient(config.Sub2APIConfig{
+		BaseURL: p.BaseURL, AdminAPIKey: p.AdminAPIKey, JWT: p.JWT, Timeout: 15 * time.Second,
+	})
+	if err != nil {
+		return "客户端错误: " + err.Error(), b.accountsComponents(userID)
+	}
+	const pageSize = 8
+	if page < 0 {
+		page = 0
+	}
+	if status == "" {
+		status = "all"
+	}
+	items, total, err := browse.ListAccounts(ctx, cli, status, page, pageSize)
+	if err != nil {
+		return "拉取账号列表失败: " + err.Error(), b.accountsComponents(userID)
+	}
+	watched := map[int64]bool{}
+	for _, a := range p.Accounts {
+		watched[a.ID] = true
+	}
+	var bld strings.Builder
+	bld.WriteString("**选择账号添加监控**\n")
+	fmt.Fprintf(&bld, "筛选: `%s` · 第 %d 页 · 共 %d 个\n", status, page+1, total)
+	bld.WriteString("已监控标 ✓；下拉或筛选后选择添加。\n\n")
+	for _, acc := range items {
+		mark := ""
+		if watched[acc.ID] {
+			mark = "✓ "
+		}
+		fmt.Fprintf(&bld, "%s`#%d` %s · `%s/%s`\n", mark, acc.ID, truncate(acc.Name, 16), acc.Platform, acc.Status)
+	}
+	if len(items) == 0 {
+		bld.WriteString("(本页无账号)\n")
+	}
+
+	token := browse.Token(status)
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button(pickFilterBtn(status, "all", "全部"), "pick_acc:all:0", 2),
+			discord.Button(pickFilterBtn(status, "active", "active"), "pick_acc:active:0", 2),
+			discord.Button(pickFilterBtn(status, "error", "error"), "pick_acc:error:0", 2),
+			discord.Button(pickFilterBtn(status, "rate_limited", "限速"), "pick_acc:rate_limited:0", 2),
+		),
+	}
+	if len(items) > 0 {
+		opts := make([]discord.SelectOpt, 0, len(items))
+		for _, acc := range items {
+			if len(opts) >= 8 {
+				break
+			}
+			mark := ""
+			if watched[acc.ID] {
+				mark = "✓ "
+			}
+			opts = append(opts, discord.SelectOption(
+				fmt.Sprintf("%s#%d %s", mark, acc.ID, truncate(acc.Name, 16)),
+				fmt.Sprintf("pick:%d", acc.ID),
+				fmt.Sprintf("%s/%s", acc.Platform, acc.Status),
+			))
+		}
+		comps = append(comps, discord.ActionRow(discord.StringSelect("select:pick", "选择添加…", opts...)))
+	}
+	nav := []discord.Component{}
+	if page > 0 {
+		nav = append(nav, discord.Button("« 上页", fmt.Sprintf("pick_acc:%s:%d", token, page-1), 2))
+	}
+	if int64((page+1)*pageSize) < total || len(items) == pageSize {
+		nav = append(nav, discord.Button("下页 »", fmt.Sprintf("pick_acc:%s:%d", token, page+1), 2))
+	}
+	if len(nav) > 0 {
+		comps = append(comps, discord.ActionRow(nav...))
+	}
+	comps = append(comps, discord.ActionRow(
+		discord.Button("手动输入 ID", "add_acc_prompt", 2),
+		discord.Button("« 监控账号", "cfg_acc", 2),
+	))
+	if len(comps) > 5 {
+		comps = comps[:5]
+	}
+	return bld.String(), comps
+}
+
+func pickFilterBtn(cur, want, label string) string {
+	if cur == want {
+		return "· " + label
+	}
+	return label
 }
 
 func (b *Bot) thresholdsText(userID int64) string {

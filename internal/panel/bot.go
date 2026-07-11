@@ -558,11 +558,11 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		b.setAwait(cq.From.ID, awaitAddAcc, 0, "")
 		return b.editOrSend(ctx, chatID, msgID, "请发送账号 ID（数字）\n或从列表选择。\n/cancel 取消", addAccountKeyboard())
 	case data == "pick_acc" || strings.HasPrefix(data, "pick_acc:"):
-		page := 0
+		status, page := "all", 0
 		if strings.HasPrefix(data, "pick_acc:") {
-			page, _ = strconv.Atoi(strings.TrimPrefix(data, "pick_acc:"))
+			status, page = browse.ParseCallback(strings.TrimPrefix(data, "pick_acc:"))
 		}
-		return b.showAccountPicker(ctx, chatID, msgID, cq.From.ID, page)
+		return b.showAccountPicker(ctx, chatID, msgID, cq.From.ID, status, page)
 	case strings.HasPrefix(data, "pick:"):
 		idStr := strings.TrimPrefix(data, "pick:")
 		label, err := b.addAccountMutate(ctx, chatID, cq.From.ID, idStr)
@@ -606,7 +606,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		// account detail
 		idStr := strings.TrimPrefix(data, "acc:")
 		id, _ := strconv.ParseInt(idStr, 10, 64)
-		return b.editOrSend(ctx, chatID, msgID, b.accountDetailText(cq.From.ID, id), b.accountDetailKeyboard(cq.From.ID, id))
+		return b.editOrSend(ctx, chatID, msgID, b.accountDetailText(ctx, cq.From.ID, id), b.accountDetailKeyboard(cq.From.ID, id))
 	case strings.HasPrefix(data, "live_act:"):
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
@@ -773,7 +773,7 @@ func (b *Bot) handleAwait(ctx context.Context, m *telegram.InMessage, s *session
 		if err != nil {
 			return b.tg.SendChat(ctx, m.Chat.ID, "重命名失败: "+telegram.EscapeHTML(err.Error()), nil)
 		}
-		return b.tg.SendChat(ctx, m.Chat.ID, "✅ 已更新名称\n\n"+b.accountDetailText(m.From.ID, id), b.accountDetailKeyboard(m.From.ID, id))
+		return b.tg.SendChat(ctx, m.Chat.ID, "✅ 已更新名称\n\n"+b.accountDetailText(ctx, m.From.ID, id), b.accountDetailKeyboard(m.From.ID, id))
 	default:
 		b.clearSession(m.From.ID)
 		return b.sendHome(ctx, m.Chat.ID, m.From.ID)
@@ -1166,7 +1166,7 @@ func checkResultKeyboard(admin bool, issueIDs []int64, issueLabels []string) *te
 	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
-func (b *Bot) showAccountPicker(ctx context.Context, chatID, msgID, userID int64, page int) error {
+func (b *Bot) showAccountPicker(ctx context.Context, chatID, msgID, userID int64, status string, page int) error {
 	p, ok := b.users.Get(userID)
 	if !ok || !p.HasConnection() {
 		return b.editOrSend(ctx, chatID, msgID, "❌ 请先配置连接后再从列表选择", connKeyboard())
@@ -1181,7 +1181,10 @@ func (b *Bot) showAccountPicker(ctx context.Context, chatID, msgID, userID int64
 	if page < 0 {
 		page = 0
 	}
-	items, total, err := cli.ListAccounts(ctx, page+1, pageSize, "")
+	if status == "" {
+		status = "all"
+	}
+	items, total, err := browse.ListAccounts(ctx, cli, status, page, pageSize)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "拉取账号列表失败: "+telegram.EscapeHTML(err.Error()), b.accountsKeyboard(userID))
 	}
@@ -1192,8 +1195,20 @@ func (b *Bot) showAccountPicker(ctx context.Context, chatID, msgID, userID int64
 	}
 	var bld strings.Builder
 	bld.WriteString(telegram.Bold("选择账号添加监控") + "\n")
-	fmt.Fprintf(&bld, "第 %d 页 · 共 %d 个\n点击按钮添加（已监控的标 ✓）\n", page+1, total)
-	rows := [][]telegram.InlineKeyboardButton{}
+	fmt.Fprintf(&bld, "筛选: %s · 第 %d 页 · 共 %d 个\n点击按钮添加（已监控的标 ✓）\n",
+		telegram.Code(status), page+1, total)
+	token := browse.Token(status)
+	rows := [][]telegram.InlineKeyboardButton{
+		{
+			telegram.Btn(pickFilterLabel(status, "all", "全部"), "pick_acc:all:0"),
+			telegram.Btn(pickFilterLabel(status, "active", "active"), "pick_acc:active:0"),
+			telegram.Btn(pickFilterLabel(status, "error", "error"), "pick_acc:error:0"),
+		},
+		{
+			telegram.Btn(pickFilterLabel(status, "rate_limited", "限速"), "pick_acc:rate_limited:0"),
+			telegram.Btn(pickFilterLabel(status, "unsched", "停调度"), "pick_acc:unsched:0"),
+		},
+	}
 	for _, acc := range items {
 		mark := ""
 		if watched[acc.ID] {
@@ -1210,10 +1225,10 @@ func (b *Bot) showAccountPicker(ctx context.Context, chatID, msgID, userID int64
 	}
 	nav := []telegram.InlineKeyboardButton{}
 	if page > 0 {
-		nav = append(nav, telegram.Btn("« 上页", fmt.Sprintf("pick_acc:%d", page-1)))
+		nav = append(nav, telegram.Btn("« 上页", fmt.Sprintf("pick_acc:%s:%d", token, page-1)))
 	}
-	if int64((page+1)*pageSize) < total {
-		nav = append(nav, telegram.Btn("下页 »", fmt.Sprintf("pick_acc:%d", page+1)))
+	if int64((page+1)*pageSize) < total || len(items) == pageSize {
+		nav = append(nav, telegram.Btn("下页 »", fmt.Sprintf("pick_acc:%s:%d", token, page+1)))
 	}
 	if len(nav) > 0 {
 		rows = append(rows, nav)
@@ -1224,6 +1239,13 @@ func (b *Bot) showAccountPicker(ctx context.Context, chatID, msgID, userID int64
 	)
 	kb := &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
+}
+
+func pickFilterLabel(cur, want, label string) string {
+	if cur == want {
+		return "· " + label
+	}
+	return label
 }
 
 // ----- views -----
@@ -1630,7 +1652,7 @@ func (b *Bot) accountsText(userID int64) string {
 	return bld.String()
 }
 
-func (b *Bot) accountDetailText(userID int64, id int64) string {
+func (b *Bot) accountDetailText(ctx context.Context, userID int64, id int64) string {
 	p, ok := b.users.Get(userID)
 	if !ok {
 		return "用户不存在"
@@ -1646,13 +1668,13 @@ func (b *Bot) accountDetailText(userID int64, id int64) string {
 		return fmt.Sprintf("未找到账号 #%d", id)
 	}
 	var bld strings.Builder
-	bld.WriteString(telegram.Bold(fmt.Sprintf("账号 #%d", id)) + "\n\n")
+	bld.WriteString(telegram.Bold(fmt.Sprintf("监控账号 #%d", id)) + "\n\n")
 	fmt.Fprintf(&bld, "名称: %s\n", telegram.Code(displayName(*a)))
 	en := "启用"
 	if !a.IsEnabled() {
 		en = "暂停"
 	}
-	fmt.Fprintf(&bld, "状态: %s\n", telegram.Code(en))
+	fmt.Fprintf(&bld, "监控状态: %s\n", telegram.Code(en))
 	ths := a.Thresholds
 	if len(ths) == 0 {
 		bld.WriteString("阈值: 继承用户/系统默认\n")
@@ -1660,6 +1682,51 @@ func (b *Bot) accountDetailText(userID int64, id int64) string {
 		bld.WriteString("账号级阈值:\n")
 		for _, t := range ths {
 			fmt.Fprintf(&bld, "  • %s ≥ %.0f%% (%s)\n", t.Window, t.UtilizationGTE, t.Severity)
+		}
+	}
+
+	// live enrich (best-effort)
+	if p.HasConnection() {
+		if cli, err := sub2api.NewClient(config.Sub2APIConfig{
+			BaseURL: p.BaseURL, AdminAPIKey: p.AdminAPIKey, JWT: p.JWT, Timeout: 12 * time.Second,
+		}); err == nil {
+			if acc, err := cli.GetAccount(ctx, id); err == nil && acc != nil {
+				bld.WriteString("\n" + telegram.Bold("实例状态") + "\n")
+				fmt.Fprintf(&bld, "平台/类型: %s / %s\n", telegram.Code(acc.Platform), telegram.Code(acc.Type))
+				fmt.Fprintf(&bld, "状态: %s · 可调度: %s\n",
+					telegram.Code(acc.Status),
+					telegram.Code(fmt.Sprintf("%v", acc.Schedulable)))
+				if acc.ErrorMessage != "" {
+					fmt.Fprintf(&bld, "错误: %s\n", telegram.EscapeHTML(truncateRunes(acc.ErrorMessage, 100)))
+				}
+			} else if err != nil {
+				fmt.Fprintf(&bld, "\n实例状态: %s\n", telegram.EscapeHTML(truncateRunes(err.Error(), 80)))
+			}
+			src := p.EffectiveSource()
+			thMap := map[string]float64{}
+			thsEff := ths
+			if len(thsEff) == 0 {
+				thsEff = p.Thresholds
+				if len(thsEff) == 0 {
+					thsEff = b.defaults
+				}
+			}
+			for _, th := range thsEff {
+				thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
+			}
+			if usage, err := cli.GetAccountUsage(ctx, id, src, false); err == nil && usage != nil {
+				sum, hit := usage.CompactUsageSummary(thMap, 4)
+				if sum == "" {
+					sum = "(无窗口)"
+				}
+				mark := ""
+				if hit {
+					mark = " ⚠️"
+				}
+				fmt.Fprintf(&bld, "\n用量(%s): %s%s\n", telegram.Code(src), telegram.Code(sum), mark)
+			} else if err != nil {
+				fmt.Fprintf(&bld, "\n用量: %s\n", telegram.EscapeHTML(truncateRunes(err.Error(), 60)))
+			}
 		}
 	}
 	return bld.String()

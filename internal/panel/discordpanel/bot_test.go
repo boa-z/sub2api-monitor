@@ -480,3 +480,58 @@ func TestViewerRolePermissionsDiscord(t *testing.T) {
 		t.Fatal("viewer manage should hide write actions")
 	}
 }
+
+func TestAccountsComponentsHasPicker(t *testing.T) {
+	b, store := testBot(t)
+	// seed a watched account for select menu
+	if _, err := store.GetOrCreate(42, "42", "u", "U"); err != nil {
+		t.Fatal(err)
+	}
+	en := true
+	if _, err := store.Update(42, func(p *userstore.Profile) error {
+		p.Accounts = []userstore.AccountWatch{{ID: 9, Name: "demo", Enabled: &en}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	comps := b.accountsComponents(42)
+	if !containsCustomID(comps, "pick_acc") {
+		t.Fatalf("missing pick_acc: %+v", comps)
+	}
+	if !hasSelectValue(comps, "acc:9") {
+		t.Fatalf("missing account select option: %+v", comps)
+	}
+	if len(comps) > 5 {
+		t.Fatalf("accounts rows >5: %d", len(comps))
+	}
+}
+
+func hasSelectValue(comps []discord.Component, value string) bool {
+	for _, row := range comps {
+		for _, c := range row.Components {
+			for _, o := range c.Options {
+				if o.Value == value {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func TestAccountDetailViewMissing(t *testing.T) {
+	b, _ := testBot(t)
+	text, comps := b.accountDetailView(context.Background(), 42, 999)
+	if text == "" || len(comps) == 0 {
+		t.Fatal("empty detail view")
+	}
+}
+
+func TestPickFilterBtn(t *testing.T) {
+	if pickFilterBtn("all", "all", "全部") != "· 全部" {
+		t.Fatal(pickFilterBtn("all", "all", "全部"))
+	}
+	if pickFilterBtn("error", "all", "全部") != "全部" {
+		t.Fatal("expected unselected label")
+	}
+}
