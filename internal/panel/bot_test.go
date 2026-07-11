@@ -624,3 +624,124 @@ func TestManageBackAndBrowseMemory(t *testing.T) {
 		t.Fatal("await wiped manage back")
 	}
 }
+
+func TestExtractAccountIDs(t *testing.T) {
+	ids := extractAccountIDs("account_id=42 错误", "账号 #99 限速", "plain 123 should skip", "acc:7 ok", "#8 and account id 8")
+	want := map[int64]bool{42: true, 99: true, 7: true, 8: true}
+	if len(ids) != len(want) {
+		t.Fatalf("got %v want keys %v", ids, want)
+	}
+	for _, id := range ids {
+		if !want[id] {
+			t.Fatalf("unexpected id %d in %v", id, ids)
+		}
+	}
+	// bare number without label should not match
+	if got := extractAccountIDs("error rate 15 percent"); len(got) != 0 {
+		t.Fatalf("bare number matched: %v", got)
+	}
+}
+
+func TestAlertsKeyboardJumps(t *testing.T) {
+	kb := alertsKeyboard([]int64{11, 22}, 2, 1)
+	joined := ""
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined, "mgr_acc:11") || !strings.Contains(joined, "mgr_acc:22") {
+		t.Fatalf("missing manage jumps: %s", joined)
+	}
+	if !strings.Contains(joined, "ops_errors:all:0") || !strings.Contains(joined, "ops_badacc:error:0") {
+		t.Fatalf("missing ops jumps: %s", joined)
+	}
+	if !strings.Contains(joined, "ops_dash") {
+		t.Fatalf("firing should offer dash: %s", joined)
+	}
+	kb2 := alertsKeyboard(nil, 0, 0)
+	joined2 := ""
+	for _, row := range kb2.InlineKeyboard {
+		for _, btn := range row {
+			joined2 += btn.CallbackData + ","
+		}
+	}
+	if strings.Contains(joined2, "mgr_acc:") {
+		t.Fatal("empty ids should not add manage")
+	}
+	if !strings.Contains(joined2, "ops_avail") {
+		t.Fatalf("no firing should offer avail: %s", joined2)
+	}
+}
+
+func TestChannelsKeyboard(t *testing.T) {
+	kb := channelsKeyboard(3, 2, 1)
+	joined := ""
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined, "ops_badacc:error:0") || !strings.Contains(joined, "ops_errors:all:0") {
+		t.Fatalf("bad channels should offer jumps: %s", joined)
+	}
+	kb2 := channelsKeyboard(1, 1, 0)
+	joined2 := ""
+	for _, row := range kb2.InlineKeyboard {
+		for _, btn := range row {
+			joined2 += btn.CallbackData + ","
+		}
+	}
+	if strings.Contains(joined2, "ops_badacc:error:0") {
+		t.Fatal("healthy channels should omit badacc jump")
+	}
+}
+
+func TestHomeKeyboardAdminShortcuts(t *testing.T) {
+	b, _ := testBot(t)
+	b.cfg.Telegram.Panel.AdminUserIDs = []int64{7}
+	adminKB := b.homeKeyboardFor(7)
+	joined := ""
+	for _, row := range adminKB.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined, "ops_dash") || !strings.Contains(joined, "ops_badacc:error:0") {
+		t.Fatalf("admin home missing dash/badacc: %s", joined)
+	}
+	userKB := b.homeKeyboardFor(8)
+	for _, row := range userKB.InlineKeyboard {
+		for _, btn := range row {
+			if btn.CallbackData == "ops_dash" || strings.HasPrefix(btn.CallbackData, "ops_badacc") {
+				t.Fatalf("user home should hide ops shortcuts: %s", btn.CallbackData)
+			}
+		}
+	}
+}
+
+func TestManageBackAlertsChannels(t *testing.T) {
+	b, _ := testBot(t)
+	b.setManageBack(7, "ops_alerts")
+	btn := b.manageBackButton(7)
+	if btn.CallbackData != "ops_alerts" || btn.Text != "« 告警" {
+		t.Fatalf("%+v", btn)
+	}
+	b.setManageBack(7, "ops_channels")
+	btn = b.manageBackButton(7)
+	if btn.CallbackData != "ops_channels" || btn.Text != "« 渠道" {
+		t.Fatalf("%+v", btn)
+	}
+}
+
+func TestChannelIsBad(t *testing.T) {
+	if channelIsBad(sub2api.ChannelMonitor{Enabled: true, PrimaryStatus: "ok"}) {
+		t.Fatal("ok should not be bad")
+	}
+	if !channelIsBad(sub2api.ChannelMonitor{Enabled: true, PrimaryStatus: "fail"}) {
+		t.Fatal("fail should be bad")
+	}
+	if channelIsBad(sub2api.ChannelMonitor{Enabled: false, PrimaryStatus: "fail"}) {
+		t.Fatal("disabled not bad")
+	}
+}

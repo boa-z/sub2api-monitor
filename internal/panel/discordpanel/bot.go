@@ -315,7 +315,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, b.showAlerts(ctx, uid), opsViewComponents("ops_alerts"))
+		text, comps := b.showAlertsView(ctx, uid)
+		return b.update(ctx, it, text, comps)
 	case data == "ops_conc":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -326,7 +327,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, b.showChannels(ctx, uid), opsViewComponents("ops_channels"))
+		text, comps := b.showChannelsView(ctx, uid)
+		return b.update(ctx, it, text, comps)
 	case data == "ops_errors" || strings.HasPrefix(data, "ops_errors:"):
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -797,6 +799,10 @@ func (b *Bot) manageBackLabel(userID int64) (label, data string) {
 		label = "« 并发"
 	case data == "ops_dash":
 		label = "« 看板"
+	case data == "ops_alerts":
+		label = "« 告警"
+	case data == "ops_channels":
+		label = "« 渠道"
 	case strings.HasPrefix(data, "ops_badacc"):
 		label = "« 异常账号"
 	case strings.HasPrefix(data, "mgr_browse"):

@@ -1157,6 +1157,18 @@ func (b *Bot) homeText(userID int64) string {
 		telegram.Code(b.cfg.Telegram.Panel.CheckInterval.String()),
 		telegram.Code(b.cfg.Telegram.Panel.Cooldown.String()),
 	)
+	if b.isAdmin(userID) {
+		if cli, _, err := b.userClient(userID, 5*time.Second); err == nil && cli != nil {
+			if line, issues := adminHealthSnapshot(context.Background(), cli); line != "" {
+				bld.WriteString(telegram.Bold("运维快照") + "\n")
+				bld.WriteString(line + "\n")
+				if issues {
+					bld.WriteString("可从下方「运维视图 / 看板」快速处理异常。\n")
+				}
+				bld.WriteString("\n")
+			}
+		}
+	}
 	if p == nil {
 		bld.WriteString("尚未创建配置，点下方按钮开始。")
 		return bld.String()
@@ -1351,6 +1363,7 @@ func homeKeyboard() *telegram.InlineKeyboardMarkup {
 	return &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{telegram.Btn("📊 状态", "status"), telegram.Btn("🛠 运维视图", "ops_menu")},
+			{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn("📋 异常账号", "ops_badacc:error:0")},
 			{telegram.Btn("🧰 账号管理", "mgr_menu"), telegram.Btn("👤 监控账号", "cfg_acc")},
 			{telegram.Btn("🔌 连接配置", "cfg_conn"), telegram.Btn("🎯 阈值", "cfg_thr")},
 			{telegram.Btn("▶️ 立即检查", "check_now"), telegram.Btn("🔁 开关监控", "toggle_mon")},
@@ -1741,6 +1754,10 @@ func (b *Bot) manageBackButton(userID int64) telegram.InlineKeyboardButton {
 		label = "« 并发"
 	case data == "ops_dash":
 		label = "« 看板"
+	case data == "ops_alerts":
+		label = "« 告警"
+	case data == "ops_channels":
+		label = "« 渠道"
 	case strings.HasPrefix(data, "ops_badacc"):
 		label = "« 异常账号"
 	case strings.HasPrefix(data, "mgr_browse"):

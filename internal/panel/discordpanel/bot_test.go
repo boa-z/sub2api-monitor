@@ -282,3 +282,72 @@ func TestManageBackAndBrowseMemory(t *testing.T) {
 		t.Fatal("await wiped manage back")
 	}
 }
+
+func TestPanelExtractAccountIDs(t *testing.T) {
+	ids := panelExtractAccountIDs("account_id=42", "账号 #99", "rate 15 only")
+	if len(ids) != 2 || ids[0] != 42 || ids[1] != 99 {
+		t.Fatalf("got %v", ids)
+	}
+}
+
+func TestDiscordHomeAdminShortcuts(t *testing.T) {
+	b, _ := testBot(t)
+	admin := b.homeComponents(100)
+	foundDash, foundBad, foundAlert := false, false, false
+	for _, row := range admin {
+		for _, c := range row.Components {
+			switch c.CustomID {
+			case "ops_dash":
+				foundDash = true
+			case "ops_badacc:error:0":
+				foundBad = true
+			case "ops_alerts":
+				foundAlert = true
+			}
+		}
+	}
+	if !foundDash || !foundBad || !foundAlert {
+		t.Fatalf("admin home missing shortcuts dash=%v bad=%v alert=%v", foundDash, foundBad, foundAlert)
+	}
+	user := b.homeComponents(42)
+	for _, row := range user {
+		for _, c := range row.Components {
+			if c.CustomID == "ops_dash" || c.CustomID == "ops_alerts" {
+				t.Fatal("user should not see ops shortcuts")
+			}
+		}
+	}
+}
+
+func TestManageBackAlertsChannels(t *testing.T) {
+	b, _ := testBot(t)
+	b.setManageBack(7, "ops_alerts")
+	label, data := b.manageBackLabel(7)
+	if data != "ops_alerts" || label != "« 告警" {
+		t.Fatalf("%s %s", label, data)
+	}
+	b.setManageBack(7, "ops_channels")
+	label, data = b.manageBackLabel(7)
+	if data != "ops_channels" || label != "« 渠道" {
+		t.Fatalf("%s %s", label, data)
+	}
+}
+
+func TestChannelIsBad(t *testing.T) {
+	if channelIsBad(sub2api.ChannelMonitor{Enabled: true, PrimaryStatus: "healthy"}) {
+		t.Fatal("healthy")
+	}
+	if !channelIsBad(sub2api.ChannelMonitor{Enabled: true, PrimaryStatus: "timeout"}) {
+		t.Fatal("timeout")
+	}
+}
+
+func TestAlertsComponents(t *testing.T) {
+	comps := alertsComponents([]int64{5}, 1)
+	if !containsCustomID(comps, "mgr_acc:5") {
+		t.Fatal("missing manage")
+	}
+	if !containsCustomID(comps, "ops_dash") {
+		t.Fatal("missing dash for firing")
+	}
+}

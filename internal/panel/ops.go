@@ -3,6 +3,7 @@ package panel
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -361,7 +362,7 @@ func (b *Bot) showAlerts(ctx context.Context, chatID, msgID, userID int64) error
 	bld.WriteString(telegram.Bold("内置告警事件") + "\n\n")
 	if len(events) == 0 {
 		bld.WriteString("暂无事件。")
-		return b.editOrSend(ctx, chatID, msgID, bld.String(), opsKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, bld.String(), alertsKeyboard(nil, 0, 0))
 	}
 	// prefer firing first
 	sort.SliceStable(events, func(i, j int) bool {
@@ -372,6 +373,23 @@ func (b *Bot) showAlerts(ctx context.Context, chatID, msgID, userID int64) error
 		}
 		return events[i].FiredAt.After(events[j].FiredAt)
 	})
+	firingN, resolvedN := 0, 0
+	var idTexts []string
+	for _, ev := range events {
+		st := strings.ToLower(ev.Status)
+		switch {
+		case st == "firing" || st == "open" || st == "active":
+			firingN++
+		case st == "resolved" || st == "ok" || st == "closed":
+			resolvedN++
+		}
+		idTexts = append(idTexts, ev.DisplayTitle(), ev.DisplayMessage(), ev.MetricType, ev.Name)
+	}
+	fmt.Fprintf(&bld, "汇总: 🔴 触发 %s · 🟢 已恢复 %s · 共 %s\n\n",
+		telegram.Code(strconv.Itoa(firingN)),
+		telegram.Code(strconv.Itoa(resolvedN)),
+		telegram.Code(strconv.Itoa(len(events))),
+	)
 	shown := 0
 	for _, ev := range events {
 		if shown >= 12 {
@@ -403,7 +421,43 @@ func (b *Bot) showAlerts(ctx context.Context, chatID, msgID, userID int64) error
 		}
 		shown++
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsViewKeyboard("ops_alerts"))
+	accIDs := extractAccountIDs(idTexts...)
+	b.setManageBack(userID, "ops_alerts")
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), alertsKeyboard(accIDs, firingN, resolvedN))
+}
+
+func alertsKeyboard(accIDs []int64, firingN, resolvedN int) *telegram.InlineKeyboardMarkup {
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("🔄 刷新", "ops_alerts"), telegram.Btn("« 运维菜单", "ops_menu")},
+	}
+	if len(accIDs) > 0 {
+		var row []telegram.InlineKeyboardButton
+		for i, id := range accIDs {
+			if i >= 4 {
+				break
+			}
+			row = append(row, telegram.Btn(fmt.Sprintf("管理 #%d", id), fmt.Sprintf("mgr_acc:%d", id)))
+			if len(row) == 2 {
+				rows = append(rows, row)
+				row = nil
+			}
+		}
+		if len(row) > 0 {
+			rows = append(rows, row)
+		}
+	}
+	jump := []telegram.InlineKeyboardButton{
+		telegram.Btn("❌ 错误", "ops_errors:all:0"),
+		telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+	}
+	if firingN > 0 {
+		jump = append(jump, telegram.Btn("📈 看板", "ops_dash"))
+	} else {
+		jump = append(jump, telegram.Btn("✅ 可用性", "ops_avail"))
+	}
+	rows = append(rows, jump)
+	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")})
+	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func (b *Bot) showErrors(ctx context.Context, chatID, msgID, userID int64) error {
@@ -804,9 +858,38 @@ func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64) err
 	bld.WriteString(telegram.Bold("渠道探测") + "\n\n")
 	if len(items) == 0 {
 		bld.WriteString("无探测任务。")
-		return b.editOrSend(ctx, chatID, msgID, bld.String(), opsKeyboard())
+		return b.editOrSend(ctx, chatID, msgID, bld.String(), channelsKeyboard(0, 0, 0))
 	}
+	onN, okN, badN := 0, 0, 0
 	for _, m := range items {
+		if m.Enabled {
+			onN++
+		}
+		if channelIsBad(m) {
+			badN++
+		} else if m.Enabled {
+			okN++
+		}
+	}
+	fmt.Fprintf(&bld, "汇总: 启用 %s · 正常 %s · 异常状态 %s · 共 %s\n\n",
+		telegram.Code(strconv.Itoa(onN)),
+		telegram.Code(strconv.Itoa(okN)),
+		telegram.Code(strconv.Itoa(badN)),
+		telegram.Code(strconv.Itoa(len(items))),
+	)
+	sort.SliceStable(items, func(i, j int) bool {
+		bi := channelIsBad(items[i])
+		bj := channelIsBad(items[j])
+		if bi != bj {
+			return bi
+		}
+		return items[i].ID < items[j].ID
+	})
+	for i, m := range items {
+		if i >= 15 {
+			fmt.Fprintf(&bld, "… 另有 %d 个\n", len(items)-15)
+			break
+		}
 		en := "OFF"
 		if m.Enabled {
 			en = "ON"
@@ -815,8 +898,13 @@ func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64) err
 		if m.LastCheckedAt != nil {
 			last = m.LastCheckedAt.Local().Format("01-02 15:04")
 		}
-		fmt.Fprintf(&bld, "• [%s] #%d %s\n  %s / %s · %s · %sms\n  上次 %s\n",
+		flag := ""
+		if channelIsBad(m) {
+			flag = " ⚠"
+		}
+		fmt.Fprintf(&bld, "• [%s]%s #%d %s\n  %s / %s · %s · %sms\n  上次 %s",
 			en,
+			flag,
 			m.ID,
 			telegram.EscapeHTML(truncateRunes(m.Name, 18)),
 			telegram.EscapeHTML(m.Provider),
@@ -825,8 +913,47 @@ func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64) err
 			telegram.Code(itoa(m.PrimaryLatencyMS)),
 			telegram.Code(last),
 		)
+		if m.Availability7d > 0 {
+			// API may return ratio (0-1) or percent (0-100)
+			av := m.Availability7d
+			if av <= 1 {
+				av *= 100
+			}
+			fmt.Fprintf(&bld, " · 7d %.1f%%", av)
+		}
+		bld.WriteString("\n")
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsViewKeyboard("ops_channels"))
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), channelsKeyboard(onN, okN, badN))
+}
+
+func channelIsBad(m sub2api.ChannelMonitor) bool {
+	if !m.Enabled {
+		return false
+	}
+	st := strings.ToLower(strings.TrimSpace(m.PrimaryStatus))
+	if st == "" || st == "ok" || st == "success" || st == "up" || st == "healthy" || st == "pass" {
+		return false
+	}
+	return true
+}
+
+func channelsKeyboard(onN, okN, badN int) *telegram.InlineKeyboardMarkup {
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("🔄 刷新", "ops_channels"), telegram.Btn("« 运维菜单", "ops_menu")},
+		{
+			telegram.Btn("📈 看板", "ops_dash"),
+			telegram.Btn("✅ 可用性", "ops_avail"),
+			telegram.Btn("🚨 告警", "ops_alerts"),
+		},
+	}
+	if badN > 0 {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			telegram.Btn("❌ 错误", "ops_errors:all:0"),
+		})
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")})
+	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func (b *Bot) showBadAccounts(ctx context.Context, chatID, msgID, userID int64) error {
@@ -964,6 +1091,64 @@ func (b *Bot) watchErrorAccounts(ctx context.Context, chatID, msgID, userID int6
 	msg := fmt.Sprintf("✅ 已添加 %d 个异常账号到监控（跳过已存在 %d）\n\n%s",
 		added, skipped, b.accountsText(userID))
 	return b.editOrSend(ctx, chatID, msgID, msg, b.accountsKeyboard(userID))
+}
+
+// adminHealthLine returns a short instance health summary for admins (best-effort).
+// adminHealthSnapshot returns a one-line dashboard health summary and whether
+// error/rate-limit accounts need attention. Single API fetch for home panels.
+func adminHealthSnapshot(ctx context.Context, cli *sub2api.Client) (line string, issues bool) {
+	if cli == nil {
+		return "", false
+	}
+	st, err := cli.GetDashboardStats(ctx)
+	if err != nil || st == nil {
+		return "", false
+	}
+	line = fmt.Sprintf("实例健康: 正常 %s · 异常 %s · 限速 %s · 过载 %s",
+		itoa(st.NormalAccounts), itoa(st.ErrorAccounts), itoa(st.RatelimitAccounts), itoa(st.OverloadAccounts))
+	issues = st.ErrorAccounts > 0 || st.RatelimitAccounts > 0
+	return line, issues
+}
+
+// adminHealthLine is a thin wrapper when only the text is needed.
+func adminHealthLine(ctx context.Context, cli *sub2api.Client) string {
+	line, _ := adminHealthSnapshot(ctx, cli)
+	return line
+}
+
+var accountIDRe = regexp.MustCompile(`(?i)(?:account[_\s-]?id|账号\s*(?:id|ID)?|acc(?:ount)?)\s*[#:=\s]\s*(\d{1,12})|(?:^|[^\d])#(\d{1,12})\b`)
+
+// extractAccountIDs pulls likely account IDs from free text (alerts etc).
+// Prefers labeled forms (account_id / 账号 / #id) over bare numbers to reduce false positives.
+func extractAccountIDs(texts ...string) []int64 {
+	seen := map[int64]struct{}{}
+	var out []int64
+	for _, t := range texts {
+		for _, m := range accountIDRe.FindAllStringSubmatch(t, -1) {
+			raw := ""
+			if len(m) >= 2 && m[1] != "" {
+				raw = m[1]
+			} else if len(m) >= 3 && m[2] != "" {
+				raw = m[2]
+			}
+			if raw == "" {
+				continue
+			}
+			id, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || id <= 0 {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
+			if len(out) >= 6 {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 func itoa(v any) string {

@@ -3,6 +3,7 @@ package discordpanel
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +33,19 @@ func (b *Bot) homeText(userID int64) string {
 	fmt.Fprintf(&bld, "实例: `%s` · 角色: `%s`\n", b.cfg.Instance, b.roleLabel(userID))
 	fmt.Fprintf(&bld, "检查间隔: `%s` · 冷却: `%s`\n\n",
 		b.panelCfg().CheckInterval.String(), b.panelCfg().Cooldown.String())
+	if b.isAdmin(userID) {
+		if cli, _, err := b.userClient(userID, 5*time.Second); err == nil && cli != nil {
+			if st, err := cli.GetDashboardStats(context.Background()); err == nil && st != nil {
+				bld.WriteString("**运维快照**\n")
+				fmt.Fprintf(&bld, "正常 `%v` · 异常 `%v` · 限速 `%v` · 过载 `%v`\n",
+					st.NormalAccounts, st.ErrorAccounts, st.RatelimitAccounts, st.OverloadAccounts)
+				if st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 {
+					bld.WriteString("可从下方运维/看板快速处理异常。\n")
+				}
+				bld.WriteString("\n")
+			}
+		}
+	}
 	if p == nil {
 		bld.WriteString("尚未创建配置，点下方按钮开始。")
 		return bld.String()
@@ -64,6 +78,11 @@ func (b *Bot) homeComponents(userID int64) []discord.Component {
 				discord.PrimaryButton("状态", "status"),
 				discord.Button("运维", "ops_menu", 2),
 				discord.Button("管理", "mgr_menu", 2),
+			),
+			discord.ActionRow(
+				discord.Button("看板", "ops_dash", 2),
+				discord.Button("异常账号", "ops_badacc:error:0", 2),
+				discord.Button("告警", "ops_alerts", 2),
 			),
 			discord.ActionRow(
 				discord.Button("监控账号", "cfg_acc", 2),
@@ -733,21 +752,46 @@ func (b *Bot) showAvailabilityView(ctx context.Context, userID int64) (string, [
 }
 
 func (b *Bot) showAlerts(ctx context.Context, userID int64) string {
+	text, _ := b.showAlertsView(ctx, userID)
+	return text
+}
+
+func (b *Bot) showAlertsView(ctx context.Context, userID int64) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
-		return "❌ " + err.Error()
+		return "❌ " + err.Error(), opsComponents()
 	}
-	ev, err := cli.ListAlertEvents(ctx, 1, 20)
+	events, err := cli.ListAlertEvents(ctx, 1, 20)
 	if err != nil {
-		return "告警失败: " + err.Error()
+		return "告警失败: " + err.Error(), opsComponents()
 	}
 	var bld strings.Builder
 	bld.WriteString("**内置告警**\n\n")
-	if len(ev) == 0 {
-		bld.WriteString("无事件。")
-		return bld.String()
+	if len(events) == 0 {
+		return bld.String() + "无事件。", alertsComponents(nil, 0)
 	}
-	for i, e := range ev {
+	sort.SliceStable(events, func(i, j int) bool {
+		si, sj := strings.ToLower(events[i].Status), strings.ToLower(events[j].Status)
+		fi, fj := si == "firing" || si == "open" || si == "active", sj == "firing" || sj == "open" || sj == "active"
+		if fi != fj {
+			return fi
+		}
+		return events[i].FiredAt.After(events[j].FiredAt)
+	})
+	firingN, resolvedN := 0, 0
+	var idTexts []string
+	for _, ev := range events {
+		st := strings.ToLower(ev.Status)
+		switch {
+		case st == "firing" || st == "open" || st == "active":
+			firingN++
+		case st == "resolved" || st == "ok" || st == "closed":
+			resolvedN++
+		}
+		idTexts = append(idTexts, ev.DisplayTitle(), ev.DisplayMessage(), ev.MetricType, ev.Name)
+	}
+	fmt.Fprintf(&bld, "汇总: 🔴 触发 `%d` · 🟢 已恢复 `%d` · 共 `%d`\n\n", firingN, resolvedN, len(events))
+	for i, e := range events {
 		if i >= 10 {
 			break
 		}
@@ -760,7 +804,46 @@ func (b *Bot) showAlerts(ctx context.Context, userID int64) string {
 			fmt.Fprintf(&bld, "  %s\n", truncate(msg, 80))
 		}
 	}
-	return bld.String()
+	accIDs := panelExtractAccountIDs(idTexts...)
+	b.setManageBack(userID, "ops_alerts")
+	return bld.String(), alertsComponents(accIDs, firingN)
+}
+
+func alertsComponents(accIDs []int64, firingN int) []discord.Component {
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button("刷新", "ops_alerts", 2),
+			discord.Button("« 运维", "ops_menu", 2),
+			discord.Button("« 主面板", "home", 2),
+		),
+	}
+	if len(accIDs) > 0 {
+		row := []discord.Component{}
+		for i, id := range accIDs {
+			if i >= 4 {
+				break
+			}
+			row = append(row, discord.Button(fmt.Sprintf("管理 #%d", id), fmt.Sprintf("mgr_acc:%d", id), 1))
+			if len(row) == 2 {
+				comps = append(comps, discord.ActionRow(row...))
+				row = nil
+			}
+		}
+		if len(row) > 0 {
+			comps = append(comps, discord.ActionRow(row...))
+		}
+	}
+	jump := []discord.Component{
+		discord.Button("错误", "ops_errors:all:0", 2),
+		discord.Button("异常账号", "ops_badacc:error:0", 2),
+	}
+	if firingN > 0 {
+		jump = append(jump, discord.Button("看板", "ops_dash", 2))
+	} else {
+		jump = append(jump, discord.Button("可用性", "ops_avail", 2))
+	}
+	comps = append(comps, discord.ActionRow(jump...))
+	return comps
 }
 
 func (b *Bot) showConcurrency(ctx context.Context, userID int64) string {
@@ -846,21 +929,48 @@ func (b *Bot) showConcurrencyView(ctx context.Context, userID int64) (string, []
 }
 
 func (b *Bot) showChannels(ctx context.Context, userID int64) string {
+	text, _ := b.showChannelsView(ctx, userID)
+	return text
+}
+
+func (b *Bot) showChannelsView(ctx context.Context, userID int64) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
-		return "❌ " + err.Error()
+		return "❌ " + err.Error(), opsComponents()
 	}
 	items, err := cli.ListChannelMonitors(ctx)
 	if err != nil {
-		return "渠道探测失败: " + err.Error()
+		return "渠道探测失败: " + err.Error(), opsComponents()
 	}
 	var bld strings.Builder
 	bld.WriteString("**渠道探测**\n\n")
 	if len(items) == 0 {
-		bld.WriteString("无探测任务。")
-		return bld.String()
+		return bld.String() + "无探测任务。", channelsComponents(0)
 	}
+	onN, okN, badN := 0, 0, 0
 	for _, m := range items {
+		if m.Enabled {
+			onN++
+		}
+		if channelIsBad(m) {
+			badN++
+		} else if m.Enabled {
+			okN++
+		}
+	}
+	fmt.Fprintf(&bld, "汇总: 启用 `%d` · 正常 `%d` · 异常状态 `%d` · 共 `%d`\n\n", onN, okN, badN, len(items))
+	sort.SliceStable(items, func(i, j int) bool {
+		bi, bj := channelIsBad(items[i]), channelIsBad(items[j])
+		if bi != bj {
+			return bi
+		}
+		return items[i].ID < items[j].ID
+	})
+	for i, m := range items {
+		if i >= 12 {
+			fmt.Fprintf(&bld, "… 另有 %d 个\n", len(items)-12)
+			break
+		}
 		en := "OFF"
 		if m.Enabled {
 			en = "ON"
@@ -869,11 +979,56 @@ func (b *Bot) showChannels(ctx context.Context, userID int64) string {
 		if m.LastCheckedAt != nil {
 			last = m.LastCheckedAt.Local().Format("01-02 15:04")
 		}
-		fmt.Fprintf(&bld, "• [%s] #%d %s\n  %s / %s · %s · `%dms`\n  上次 %s\n",
-			en, m.ID, truncate(m.Name, 18), m.Provider, truncate(m.PrimaryModel, 16),
+		flag := ""
+		if channelIsBad(m) {
+			flag = " ⚠"
+		}
+		fmt.Fprintf(&bld, "• [%s]%s #%d %s\n  %s / %s · %s · `%dms`\n  上次 %s",
+			en, flag, m.ID, truncate(m.Name, 18), m.Provider, truncate(m.PrimaryModel, 16),
 			m.PrimaryStatus, m.PrimaryLatencyMS, last)
+		if m.Availability7d > 0 {
+			av := m.Availability7d
+			if av <= 1 {
+				av *= 100
+			}
+			fmt.Fprintf(&bld, " · 7d %.1f%%", av)
+		}
+		bld.WriteString("\n")
 	}
-	return bld.String()
+	return bld.String(), channelsComponents(badN)
+}
+
+func channelIsBad(m sub2api.ChannelMonitor) bool {
+	if !m.Enabled {
+		return false
+	}
+	st := strings.ToLower(strings.TrimSpace(m.PrimaryStatus))
+	if st == "" || st == "ok" || st == "success" || st == "up" || st == "healthy" || st == "pass" {
+		return false
+	}
+	return true
+}
+
+func channelsComponents(badN int) []discord.Component {
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button("刷新", "ops_channels", 2),
+			discord.Button("« 运维", "ops_menu", 2),
+			discord.Button("« 主面板", "home", 2),
+		),
+		discord.ActionRow(
+			discord.Button("看板", "ops_dash", 2),
+			discord.Button("可用性", "ops_avail", 2),
+			discord.Button("告警", "ops_alerts", 2),
+		),
+	}
+	if badN > 0 {
+		comps = append(comps, discord.ActionRow(
+			discord.Button("异常账号", "ops_badacc:error:0", 2),
+			discord.Button("错误", "ops_errors:all:0", 2),
+		))
+	}
+	return comps
 }
 
 func (b *Bot) showErrors(ctx context.Context, userID int64) (string, []discord.Component) {
@@ -2077,4 +2232,38 @@ func (b *Bot) togglePanelUserSource(adminID, targetID int64) (string, []discord.
 		return b.showPanelUserDetail(adminID, targetID, "❌ 切换数据源失败: "+err.Error())
 	}
 	return b.showPanelUserDetail(adminID, targetID, "✅ 数据源已设为 `"+src+"`")
+}
+
+// panelExtractAccountIDs mirrors panel.extractAccountIDs for Discord package.
+var panelAccountIDRe = regexp.MustCompile(`(?i)(?:account[_\s-]?id|账号\s*(?:id|ID)?|acc(?:ount)?)\s*[#:=\s]\s*(\d{1,12})|(?:^|[^\d])#(\d{1,12})\b`)
+
+func panelExtractAccountIDs(texts ...string) []int64 {
+	seen := map[int64]struct{}{}
+	var out []int64
+	for _, t := range texts {
+		for _, m := range panelAccountIDRe.FindAllStringSubmatch(t, -1) {
+			raw := ""
+			if len(m) >= 2 && m[1] != "" {
+				raw = m[1]
+			} else if len(m) >= 3 && m[2] != "" {
+				raw = m[2]
+			}
+			if raw == "" {
+				continue
+			}
+			id, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || id <= 0 {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
+			if len(out) >= 6 {
+				return out
+			}
+		}
+	}
+	return out
 }
