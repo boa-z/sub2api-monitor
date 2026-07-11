@@ -667,6 +667,68 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		b.clearSession(cq.From.ID)
 		return b.editOrSend(ctx, chatID, msgID, "已取消。\n\n"+b.homeText(cq.From.ID), b.homeKeyboardFor(cq.From.ID))
 
+	// per-account thresholds
+	case strings.HasPrefix(data, "acc_thr:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "acc_thr:"), 10, 64)
+		return b.editOrSend(ctx, chatID, msgID, b.accountThresholdsText(cq.From.ID, id), b.accountThresholdsKeyboard(cq.From.ID, id))
+	case strings.HasPrefix(data, "acc_thr_add:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "acc_thr_add:"), 10, 64)
+		return b.editOrSend(ctx, chatID, msgID, fmt.Sprintf("账号 #%d — 选择用量窗口：", id), thrWindowKeyboardForAccount(id))
+	case strings.HasPrefix(data, "acc_thr_win:"):
+		rest := strings.TrimPrefix(data, "acc_thr_win:")
+		idStr, win, ok := strings.Cut(rest, ":")
+		if !ok {
+			return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), b.homeKeyboardFor(cq.From.ID))
+		}
+		id, _ := strconv.ParseInt(idStr, 10, 64)
+		b.setAwait(cq.From.ID, awaitThrPct, id, win)
+		return b.editOrSend(ctx, chatID, msgID,
+			fmt.Sprintf("账号 #%d · 窗口 <code>%s</code>\n选择阈值百分比，或直接发送数字（1-100）：", id, telegram.EscapeHTML(win)),
+			thrPercentKeyboardScoped(id, win))
+	case strings.HasPrefix(data, "acc_thr_pct:"):
+		// acc_thr_pct:id:window:80
+		rest := strings.TrimPrefix(data, "acc_thr_pct:")
+		parts := strings.Split(rest, ":")
+		if len(parts) < 3 {
+			return b.editOrSend(ctx, chatID, msgID, "无效账号阈值参数", b.homeKeyboardFor(cq.From.ID))
+		}
+		id, _ := strconv.ParseInt(parts[0], 10, 64)
+		win := strings.Join(parts[1:len(parts)-1], ":")
+		pct, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+		if err != nil {
+			return b.editOrSend(ctx, chatID, msgID, "无效百分比", b.accountThresholdsKeyboard(cq.From.ID, id))
+		}
+		if err := b.setAccountThreshold(cq.From.ID, id, win, pct, ""); err != nil {
+			return b.tg.SendChat(ctx, chatID, "保存失败: "+telegram.EscapeHTML(err.Error()), nil)
+		}
+		b.clearSession(cq.From.ID)
+		return b.editOrSend(ctx, chatID, msgID,
+			fmt.Sprintf("✅ 账号 #%d 已设置 %s ≥ %.0f%%\n\n", id, telegram.Code(win), pct)+b.accountThresholdsText(cq.From.ID, id),
+			b.accountThresholdsKeyboard(cq.From.ID, id))
+	case strings.HasPrefix(data, "acc_thr_del:"):
+		rest := strings.TrimPrefix(data, "acc_thr_del:")
+		idStr, win, ok := strings.Cut(rest, ":")
+		if !ok {
+			return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), b.homeKeyboardFor(cq.From.ID))
+		}
+		id, _ := strconv.ParseInt(idStr, 10, 64)
+		if err := b.deleteAccountThreshold(cq.From.ID, id, win); err != nil {
+			return b.tg.SendChat(ctx, chatID, "删除失败: "+telegram.EscapeHTML(err.Error()), nil)
+		}
+		return b.editOrSend(ctx, chatID, msgID, b.accountThresholdsText(cq.From.ID, id), b.accountThresholdsKeyboard(cq.From.ID, id))
+	case strings.HasPrefix(data, "acc_thr_clear:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "acc_thr_clear:"), 10, 64)
+		if err := b.clearAccountThresholds(cq.From.ID, id); err != nil {
+			return b.tg.SendChat(ctx, chatID, "清除失败: "+telegram.EscapeHTML(err.Error()), nil)
+		}
+		return b.editOrSend(ctx, chatID, msgID, "✅ 已清除账号专属阈值（恢复继承）\n\n"+b.accountThresholdsText(cq.From.ID, id), b.accountThresholdsKeyboard(cq.From.ID, id))
+	case strings.HasPrefix(data, "acc_thr_copy:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "acc_thr_copy:"), 10, 64)
+		if err := b.copyDefaultsToAccount(cq.From.ID, id); err != nil {
+			return b.tg.SendChat(ctx, chatID, "复制失败: "+telegram.EscapeHTML(err.Error()), nil)
+		}
+		return b.editOrSend(ctx, chatID, msgID, "✅ 已复制用户/系统默认到该账号\n\n"+b.accountThresholdsText(cq.From.ID, id), b.accountThresholdsKeyboard(cq.From.ID, id))
+
 	// thresholds
 	case data == "thr_add":
 		return b.editOrSend(ctx, chatID, msgID, "选择用量窗口：", thrWindowKeyboard())
@@ -744,10 +806,20 @@ func (b *Bot) handleAwait(ctx context.Context, m *telegram.InMessage, s *session
 	case awaitThrPct:
 		pct, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(text, "%")), 64)
 		if err != nil || pct <= 0 || pct > 100 {
-			return b.tg.SendChat(ctx, m.Chat.ID, "请发送 1-100 之间的数字（如 80）", thrPercentKeyboard(s.Window))
+			kb := thrPercentKeyboardScoped(s.AccountID, s.Window)
+			return b.tg.SendChat(ctx, m.Chat.ID, "请发送 1-100 之间的数字（如 80）", kb)
 		}
 		win := s.Window
+		accID := s.AccountID
 		b.clearSession(m.From.ID)
+		if accID > 0 {
+			if err := b.setAccountThreshold(m.From.ID, accID, win, pct, ""); err != nil {
+				return b.tg.SendChat(ctx, m.Chat.ID, "保存失败: "+telegram.EscapeHTML(err.Error()), nil)
+			}
+			return b.tg.SendChat(ctx, m.Chat.ID,
+				fmt.Sprintf("✅ 账号 #%d 已设置 %s ≥ %.0f%%\n\n", accID, telegram.Code(win), pct)+b.accountThresholdsText(m.From.ID, accID),
+				b.accountThresholdsKeyboard(m.From.ID, accID))
+		}
 		if err := b.setThreshold(m.From.ID, win, pct, ""); err != nil {
 			return b.tg.SendChat(ctx, m.Chat.ID, "保存失败: "+telegram.EscapeHTML(err.Error()), nil)
 		}
@@ -970,6 +1042,109 @@ func (b *Bot) deleteThreshold(userID int64, window string) error {
 		}
 		p.Thresholds = out
 		return nil
+	})
+	return err
+}
+
+func (b *Bot) setAccountThreshold(userID, accountID int64, window string, pct float64, severity string) error {
+	window = normalizeWindow(window)
+	if accountID <= 0 {
+		return fmt.Errorf("无效账号")
+	}
+	if window == "" {
+		return fmt.Errorf("无效窗口")
+	}
+	if pct <= 0 || pct > 100 {
+		return fmt.Errorf("百分比需在 1-100")
+	}
+	if severity == "" {
+		severity = "P2"
+		if pct >= 90 {
+			severity = "P1"
+		}
+	}
+	_, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		for i := range p.Accounts {
+			if p.Accounts[i].ID != accountID {
+				continue
+			}
+			ths := p.Accounts[i].Thresholds
+			found := false
+			for j := range ths {
+				if strings.EqualFold(normalizeWindow(ths[j].Window), window) {
+					ths[j].Window = window
+					ths[j].UtilizationGTE = pct
+					ths[j].Severity = severity
+					found = true
+					break
+				}
+			}
+			if !found {
+				ths = append(ths, config.UsageThreshold{Window: window, UtilizationGTE: pct, Severity: severity})
+			}
+			p.Accounts[i].Thresholds = ths
+			return nil
+		}
+		return fmt.Errorf("账号 #%d 不在监控列表", accountID)
+	})
+	return err
+}
+
+func (b *Bot) deleteAccountThreshold(userID, accountID int64, window string) error {
+	window = normalizeWindow(window)
+	_, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		for i := range p.Accounts {
+			if p.Accounts[i].ID != accountID {
+				continue
+			}
+			out := p.Accounts[i].Thresholds[:0]
+			found := false
+			for _, t := range p.Accounts[i].Thresholds {
+				if strings.EqualFold(normalizeWindow(t.Window), window) {
+					found = true
+					continue
+				}
+				out = append(out, t)
+			}
+			if !found {
+				return fmt.Errorf("未找到窗口 %s", window)
+			}
+			p.Accounts[i].Thresholds = out
+			return nil
+		}
+		return fmt.Errorf("账号 #%d 不在监控列表", accountID)
+	})
+	return err
+}
+
+func (b *Bot) clearAccountThresholds(userID, accountID int64) error {
+	_, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		for i := range p.Accounts {
+			if p.Accounts[i].ID != accountID {
+				continue
+			}
+			p.Accounts[i].Thresholds = nil
+			return nil
+		}
+		return fmt.Errorf("账号 #%d 不在监控列表", accountID)
+	})
+	return err
+}
+
+func (b *Bot) copyDefaultsToAccount(userID, accountID int64) error {
+	_, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		src := p.Thresholds
+		if len(src) == 0 {
+			src = b.defaults
+		}
+		for i := range p.Accounts {
+			if p.Accounts[i].ID != accountID {
+				continue
+			}
+			p.Accounts[i].Thresholds = append([]config.UsageThreshold(nil), src...)
+			return nil
+		}
+		return fmt.Errorf("账号 #%d 不在监控列表", accountID)
 	})
 	return err
 }
@@ -1902,7 +2077,7 @@ func (b *Bot) accountDetailKeyboard(userID, id int64) *telegram.InlineKeyboardMa
 	}
 	rows := [][]telegram.InlineKeyboardButton{
 		{telegram.Btn("📡 实时状态/用量", fmt.Sprintf("acc_live:%d", id)), telegram.Btn("🔄 刷新", fmt.Sprintf("acc:%d", id))},
-		{telegram.Btn(tog, fmt.Sprintf("tog_acc:%d", id))},
+		{telegram.Btn(tog, fmt.Sprintf("tog_acc:%d", id)), telegram.Btn("🎯 账号阈值", fmt.Sprintf("acc_thr:%d", id))},
 	}
 	if b.canOpsRead(userID) {
 		label := "🧰 管理操作"
@@ -1975,17 +2150,146 @@ func thrWindowKeyboard() *telegram.InlineKeyboardMarkup {
 }
 
 func thrPercentKeyboard(window string) *telegram.InlineKeyboardMarkup {
+	return thrPercentKeyboardScoped(0, window)
+}
+
+func thrPercentKeyboardScoped(accountID int64, window string) *telegram.InlineKeyboardMarkup {
 	pcts := []int{50, 60, 70, 80, 85, 90, 95, 100}
 	rows := [][]telegram.InlineKeyboardButton{}
 	var row []telegram.InlineKeyboardButton
 	for i, p := range pcts {
-		row = append(row, telegram.Btn(fmt.Sprintf("%d%%", p), fmt.Sprintf("thr_pct:%s:%d", window, p)))
+		var data string
+		if accountID > 0 {
+			data = fmt.Sprintf("acc_thr_pct:%d:%s:%d", accountID, window, p)
+		} else {
+			data = fmt.Sprintf("thr_pct:%s:%d", window, p)
+		}
+		row = append(row, telegram.Btn(fmt.Sprintf("%d%%", p), data))
 		if len(row) == 4 || i == len(pcts)-1 {
 			rows = append(rows, row)
 			row = nil
 		}
 	}
-	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 重选窗口", "thr_add")})
+	back := "cfg_thr"
+	backLabel := "« 返回阈值"
+	if accountID > 0 {
+		back = fmt.Sprintf("acc_thr:%d", accountID)
+		backLabel = "« 账号阈值"
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn(backLabel, back)})
+	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func thrWindowKeyboardForAccount(accountID int64) *telegram.InlineKeyboardMarkup {
+	wins := []struct{ id, label string }{
+		{"five_hour", "5 小时"},
+		{"seven_day", "7 天"},
+		{"seven_day_sonnet", "7d Sonnet"},
+		{"seven_day_fable", "7d Fable"},
+		{"gemini_shared_daily", "Gemini 共享日"},
+		{"gemini_pro_daily", "Gemini Pro 日"},
+		{"gemini_flash_daily", "Gemini Flash 日"},
+		{"max", "最高窗口 max"},
+	}
+	rows := [][]telegram.InlineKeyboardButton{}
+	var row []telegram.InlineKeyboardButton
+	for i, w := range wins {
+		row = append(row, telegram.Btn(w.label, fmt.Sprintf("acc_thr_win:%d:%s", accountID, w.id)))
+		if len(row) == 2 || i == len(wins)-1 {
+			rows = append(rows, row)
+			row = nil
+		}
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 账号阈值", fmt.Sprintf("acc_thr:%d", accountID))})
+	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func (b *Bot) accountThresholdsText(userID, accountID int64) string {
+	p, ok := b.users.Get(userID)
+	if !ok {
+		return "用户不存在"
+	}
+	var a *userstore.AccountWatch
+	for i := range p.Accounts {
+		if p.Accounts[i].ID == accountID {
+			a = &p.Accounts[i]
+			break
+		}
+	}
+	if a == nil {
+		return fmt.Sprintf("未找到监控账号 #%d", accountID)
+	}
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold(fmt.Sprintf("账号 #%d 阈值", accountID)) + "\n")
+	fmt.Fprintf(&bld, "名称: %s\n\n", telegram.Code(displayName(*a)))
+	if len(a.Thresholds) == 0 {
+		bld.WriteString("当前: " + telegram.Bold("继承用户/系统默认") + "\n")
+		// show effective
+		ths := p.Thresholds
+		src := "用户默认"
+		if len(ths) == 0 {
+			ths = b.defaults
+			src = "系统默认"
+		}
+		fmt.Fprintf(&bld, "生效来源: %s\n", telegram.Code(src))
+		for _, t := range ths {
+			sev := t.Severity
+			if sev == "" {
+				sev = "P2"
+			}
+			fmt.Fprintf(&bld, "• %s ≥ %s%% · %s\n",
+				telegram.Code(t.Window),
+				telegram.Code(fmt.Sprintf("%.0f", t.UtilizationGTE)),
+				telegram.Code(sev),
+			)
+		}
+		bld.WriteString("\n可设置账号专属阈值覆盖默认；清除后恢复继承。")
+	} else {
+		bld.WriteString("当前: " + telegram.Bold("账号专属") + "\n")
+		for _, t := range a.Thresholds {
+			sev := t.Severity
+			if sev == "" {
+				sev = "P2"
+			}
+			fmt.Fprintf(&bld, "• %s ≥ %s%% · %s\n",
+				telegram.Code(t.Window),
+				telegram.Code(fmt.Sprintf("%.0f", t.UtilizationGTE)),
+				telegram.Code(sev),
+			)
+		}
+		bld.WriteString("\n删除单项或清除全部后将继承用户/系统默认。")
+	}
+	return bld.String()
+}
+
+func (b *Bot) accountThresholdsKeyboard(userID, accountID int64) *telegram.InlineKeyboardMarkup {
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("➕ 添加/修改", fmt.Sprintf("acc_thr_add:%d", accountID))},
+	}
+	if p, ok := b.users.Get(userID); ok {
+		for _, a := range p.Accounts {
+			if a.ID != accountID {
+				continue
+			}
+			for _, t := range a.Thresholds {
+				w := normalizeWindow(t.Window)
+				rows = append(rows, []telegram.InlineKeyboardButton{
+					telegram.Btn(fmt.Sprintf("🗑 %s", truncateRunes(w, 18)), fmt.Sprintf("acc_thr_del:%d:%s", accountID, w)),
+				})
+			}
+			break
+		}
+	}
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("📥 复制用户默认", fmt.Sprintf("acc_thr_copy:%d", accountID)),
+			telegram.Btn("🧹 清除专属", fmt.Sprintf("acc_thr_clear:%d", accountID)),
+		},
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("« 账号详情", fmt.Sprintf("acc:%d", accountID)),
+			telegram.Btn("« 监控列表", "cfg_acc"),
+		},
+	)
 	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 

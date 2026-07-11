@@ -1015,3 +1015,67 @@ func TestPickFilterLabel(t *testing.T) {
 		t.Fatal("expected plain label")
 	}
 }
+
+func TestSetAccountThreshold(t *testing.T) {
+	b, store := testBot(t)
+	if _, err := store.GetOrCreate(1, "1", "u", "U"); err != nil {
+		t.Fatal(err)
+	}
+	en := true
+	if _, err := store.Update(1, func(p *userstore.Profile) error {
+		p.Accounts = []userstore.AccountWatch{{ID: 9, Name: "demo", Enabled: &en}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.setAccountThreshold(1, 9, "5h", 75, "P1"); err != nil {
+		t.Fatal(err)
+	}
+	p, ok := store.Get(1)
+	if !ok {
+		t.Fatal("missing profile")
+	}
+	found := false
+	for _, a := range p.Accounts {
+		if a.ID != 9 {
+			continue
+		}
+		for _, th := range a.Thresholds {
+			if th.Window == "five_hour" && th.UtilizationGTE == 75 && th.Severity == "P1" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("account threshold not set: %+v", p.Accounts)
+	}
+	if err := b.deleteAccountThreshold(1, 9, "five_hour"); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = store.Get(1)
+	for _, a := range p.Accounts {
+		if a.ID == 9 && len(a.Thresholds) != 0 {
+			t.Fatalf("expected empty after delete: %+v", a.Thresholds)
+		}
+	}
+	if err := b.copyDefaultsToAccount(1, 9); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = store.Get(1)
+	for _, a := range p.Accounts {
+		if a.ID == 9 && len(a.Thresholds) == 0 {
+			t.Fatal("expected defaults copied")
+		}
+	}
+	if err := b.clearAccountThresholds(1, 9); err != nil {
+		t.Fatal(err)
+	}
+	text := b.accountThresholdsText(1, 9)
+	if text == "" || !strings.Contains(text, "继承") {
+		t.Fatalf("text=%q", text)
+	}
+	kb := b.accountThresholdsKeyboard(1, 9)
+	if kb == nil || len(kb.InlineKeyboard) == 0 {
+		t.Fatal("empty keyboard")
+	}
+}

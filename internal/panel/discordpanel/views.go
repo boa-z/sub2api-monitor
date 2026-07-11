@@ -609,6 +609,9 @@ func (b *Bot) accountDetailView(ctx context.Context, userID, id int64) (string, 
 		discord.ActionRow(
 			discord.PrimaryButton("实时用量", fmt.Sprintf("acc_live:%d", id)),
 			discord.Button(togLabel, fmt.Sprintf("tog_acc:%d", id), 2),
+			discord.Button("账号阈值", fmt.Sprintf("acc_thr:%d", id), 2),
+		),
+		discord.ActionRow(
 			discord.DangerButton("移出监控", fmt.Sprintf("del_acc:%d", id)),
 		),
 	}
@@ -1158,6 +1161,216 @@ func (b *Bot) deleteThreshold(userID int64, window string) error {
 		return nil
 	})
 	return err
+}
+
+func (b *Bot) setAccountThreshold(userID, accountID int64, window string, pct float64, severity string) error {
+	window = normalizeWindow(window)
+	if accountID <= 0 {
+		return fmt.Errorf("invalid account")
+	}
+	if pct <= 0 || pct > 100 {
+		return fmt.Errorf("invalid pct")
+	}
+	if severity == "" {
+		severity = "P2"
+		if pct >= 90 {
+			severity = "P1"
+		}
+	}
+	_, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		for i := range p.Accounts {
+			if p.Accounts[i].ID != accountID {
+				continue
+			}
+			ths := p.Accounts[i].Thresholds
+			found := false
+			for j := range ths {
+				if strings.EqualFold(normalizeWindow(ths[j].Window), window) {
+					ths[j].Window = window
+					ths[j].UtilizationGTE = pct
+					ths[j].Severity = severity
+					found = true
+					break
+				}
+			}
+			if !found {
+				ths = append(ths, config.UsageThreshold{Window: window, UtilizationGTE: pct, Severity: severity})
+			}
+			p.Accounts[i].Thresholds = ths
+			return nil
+		}
+		return fmt.Errorf("account not watched")
+	})
+	return err
+}
+
+func (b *Bot) deleteAccountThreshold(userID, accountID int64, window string) error {
+	window = normalizeWindow(window)
+	_, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		for i := range p.Accounts {
+			if p.Accounts[i].ID != accountID {
+				continue
+			}
+			out := p.Accounts[i].Thresholds[:0]
+			found := false
+			for _, t := range p.Accounts[i].Thresholds {
+				if strings.EqualFold(normalizeWindow(t.Window), window) {
+					found = true
+					continue
+				}
+				out = append(out, t)
+			}
+			if !found {
+				return fmt.Errorf("window not found")
+			}
+			p.Accounts[i].Thresholds = out
+			return nil
+		}
+		return fmt.Errorf("account not watched")
+	})
+	return err
+}
+
+func (b *Bot) clearAccountThresholds(userID, accountID int64) error {
+	_, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		for i := range p.Accounts {
+			if p.Accounts[i].ID != accountID {
+				continue
+			}
+			p.Accounts[i].Thresholds = nil
+			return nil
+		}
+		return fmt.Errorf("account not watched")
+	})
+	return err
+}
+
+func (b *Bot) copyDefaultsToAccount(userID, accountID int64) error {
+	_, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		src := p.Thresholds
+		if len(src) == 0 {
+			src = b.defaults
+		}
+		for i := range p.Accounts {
+			if p.Accounts[i].ID != accountID {
+				continue
+			}
+			p.Accounts[i].Thresholds = append([]config.UsageThreshold(nil), src...)
+			return nil
+		}
+		return fmt.Errorf("account not watched")
+	})
+	return err
+}
+
+func (b *Bot) accountThresholdsView(userID, accountID int64) (string, []discord.Component) {
+	p, ok := b.users.Get(userID)
+	if !ok {
+		return "用户不存在", b.accountsComponents(userID)
+	}
+	var a *userstore.AccountWatch
+	for i := range p.Accounts {
+		if p.Accounts[i].ID == accountID {
+			a = &p.Accounts[i]
+			break
+		}
+	}
+	if a == nil {
+		return fmt.Sprintf("未找到监控账号 #%d", accountID), b.accountsComponents(userID)
+	}
+	var bld strings.Builder
+	fmt.Fprintf(&bld, "**账号 #%d 阈值**\n", accountID)
+	name := a.Name
+	if name == "" {
+		name = fmt.Sprintf("#%d", accountID)
+	}
+	fmt.Fprintf(&bld, "名称: `%s`\n\n", name)
+	if len(a.Thresholds) == 0 {
+		bld.WriteString("当前: **继承用户/系统默认**\n")
+		ths := p.Thresholds
+		src := "用户默认"
+		if len(ths) == 0 {
+			ths = b.defaults
+			src = "系统默认"
+		}
+		fmt.Fprintf(&bld, "生效来源: `%s`\n", src)
+		for _, t := range ths {
+			sev := t.Severity
+			if sev == "" {
+				sev = "P2"
+			}
+			fmt.Fprintf(&bld, "• `%s` ≥ `%.0f%%` · `%s`\n", t.Window, t.UtilizationGTE, sev)
+		}
+	} else {
+		bld.WriteString("当前: **账号专属**\n")
+		for _, t := range a.Thresholds {
+			sev := t.Severity
+			if sev == "" {
+				sev = "P2"
+			}
+			fmt.Fprintf(&bld, "• `%s` ≥ `%.0f%%` · `%s`\n", t.Window, t.UtilizationGTE, sev)
+		}
+	}
+
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.PrimaryButton("添加/修改", fmt.Sprintf("acc_thr_add:%d", accountID)),
+			discord.Button("复制默认", fmt.Sprintf("acc_thr_copy:%d", accountID), 2),
+			discord.DangerButton("清除专属", fmt.Sprintf("acc_thr_clear:%d", accountID)),
+		),
+	}
+	// delete existing account thresholds
+	row := []discord.Component{}
+	for _, t := range a.Thresholds {
+		w := normalizeWindow(t.Window)
+		label := "删 " + w
+		switch w {
+		case "five_hour":
+			label = "删 5h"
+		case "seven_day":
+			label = "删 7d"
+		}
+		row = append(row, discord.DangerButton(truncate(label, 20), fmt.Sprintf("acc_thr_del:%d:%s", accountID, w)))
+		if len(row) == 3 {
+			comps = append(comps, discord.ActionRow(row...))
+			row = nil
+		}
+		if len(comps) >= 4 {
+			break
+		}
+	}
+	if len(row) > 0 && len(comps) < 4 {
+		comps = append(comps, discord.ActionRow(row...))
+	}
+	comps = append(comps, discord.ActionRow(
+		discord.Button("« 账号详情", fmt.Sprintf("acc:%d", accountID), 2),
+		discord.Button("« 监控账号", "cfg_acc", 2),
+	))
+	if len(comps) > 5 {
+		comps = comps[:5]
+	}
+	return bld.String(), comps
+}
+
+func thrWindowComponentsForAccount(accountID int64) []discord.Component {
+	return []discord.Component{
+		discord.ActionRow(
+			discord.Button("5h≥70%", fmt.Sprintf("acc_thr_set:%d:five_hour:70", accountID), 2),
+			discord.Button("5h≥80%", fmt.Sprintf("acc_thr_set:%d:five_hour:80", accountID), 2),
+			discord.Button("5h≥90%", fmt.Sprintf("acc_thr_set:%d:five_hour:90", accountID), 2),
+		),
+		discord.ActionRow(
+			discord.Button("7d≥70%", fmt.Sprintf("acc_thr_set:%d:seven_day:70", accountID), 2),
+			discord.Button("7d≥80%", fmt.Sprintf("acc_thr_set:%d:seven_day:80", accountID), 2),
+			discord.Button("7d≥90%", fmt.Sprintf("acc_thr_set:%d:seven_day:90", accountID), 2),
+		),
+		discord.ActionRow(
+			discord.Button("7d-s≥80%", fmt.Sprintf("acc_thr_set:%d:seven_day_sonnet:80", accountID), 2),
+			discord.Button("g-pro≥80%", fmt.Sprintf("acc_thr_set:%d:gemini_pro_daily:80", accountID), 2),
+			discord.Button("max≥90%", fmt.Sprintf("acc_thr_set:%d:max:90", accountID), 2),
+		),
+		discord.ActionRow(discord.Button("« 账号阈值", fmt.Sprintf("acc_thr:%d", accountID), 2)),
+	}
 }
 
 func normalizeWindow(w string) string {

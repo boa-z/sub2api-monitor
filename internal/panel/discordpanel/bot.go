@@ -616,6 +616,49 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		tid, _ := strconv.ParseInt(strings.TrimPrefix(data, "pnl_src:"), 10, 64)
 		text, comps := b.togglePanelUserSource(uid, tid)
 		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "acc_thr:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "acc_thr:"), 10, 64)
+		text, comps := b.accountThresholdsView(uid, id)
+		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "acc_thr_add:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "acc_thr_add:"), 10, 64)
+		return b.update(ctx, it, fmt.Sprintf("账号 #%d — 选择窗口与阈值：", id), thrWindowComponentsForAccount(id))
+	case strings.HasPrefix(data, "acc_thr_set:"):
+		// acc_thr_set:id:window:pct
+		rest := strings.TrimPrefix(data, "acc_thr_set:")
+		parts := strings.Split(rest, ":")
+		if len(parts) < 3 {
+			return b.update(ctx, it, b.accountsText(uid), b.accountsComponents(uid))
+		}
+		id, _ := strconv.ParseInt(parts[0], 10, 64)
+		win := strings.Join(parts[1:len(parts)-1], ":")
+		pct, _ := strconv.ParseFloat(parts[len(parts)-1], 64)
+		if err := b.setAccountThreshold(uid, id, win, pct, "P2"); err != nil {
+			text, comps := b.accountThresholdsView(uid, id)
+			return b.update(ctx, it, "❌ "+err.Error()+"\n\n"+text, comps)
+		}
+		text, comps := b.accountThresholdsView(uid, id)
+		return b.update(ctx, it, fmt.Sprintf("✅ 已设置 `%s` ≥ `%.0f%%`\n\n", win, pct)+text, comps)
+	case strings.HasPrefix(data, "acc_thr_del:"):
+		rest := strings.TrimPrefix(data, "acc_thr_del:")
+		idStr, win, ok := strings.Cut(rest, ":")
+		if !ok {
+			return b.update(ctx, it, b.accountsText(uid), b.accountsComponents(uid))
+		}
+		id, _ := strconv.ParseInt(idStr, 10, 64)
+		_ = b.deleteAccountThreshold(uid, id, win)
+		text, comps := b.accountThresholdsView(uid, id)
+		return b.update(ctx, it, "✅ 已删除\n\n"+text, comps)
+	case strings.HasPrefix(data, "acc_thr_clear:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "acc_thr_clear:"), 10, 64)
+		_ = b.clearAccountThresholds(uid, id)
+		text, comps := b.accountThresholdsView(uid, id)
+		return b.update(ctx, it, "✅ 已清除账号专属阈值\n\n"+text, comps)
+	case strings.HasPrefix(data, "acc_thr_copy:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "acc_thr_copy:"), 10, 64)
+		_ = b.copyDefaultsToAccount(uid, id)
+		text, comps := b.accountThresholdsView(uid, id)
+		return b.update(ctx, it, "✅ 已复制默认阈值到该账号\n\n"+text, comps)
 	case data == "thr_add":
 		return b.update(ctx, it, "选择窗口后使用固定阈值，或之后可在配置中细化：", thrWindowComponents())
 	case strings.HasPrefix(data, "thr_set:"):

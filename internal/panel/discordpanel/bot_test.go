@@ -535,3 +535,30 @@ func TestPickFilterBtn(t *testing.T) {
 		t.Fatal("expected unselected label")
 	}
 }
+
+func TestDiscordAccountThreshold(t *testing.T) {
+	b, store := testBot(t)
+	if _, err := store.GetOrCreate(42, "42", "u", "U"); err != nil {
+		t.Fatal(err)
+	}
+	en := true
+	if _, err := store.Update(42, func(p *userstore.Profile) error {
+		p.Accounts = []userstore.AccountWatch{{ID: 7, Name: "x", Enabled: &en}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.setAccountThreshold(42, 7, "7d", 88, "P2"); err != nil {
+		t.Fatal(err)
+	}
+	text, comps := b.accountThresholdsView(42, 7)
+	if text == "" || !strings.Contains(text, "账号专属") {
+		t.Fatalf("%q", text)
+	}
+	if !containsCustomID(comps, "acc_thr_add:7") {
+		t.Fatalf("%+v", comps)
+	}
+	if len(comps) > 5 {
+		t.Fatalf("rows=%d", len(comps))
+	}
+}
