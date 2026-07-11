@@ -3042,21 +3042,31 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 		writePage("请求错误", "r", req, err2, 3)
 	}
 
-	// optional top platform jumps (only if we still have row budget later)
+	// optional top platform/user jumps (row budget handled by final trim)
 	if items := browse.CollectUnresolvedOpsErrors(tallyPages...); len(items) > 0 {
-		var platBtns []discord.Component
+		var btns []discord.Component
 		for i, t := range browse.TopUnresolvedErrorPlatforms(items, 2) {
 			key := strings.ToLower(strings.TrimSpace(t.Key))
 			if key == "" {
 				continue
 			}
-			platBtns = append(platBtns, discord.Button("🏷 "+truncate(key, 8), "mgr_browse:"+browse.Token("plat:"+key)+":0", 2))
+			btns = append(btns, discord.Button("🏷 "+truncate(key, 8), "mgr_browse:"+browse.Token("plat:"+key)+":0", 2))
 			if i >= 1 {
 				break
 			}
 		}
-		if len(platBtns) > 0 {
-			comps = append(comps, discord.ActionRow(platBtns...))
+		for _, t := range browse.TopUnresolvedErrorUsers(items, 1) {
+			if t.ID <= 0 || len(btns) >= 4 {
+				break
+			}
+			label := truncate(t.Key, 10)
+			if label == "" {
+				label = fmt.Sprintf("#%d", t.ID)
+			}
+			btns = append(btns, discord.Button("👤 "+label, fmt.Sprintf("mgr_user:%d", t.ID), 2))
+		}
+		if len(btns) > 0 {
+			comps = append(comps, discord.ActionRow(btns...))
 		}
 	}
 

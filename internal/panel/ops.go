@@ -807,7 +807,7 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 			writeErrorItems(&bld, req, "r", 3, canWrite, &rows)
 		}
 	}
-	// top problem platforms from the same sample → browse filter
+	// top problem platforms/users from the same sample → browse / user detail
 	if items := browse.CollectUnresolvedOpsErrors(tallyPages...); len(items) > 0 {
 		var platRow []telegram.InlineKeyboardButton
 		for i, t := range browse.TopUnresolvedErrorPlatforms(items, 3) {
@@ -822,6 +822,23 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 		}
 		if len(platRow) > 0 {
 			rows = append(rows, platRow)
+		}
+		var userRow []telegram.InlineKeyboardButton
+		for i, t := range browse.TopUnresolvedErrorUsers(items, 2) {
+			if t.ID <= 0 {
+				continue
+			}
+			label := truncateRunes(t.Key, 10)
+			if label == "" {
+				label = fmt.Sprintf("#%d", t.ID)
+			}
+			userRow = append(userRow, telegram.Btn("👤 "+label, fmt.Sprintf("mgr_user:%d", t.ID)))
+			if i >= 1 {
+				break
+			}
+		}
+		if len(userRow) > 0 {
+			rows = append(rows, userRow)
 		}
 	}
 
