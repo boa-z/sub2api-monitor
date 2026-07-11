@@ -1687,20 +1687,31 @@ func (b *Bot) forceCheckView(ctx context.Context, userID int64) (string, []disco
 	} else {
 		bld.WriteString("\n✅ 监控账号用量与状态正常。\n")
 	}
+	// Row budget (max 5): top nav + up to 2 issue rows + triage + optional ops
 	comps := []discord.Component{
 		discord.ActionRow(
 			discord.SuccessButton("再检查", "check_now"),
 			discord.Button("« 主面板", "home", 2),
 		),
 	}
+	// Cap issue shortcuts so total rows stay ≤5 with footer.
+	maxIssueBtns := 4
+	if b.canOpsRead(userID) {
+		maxIssueBtns = 2 // leave room for triage footer rows
+	}
 	if len(issueIDs) > 0 {
 		row := []discord.Component{}
+		shown := 0
 		for _, id := range issueIDs {
+			if shown >= maxIssueBtns {
+				break
+			}
 			if b.canOpsRead(userID) {
 				row = append(row, discord.Button(fmt.Sprintf("查看 #%d", id), fmt.Sprintf("mgr_acc:%d", id), 1))
 			} else {
 				row = append(row, discord.Button(fmt.Sprintf("实时 #%d", id), fmt.Sprintf("acc_live:%d", id), 2))
 			}
+			shown++
 			if len(row) == 2 {
 				comps = append(comps, discord.ActionRow(row...))
 				row = nil
@@ -1711,10 +1722,24 @@ func (b *Bot) forceCheckView(ctx context.Context, userID int64) (string, []disco
 		}
 	}
 	if b.canOpsRead(userID) {
-		comps = append(comps, discord.ActionRow(
+		row := []discord.Component{
 			discord.Button("异常账号", "ops_badacc:error:0", 2),
+			discord.Button("异常汇总", "mgr_browse:problem:0", 2),
 			discord.Button("运维", "ops_menu", 2),
-		))
+		}
+		if b.canOpsWrite(userID) && len(issueIDs) > 0 {
+			// Prefer heal over crowding a 4th button when space is tight.
+			row = []discord.Component{
+				discord.Button("异常账号", "ops_badacc:error:0", 2),
+				discord.Button("异常汇总", "mgr_browse:problem:0", 2),
+				discord.Button("一键修复", "mgr_bulk_heal", 1),
+				discord.Button("运维", "ops_menu", 2),
+			}
+		}
+		comps = append(comps, discord.ActionRow(row...))
+	}
+	if len(comps) > 5 {
+		comps = comps[:5]
 	}
 	return bld.String(), comps
 }
@@ -2970,6 +2995,14 @@ func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, p
 	fmt.Fprintf(&bld, "**账号浏览** · `%s` · 第 %d 页 · 约 %d\n点账号进入管理\n\n", browse.Title(status), page+1, total)
 	if len(items) == 0 {
 		bld.WriteString("本页无账号。")
+		switch {
+		case status == "problem" || status == "error" || status == "rate_limited" || status == "overload" || status == "unsched":
+			bld.WriteString("\n当前筛选下没有问题账号，可切换「全部」或刷新。")
+		case strings.HasPrefix(status, "search:"):
+			bld.WriteString("\n未命中搜索，可换关键词或清除搜索。")
+		case strings.HasPrefix(status, "plat:"):
+			bld.WriteString("\n该平台筛选下无账号，可换平台或看全部。")
+		}
 	}
 	for _, a := range items {
 		fmt.Fprintf(&bld, "• #%d %s [%s/%s] sched=%v\n", a.ID, truncate(a.Name, 16), a.Platform, a.Status, a.Schedulable)
@@ -3374,84 +3407,18 @@ func (b *Bot) doManageAction(ctx context.Context, userID int64, action string, a
 }
 
 func parseTempDur(label string) int64 {
-	switch strings.ToLower(strings.TrimSpace(label)) {
-	case "15m":
-		return 15 * 60
-	case "1h":
-		return 60 * 60
-	case "6h":
-		return 6 * 60 * 60
-	case "24h":
-		return 24 * 60 * 60
-	default:
-		if sec, _, err := parseFlexibleDuration(label); err == nil {
-			return sec
-		}
-		return 0
+	if sec := browse.ParseDurationLabel(label); sec > 0 {
+		return sec
 	}
+	if sec, _, err := browse.ParseFlexibleDuration(label); err == nil {
+		return sec
+	}
+	return 0
 }
 
 // parseFlexibleDuration accepts 30m / 2h / 1d / bare minutes (1..10080).
 func parseFlexibleDuration(raw string) (sec int64, label string, err error) {
-	s := strings.TrimSpace(strings.ToLower(raw))
-	s = strings.ReplaceAll(s, " ", "")
-	if s == "" {
-		return 0, "", fmt.Errorf("时长不能为空")
-	}
-	switch s {
-	case "15m":
-		return 15 * 60, s, nil
-	case "1h":
-		return 60 * 60, s, nil
-	case "6h":
-		return 6 * 60 * 60, s, nil
-	case "24h":
-		return 24 * 60 * 60, s, nil
-	}
-	if n, e := strconv.ParseInt(s, 10, 64); e == nil {
-		if n < 1 || n > 7*24*60 {
-			return 0, "", fmt.Errorf("分钟需在 1–10080（7 天）")
-		}
-		return n * 60, fmt.Sprintf("%dm", n), nil
-	}
-	var numStr, unit string
-	for i, r := range s {
-		if (r >= '0' && r <= '9') || r == '.' {
-			continue
-		}
-		numStr = s[:i]
-		unit = s[i:]
-		break
-	}
-	if numStr == "" || unit == "" {
-		return 0, "", fmt.Errorf("无法解析时长")
-	}
-	n, e := strconv.ParseFloat(numStr, 64)
-	if e != nil || n <= 0 {
-		return 0, "", fmt.Errorf("时长数字无效")
-	}
-	var mult float64
-	switch unit {
-	case "m", "min", "mins", "minute", "minutes":
-		mult = 60
-		label = fmt.Sprintf("%gm", n)
-	case "h", "hr", "hrs", "hour", "hours":
-		mult = 3600
-		label = fmt.Sprintf("%gh", n)
-	case "d", "day", "days":
-		mult = 86400
-		label = fmt.Sprintf("%gd", n)
-	default:
-		return 0, "", fmt.Errorf("未知单位 %s（用 m/h/d）", unit)
-	}
-	secF := n * mult
-	if secF < 60 {
-		return 0, "", fmt.Errorf("最短 1 分钟")
-	}
-	if secF > 7*24*3600 {
-		return 0, "", fmt.Errorf("最长 7 天")
-	}
-	return int64(secF + 0.5), label, nil
+	return browse.ParseFlexibleDuration(raw)
 }
 
 func tempMenuComponents(accountID int64) []discord.Component {

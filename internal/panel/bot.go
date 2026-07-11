@@ -1438,8 +1438,18 @@ func checkResultKeyboard(admin bool, issueIDs []int64, issueLabels []string) *te
 	if admin {
 		rows = append(rows, []telegram.InlineKeyboardButton{
 			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
-			telegram.Btn("🛠 运维视图", "ops_menu"),
+			telegram.Btn("📚 异常汇总", "mgr_browse:problem:0"),
 		})
+		if len(issueIDs) > 0 {
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
+				telegram.Btn("🛠 运维视图", "ops_menu"),
+			})
+		} else {
+			rows = append(rows, []telegram.InlineKeyboardButton{
+				telegram.Btn("🛠 运维视图", "ops_menu"),
+			})
+		}
 	} else {
 		rows = append(rows, []telegram.InlineKeyboardButton{
 			telegram.Btn("👤 监控账号", "cfg_acc"),

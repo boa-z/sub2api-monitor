@@ -159,6 +159,14 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 	fmt.Fprintf(&bld, "第 %d 页 · 共约 %s\n点账号进入管理\n\n", page+1, telegram.Code(itoa(total)))
 	if len(items) == 0 {
 		bld.WriteString("本页无账号。")
+		switch {
+		case status == "problem" || status == "error" || status == "rate_limited" || status == "overload" || status == "unsched":
+			bld.WriteString("\n当前筛选下没有问题账号，可切换「全部」或刷新。")
+		case strings.HasPrefix(status, "search:"):
+			bld.WriteString("\n未命中搜索，可换关键词或清除搜索。")
+		case strings.HasPrefix(status, "plat:"):
+			bld.WriteString("\n该平台筛选下无账号，可换平台或看全部。")
+		}
 	}
 
 	// status filter row
@@ -650,47 +658,13 @@ func (b *Bot) handleManageAction(ctx context.Context, chatID, msgID, userID int6
 	return b.showManageAccount(ctx, chatID, msgID, userID, accountID, notice)
 }
 
-// bulkClearErrors prompts confirmation then clears error state for up to N error accounts.
+// bulkClearErrors prompts confirmation then clears error state (scoped to browse/badacc filter).
 func (b *Bot) bulkClearErrors(ctx context.Context, chatID, msgID, userID int64) error {
 	return b.bulkClearErrorsPrompt(ctx, chatID, msgID, userID)
 }
 
 func (b *Bot) bulkClearErrorsPrompt(ctx context.Context, chatID, msgID, userID int64) error {
-	cli, _, err := b.userClient(userID, 15*time.Second)
-	if err != nil {
-		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
-	}
-	items, total, err := cli.ListAccountsEx(ctx, 1, 30, sub2api.AccountListFilter{Status: "error"})
-	if err != nil {
-		return b.editOrSend(ctx, chatID, msgID, "拉取 error 账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
-	}
-	if len(items) == 0 {
-		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有 status=error 的账号。", manageKeyboard())
-	}
-	const maxOps = 20
-	n := len(items)
-	if n > maxOps {
-		n = maxOps
-	}
-	var sample strings.Builder
-	for i := 0; i < n && i < 8; i++ {
-		a := items[i]
-		fmt.Fprintf(&sample, "• #%d %s\n", a.ID, telegram.EscapeHTML(truncateRunes(a.Name, 16)))
-	}
-	kb := &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn(fmt.Sprintf("✅ 确认清错 %d 个", n), "mgr_bulk_clear_go")},
-			{telegram.Btn("取消", "mgr_menu")},
-		},
-	}
-	msg := fmt.Sprintf("%s\n\n将清除约 %s 个 error 账号中的前 %s 个：\n%s\n共约 %s 个 error。",
-		telegram.Bold("批量清错确认"),
-		telegram.Code(itoa(total)),
-		telegram.Code(strconv.Itoa(n)),
-		sample.String(),
-		telegram.Code(itoa(total)),
-	)
-	return b.editOrSend(ctx, chatID, msgID, msg, kb)
+	return b.bulkAccountActionPrompt(ctx, chatID, msgID, userID, "清除错误", "批量清错确认", "mgr_bulk_clear_go")
 }
 
 func (b *Bot) bulkClearErrorsExecute(ctx context.Context, chatID, msgID, userID int64) error {
@@ -726,76 +700,12 @@ func (b *Bot) applyTempUnschedulableSec(ctx context.Context, chatID, msgID, user
 }
 
 func parseDurationLabel(s string) int64 {
-	s = strings.TrimSpace(strings.ToLower(s))
-	switch s {
-	case "15m":
-		return 15 * 60
-	case "1h":
-		return 60 * 60
-	case "6h":
-		return 6 * 60 * 60
-	case "24h":
-		return 24 * 60 * 60
-	default:
-		return 0
-	}
+	return browse.ParseDurationLabel(s)
 }
 
 // parseFlexibleDuration accepts 30m / 2h / 1d / bare minutes (1..10080).
-// Caps at 7 days; minimum 1 minute.
 func parseFlexibleDuration(raw string) (sec int64, label string, err error) {
-	s := strings.TrimSpace(strings.ToLower(raw))
-	s = strings.ReplaceAll(s, " ", "")
-	if s == "" {
-		return 0, "", fmt.Errorf("时长不能为空")
-	}
-	if p := parseDurationLabel(s); p > 0 {
-		return p, s, nil
-	}
-	if n, e := strconv.ParseInt(s, 10, 64); e == nil {
-		if n < 1 || n > 7*24*60 {
-			return 0, "", fmt.Errorf("分钟需在 1–10080（7 天）")
-		}
-		return n * 60, fmt.Sprintf("%dm", n), nil
-	}
-	var numStr, unit string
-	for i, r := range s {
-		if (r >= '0' && r <= '9') || r == '.' {
-			continue
-		}
-		numStr = s[:i]
-		unit = s[i:]
-		break
-	}
-	if numStr == "" || unit == "" {
-		return 0, "", fmt.Errorf("无法解析时长")
-	}
-	n, e := strconv.ParseFloat(numStr, 64)
-	if e != nil || n <= 0 {
-		return 0, "", fmt.Errorf("时长数字无效")
-	}
-	var mult float64
-	switch unit {
-	case "m", "min", "mins", "minute", "minutes":
-		mult = 60
-		label = fmt.Sprintf("%gm", n)
-	case "h", "hr", "hrs", "hour", "hours":
-		mult = 3600
-		label = fmt.Sprintf("%gh", n)
-	case "d", "day", "days":
-		mult = 86400
-		label = fmt.Sprintf("%gd", n)
-	default:
-		return 0, "", fmt.Errorf("未知单位 %s（用 m/h/d）", unit)
-	}
-	secF := n * mult
-	if secF < 60 {
-		return 0, "", fmt.Errorf("最短 1 分钟")
-	}
-	if secF > 7*24*3600 {
-		return 0, "", fmt.Errorf("最长 7 天")
-	}
-	return int64(secF + 0.5), label, nil
+	return browse.ParseFlexibleDuration(raw)
 }
 
 // bulkAccountActionPrompt previews error accounts then asks confirm for bulk action.
