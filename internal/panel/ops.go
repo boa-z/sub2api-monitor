@@ -877,6 +877,13 @@ func writeErrorItems(bld *strings.Builder, page *sub2api.OpsErrorPage, kind stri
 		if when != "" {
 			fmt.Fprintf(bld, " · %s", telegram.Code(when))
 		}
+		if e.UserID > 0 {
+			userLabel := e.UserEmail
+			if userLabel == "" {
+				userLabel = fmt.Sprintf("user#%d", e.UserID)
+			}
+			fmt.Fprintf(bld, " · 用户 %s", telegram.Code(truncateRunes(userLabel, 18)))
+		}
 		bld.WriteString("\n")
 		fmt.Fprintf(bld, "  %s\n", telegram.EscapeHTML(truncateRunes(e.Message, 70)))
 		btnRow := []telegram.InlineKeyboardButton{}
@@ -889,8 +896,10 @@ func writeErrorItems(bld *strings.Builder, page *sub2api.OpsErrorPage, kind stri
 			}
 			btnRow = append(btnRow,
 				telegram.Btn("实时", fmt.Sprintf("acc_live:%d", e.AccountID)),
-				telegram.Btn("查看", fmt.Sprintf("mgr_acc:%d", e.AccountID)),
+				telegram.Btn("账号", fmt.Sprintf("mgr_acc:%d", e.AccountID)),
 			)
+		} else if e.UserID > 0 {
+			btnRow = append(btnRow, telegram.Btn("用户", fmt.Sprintf("mgr_user:%d", e.UserID)))
 		}
 		if len(btnRow) == 0 {
 			continue

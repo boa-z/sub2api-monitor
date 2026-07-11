@@ -2877,6 +2877,7 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 		kind      string
 		id        int64
 		accountID int64
+		userID    int64
 	}
 	writePage := func(label, k string, pageData *sub2api.OpsErrorPage, pullErr error, maxShow int) {
 		fmt.Fprintf(&bld, "\n**%s**\n", label)
@@ -2922,15 +2923,24 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 			if plat == "" {
 				plat = "-"
 			}
-			fmt.Fprintf(&bld, "• #%d [%s] %d %s%s\n  %s · %s\n  %s\n",
-				e.ID, e.Severity, e.StatusCode, truncate(name, 14), when,
+			userHint := ""
+			if e.UserID > 0 {
+				ul := e.UserEmail
+				if ul == "" {
+					ul = fmt.Sprintf("user#%d", e.UserID)
+				}
+				userHint = " · 用户 `" + truncate(ul, 18) + "`"
+			}
+			fmt.Fprintf(&bld, "• #%d [%s] %d %s%s%s\n  %s · %s\n  %s\n",
+				e.ID, e.Severity, e.StatusCode, truncate(name, 14), when, userHint,
 				truncate(plat, 12), truncate(model, 18),
 				truncate(e.Message, 70))
 			resolveIDs = append(resolveIDs, struct {
 				kind      string
 				id        int64
 				accountID int64
-			}{k, e.ID, e.AccountID})
+				userID    int64
+			}{k, e.ID, e.AccountID, e.UserID})
 			shown++
 		}
 		if shown == 0 {
@@ -2978,8 +2988,10 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 			}
 			row = append(row,
 				discord.Button("实时", fmt.Sprintf("acc_live:%d", r.accountID), 2),
-				discord.Button("查看", fmt.Sprintf("mgr_acc:%d", r.accountID), 2),
+				discord.Button("账号", fmt.Sprintf("mgr_acc:%d", r.accountID), 2),
 			)
+		} else if r.userID > 0 {
+			row = append(row, discord.Button("用户", fmt.Sprintf("mgr_user:%d", r.userID), 2))
 		}
 		if len(row) > 0 {
 			comps = append(comps, discord.ActionRow(row...))
