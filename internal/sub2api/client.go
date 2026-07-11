@@ -692,6 +692,26 @@ func (t TrafficSummary) CurrentQPS() float64 {
 	return t.Avg.QPS
 }
 
+func (t TrafficSummary) CurrentTPS() float64 {
+	if t.Summary.TPS.Current > 0 {
+		return t.Summary.TPS.Current
+	}
+	if t.Summary.TPS.Avg > 0 {
+		return t.Summary.TPS.Avg
+	}
+	if t.Current.TPS > 0 {
+		return t.Current.TPS
+	}
+	return 0
+}
+
+func (t TrafficSummary) PeakQPS() float64 {
+	if t.Summary.QPS.Peak > 0 {
+		return t.Summary.QPS.Peak
+	}
+	return 0
+}
+
 func (t TrafficSummary) WindowLabel() string {
 	if t.Summary.Window != "" {
 		return t.Summary.Window

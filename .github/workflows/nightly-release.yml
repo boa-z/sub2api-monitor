@@ -1,0 +1,156 @@
+name: Nightly Release
+
+on:
+  schedule:
+    # 16:00 UTC ≈ 00:00 Asia/Taipei next day
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
+      - "Dockerfile"
+      - ".github/workflows/nightly-release.yml"
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish nightly
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          DATE_UTC=$(date -u +%Y%m%d)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          VERSION="nightly-${DATE_UTC}-${SHORT_SHA}"
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          {
+            echo "version=${VERSION}"
+            echo "commit=${COMMIT}"
+            echo "date=${BUILD_DATE}"
+            echo "tag=nightly"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building ${VERSION} (commit=${COMMIT})"
+
+      - name: Test
+        run: go test ./...
+
+      - name: Cross-compile binaries
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+          DATE: ${{ steps.meta.outputs.date }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}"
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "darwin amd64"
+            "darwin arm64"
+            "windows amd64"
+          )
+          for t in "${targets[@]}"; do
+            set -- $t
+            GOOS=$1
+            GOARCH=$2
+            out="sub2api-monitor_${VERSION}_${GOOS}_${GOARCH}"
+            ext=""
+            if [ "$GOOS" = "windows" ]; then
+              ext=".exe"
+            fi
+            echo "==> ${GOOS}/${GOARCH}"
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath -ldflags "$LDFLAGS" \
+              -o "dist/${out}${ext}" ./cmd/monitor
+            (
+              cd dist
+              if [ "$GOOS" = "windows" ]; then
+                zip -9 "${out}.zip" "${out}${ext}"
+                rm -f "${out}${ext}"
+              else
+                tar -czf "${out}.tar.gz" "${out}${ext}"
+                rm -f "${out}${ext}"
+              fi
+            )
+          done
+          # checksums
+          (
+            cd dist
+            sha256sum * > SHA256SUMS.txt
+          )
+          ls -lah dist
+
+      - name: Generate release notes
+        id: notes
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Nightly build"
+            echo
+            echo "- **Version**: \`${VERSION}\`"
+            echo "- **Commit**: [\`${COMMIT}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})"
+            echo "- **Built at (UTC)**: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            echo "### Downloads"
+            echo "Prebuilt binaries for Linux / macOS / Windows (amd64 & arm64 where applicable)."
+            echo "Verify with \`SHA256SUMS.txt\`."
+            echo
+            echo "### Quick start"
+            echo '```bash'
+            echo '# example: linux amd64'
+            echo "tar -xzf sub2api-monitor_${VERSION}_linux_amd64.tar.gz"
+            echo "cp config.example.yaml config.yaml"
+            echo "# edit config.yaml then:"
+            echo "./sub2api-monitor_${VERSION}_linux_amd64 -config config.yaml"
+            echo '```'
+            echo
+            echo "This is an automated rolling nightly. Assets on the \`nightly\` tag are replaced each run."
+            echo
+            echo "### Recent commits"
+            git log -10 --pretty=format:'- %h %s'
+            echo
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: Publish / update nightly release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly ${{ steps.meta.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          prerelease: true
+          make_latest: false
+          files: |
+            dist/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

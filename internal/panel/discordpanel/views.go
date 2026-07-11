@@ -608,7 +608,15 @@ func (b *Bot) showDashboardView(ctx context.Context, userID int64) (string, []di
 			rt.ActiveRequests, rt.RequestsPerMinute, rt.ErrorRate)
 	}
 	if traf, err := cli.GetRealtimeTraffic(ctx, "5min"); err == nil && traf != nil {
-		fmt.Fprintf(&bld, "流量(%s): QPS `%.3f`\n", traf.WindowLabel(), traf.CurrentQPS())
+		qps, tps, peak := traf.CurrentQPS(), traf.CurrentTPS(), traf.PeakQPS()
+		line := fmt.Sprintf("流量(%s): QPS `%.3f`", traf.WindowLabel(), qps)
+		if tps > 0 {
+			line += fmt.Sprintf(" · TPS `%.3f`", tps)
+		}
+		if peak > 0 {
+			line += fmt.Sprintf(" · 峰值QPS `%.3f`", peak)
+		}
+		bld.WriteString(line + "\n")
 	}
 	return bld.String(), dashboardComponents(st)
 }
@@ -1343,15 +1351,21 @@ func (b *Bot) showBadAccountsView(ctx context.Context, userID int64, kind string
 			discord.Button(errorTabLabel("汇总", kind, "all"), "ops_badacc:all:0", 2),
 		),
 	}
-	// account actions: manage / live / heal (up to 5 rows to leave room for nav/bulk)
+	// account actions: manage / live / contextual quick act (up to 5 rows)
 	for i, a := range items {
 		if i >= 5 {
 			break
 		}
+		quick, quickData := "修复", fmt.Sprintf("live_act:heal:%d", a.ID)
+		if kind == "rl" {
+			quick, quickData = "清限速", fmt.Sprintf("live_act:clear_rl:%d", a.ID)
+		} else if kind == "unsched" {
+			quick, quickData = "开调度", fmt.Sprintf("live_act:sched:%d", a.ID)
+		}
 		comps = append(comps, discord.ActionRow(
 			discord.Button(fmt.Sprintf("管理 #%d", a.ID), fmt.Sprintf("mgr_acc:%d", a.ID), 1),
 			discord.Button("实时", fmt.Sprintf("acc_live:%d", a.ID), 2),
-			discord.Button("修复", fmt.Sprintf("live_act:heal:%d", a.ID), 1),
+			discord.Button(quick, quickData, 1),
 		))
 	}
 	nav := []discord.Component{}
@@ -1825,6 +1839,10 @@ func (b *Bot) showAccountLive(ctx context.Context, userID, accountID int64, noti
 			),
 			discord.ActionRow(
 				discord.Button("恢复", fmt.Sprintf("live_act:recover:%d", accountID), 2),
+				discord.Button("开调度", fmt.Sprintf("live_act:sched:%d", accountID), 2),
+				discord.Button("刷新凭据", fmt.Sprintf("live_act:refresh:%d", accountID), 2),
+			),
+			discord.ActionRow(
 				discord.Button("完整管理", fmt.Sprintf("mgr_acc:%d", accountID), 2),
 			),
 		)
@@ -1862,6 +1880,18 @@ func (b *Bot) handleLiveAction(ctx context.Context, userID int64, action string,
 			notice = "❌ 恢复状态失败: " + err.Error()
 		} else {
 			notice = "✅ 已请求恢复状态"
+		}
+	case "sched":
+		if _, err := cli.SetSchedulable(ctx, accountID, true); err != nil {
+			notice = "❌ 开启调度失败: " + err.Error()
+		} else {
+			notice = "✅ 已开启调度"
+		}
+	case "refresh":
+		if _, err := cli.RefreshAccount(ctx, accountID); err != nil {
+			notice = "❌ 刷新凭据失败: " + err.Error()
+		} else {
+			notice = "✅ 已刷新账号/凭据"
 		}
 	default:
 		notice = "未知操作"

@@ -131,6 +131,27 @@ make build
 ./bin/sub2api-monitor -config config.yaml
 ```
 
+### 预编译 Nightly（推荐快速试用）
+
+GitHub Actions 会在 `main` 有代码变更时以及每日定时构建 **rolling nightly** 发布（标签 `nightly`，prerelease）：
+
+- 页面：https://github.com/boa-z/sub2api-monitor/releases/tag/nightly
+- 产物：Linux / macOS / Windows（amd64、arm64）压缩包 + `SHA256SUMS.txt`
+- 二进制内嵌 `-version`：`nightly-YYYYMMDD-<sha>`
+
+```bash
+# 示例：Linux amd64
+# 从 Releases 下载对应 tar.gz 后：
+tar -xzf sub2api-monitor_nightly-*_linux_amd64.tar.gz
+cp config.example.yaml config.yaml   # 仓库内示例；或从源码拷贝
+# 编辑 config.yaml
+./sub2api-monitor_nightly-*_linux_amd64 -config config.yaml
+# 或
+./sub2api-monitor_nightly-*_linux_amd64 -version
+```
+
+CI：推送 / PR 会跑 `gofmt` + `go vet` + `go test` + 构建冒烟；Nightly 发布使用仓库 `GITHUB_TOKEN` 更新 `nightly` tag 上的资产。
+
 ### 4. Docker
 
 ```bash

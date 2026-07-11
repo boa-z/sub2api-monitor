@@ -94,3 +94,17 @@ func TestParseNamedListUsersShape(t *testing.T) {
 		t.Fatalf("%+v %d", items, total)
 	}
 }
+
+func TestTrafficSummaryHelpers(t *testing.T) {
+	tr := TrafficSummary{}
+	tr.Summary.QPS.Current = 1.5
+	tr.Summary.QPS.Peak = 3.2
+	tr.Summary.TPS.Current = 0.7
+	tr.Summary.Window = "5min"
+	if tr.CurrentQPS() != 1.5 || tr.CurrentTPS() != 0.7 || tr.PeakQPS() != 3.2 {
+		t.Fatalf("%v %v %v", tr.CurrentQPS(), tr.CurrentTPS(), tr.PeakQPS())
+	}
+	if tr.WindowLabel() != "5min" {
+		t.Fatal(tr.WindowLabel())
+	}
+}

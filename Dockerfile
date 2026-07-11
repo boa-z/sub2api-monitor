@@ -5,7 +5,10 @@ RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/sub2api-monitor ./cmd/monitor
+ARG VERSION=dev
+ARG COMMIT=none
+ARG DATE=unknown
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" -o /out/sub2api-monitor ./cmd/monitor
 
 # Runtime
 FROM alpine:3.20

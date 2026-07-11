@@ -745,3 +745,33 @@ func TestChannelIsBad(t *testing.T) {
 		t.Fatal("disabled not bad")
 	}
 }
+
+func TestOpsKeyboardForHealth(t *testing.T) {
+	kb := opsKeyboardFor(&sub2api.DashboardStats{ErrorAccounts: 3, RatelimitAccounts: 2})
+	joined := ""
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.Text + "|" + btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined, "ops_badacc:error:0") || !strings.Contains(joined, "ops_badacc:rl:0") {
+		t.Fatalf("missing bad/rl: %s", joined)
+	}
+	if !strings.Contains(joined, "mgr_bulk_heal") {
+		t.Fatalf("issues should offer bulk heal: %s", joined)
+	}
+	if !strings.Contains(joined, "异常 3") && !strings.Contains(joined, "3") {
+		// label may include count
+		t.Logf("joined=%s", joined)
+	}
+	kb2 := opsKeyboardFor(nil)
+	joined2 := ""
+	for _, row := range kb2.InlineKeyboard {
+		for _, btn := range row {
+			joined2 += btn.CallbackData + ","
+		}
+	}
+	if strings.Contains(joined2, "mgr_bulk_heal") {
+		t.Fatal("healthy/nil should not force bulk heal row")
+	}
+}

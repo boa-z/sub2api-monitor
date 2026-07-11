@@ -34,15 +34,48 @@ func (b *Bot) userClient(userID int64, timeout time.Duration) (*sub2api.Client, 
 }
 
 func opsKeyboard() *telegram.InlineKeyboardMarkup {
-	return &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn("✅ 可用性", "ops_avail")},
-			{telegram.Btn("🚨 告警", "ops_alerts"), telegram.Btn("❌ 错误", "ops_errors:all:0")},
-			{telegram.Btn("⚙️ 并发", "ops_conc"), telegram.Btn("📡 渠道探测", "ops_channels")},
-			{telegram.Btn("📋 异常账号", "ops_badacc:error:0"), telegram.Btn("🧰 账号管理", "mgr_menu")},
-			{telegram.Btn("🔄 刷新菜单", "ops_menu"), telegram.Btn("« 主面板", "home")},
-		},
+	return opsKeyboardFor(nil)
+}
+
+// opsKeyboardFor builds the ops hub keyboard. When stats are present, labels
+// include live error/rate-limit counts for faster triage.
+func opsKeyboardFor(stats *sub2api.DashboardStats) *telegram.InlineKeyboardMarkup {
+	badLabel := "📋 异常账号"
+	rlLabel := "⏱ 限速"
+	errLabel := "❌ 错误"
+	if stats != nil {
+		if stats.ErrorAccounts > 0 {
+			badLabel = fmt.Sprintf("📋 异常 %v", stats.ErrorAccounts)
+		}
+		if stats.RatelimitAccounts > 0 {
+			rlLabel = fmt.Sprintf("⏱ 限速 %v", stats.RatelimitAccounts)
+		}
 	}
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn("✅ 可用性", "ops_avail")},
+		{telegram.Btn("🚨 告警", "ops_alerts"), telegram.Btn(errLabel, "ops_errors:all:0")},
+		{telegram.Btn("⚙️ 并发", "ops_conc"), telegram.Btn("📡 渠道探测", "ops_channels")},
+	}
+	// health-aware second action row
+	if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn(badLabel, "ops_badacc:error:0"),
+			telegram.Btn(rlLabel, "ops_badacc:rl:0"),
+		})
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal"),
+			telegram.Btn("🧰 账号管理", "mgr_menu"),
+		})
+	} else {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn(badLabel, "ops_badacc:error:0"),
+			telegram.Btn("🧰 账号管理", "mgr_menu"),
+		})
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{
+		telegram.Btn("🔄 刷新菜单", "ops_menu"), telegram.Btn("« 主面板", "home"),
+	})
+	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 // opsViewKeyboard is ops menu plus a self-refresh button for the current view.
@@ -135,7 +168,13 @@ func (b *Bot) opsMenuText(ctx context.Context, userID int64) string {
 }
 
 func (b *Bot) showOpsMenu(ctx context.Context, chatID, msgID, userID int64) error {
-	return b.editOrSend(ctx, chatID, msgID, b.opsMenuText(ctx, userID), opsKeyboard())
+	var stats *sub2api.DashboardStats
+	if cli, _, err := b.userClient(userID, 6*time.Second); err == nil && cli != nil {
+		if st, err := cli.GetDashboardStats(ctx); err == nil {
+			stats = st
+		}
+	}
+	return b.editOrSend(ctx, chatID, msgID, b.opsMenuText(ctx, userID), opsKeyboardFor(stats))
 }
 
 func (b *Bot) showDashboard(ctx context.Context, chatID, msgID, userID int64) error {
@@ -188,9 +227,19 @@ func (b *Bot) showDashboard(ctx context.Context, chatID, msgID, userID int64) er
 			telegram.Code(fmt.Sprintf("%.2f", rt.ErrorRate)))
 	}
 	if traf != nil {
-		fmt.Fprintf(&bld, "流量(%s): QPS %s\n",
+		qps := traf.CurrentQPS()
+		tps := traf.CurrentTPS()
+		peak := traf.PeakQPS()
+		line := fmt.Sprintf("流量(%s): QPS %s",
 			telegram.EscapeHTML(traf.WindowLabel()),
-			telegram.Code(fmt.Sprintf("%.3f", traf.CurrentQPS())))
+			telegram.Code(fmt.Sprintf("%.3f", qps)))
+		if tps > 0 {
+			line += " · TPS " + telegram.Code(fmt.Sprintf("%.3f", tps))
+		}
+		if peak > 0 {
+			line += " · 峰值QPS " + telegram.Code(fmt.Sprintf("%.3f", peak))
+		}
+		bld.WriteString(line + "\n")
 	}
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), dashboardKeyboard(stats))
 }
@@ -1013,10 +1062,19 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 		{telegram.Btn(errorTabLabel("汇总", kind, "all"), "ops_badacc:all:0")},
 	}
 	for _, a := range items {
+		quick := "修复"
+		quickData := fmt.Sprintf("live_act:heal:%d", a.ID)
+		if kind == "rl" {
+			quick = "清限速"
+			quickData = fmt.Sprintf("live_act:clear_rl:%d", a.ID)
+		} else if kind == "unsched" {
+			quick = "开调度"
+			quickData = fmt.Sprintf("live_act:sched:%d", a.ID)
+		}
 		rows = append(rows, []telegram.InlineKeyboardButton{
 			telegram.Btn(fmt.Sprintf("管理 #%d %s", a.ID, truncateRunes(a.Name, 8)), fmt.Sprintf("mgr_acc:%d", a.ID)),
 			telegram.Btn("实时", fmt.Sprintf("acc_live:%d", a.ID)),
-			telegram.Btn("修复", fmt.Sprintf("live_act:heal:%d", a.ID)),
+			telegram.Btn(quick, quickData),
 		})
 	}
 	// pagination
@@ -1216,6 +1274,18 @@ func (b *Bot) handleLiveAction(ctx context.Context, chatID, msgID, userID int64,
 		} else {
 			notice = "✅ 已请求恢复状态"
 		}
+	case "sched":
+		if _, err := cli.SetSchedulable(ctx, accountID, true); err != nil {
+			notice = "❌ 开启调度失败: " + telegram.EscapeHTML(err.Error())
+		} else {
+			notice = "✅ 已开启调度"
+		}
+	case "refresh":
+		if _, err := cli.RefreshAccount(ctx, accountID); err != nil {
+			notice = "❌ 刷新凭据失败: " + telegram.EscapeHTML(err.Error())
+		} else {
+			notice = "✅ 已刷新账号/凭据"
+		}
 	default:
 		notice = "未知操作"
 	}
@@ -1310,6 +1380,10 @@ func (b *Bot) showAccountLiveWithNotice(ctx context.Context, chatID, msgID, user
 			[]telegram.InlineKeyboardButton{
 				telegram.Btn("⏱ 清限速", fmt.Sprintf("live_act:clear_rl:%d", accountID)),
 				telegram.Btn("♻️ 恢复", fmt.Sprintf("live_act:recover:%d", accountID)),
+			},
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("▶️ 开调度", fmt.Sprintf("live_act:sched:%d", accountID)),
+				telegram.Btn("🔄 刷新凭据", fmt.Sprintf("live_act:refresh:%d", accountID)),
 			},
 			[]telegram.InlineKeyboardButton{
 				telegram.Btn("🧰 完整管理", fmt.Sprintf("mgr_acc:%d", accountID)),
