@@ -2870,6 +2870,34 @@ func (b *Bot) showErrors(ctx context.Context, userID int64) (string, []discord.C
 	return b.showErrorsView(ctx, userID, "all", 0, "")
 }
 
+func writeErrorTallySummaryDiscord(bld *strings.Builder, pages ...*sub2api.OpsErrorPage) {
+	items := browse.CollectUnresolvedOpsErrors(pages...)
+	if len(items) == 0 {
+		return
+	}
+	plats := browse.TopUnresolvedErrorPlatforms(items, 3)
+	users := browse.TopUnresolvedErrorUsers(items, 3)
+	if len(plats) == 0 && len(users) == 0 {
+		return
+	}
+	bld.WriteString("**样本汇总**（本页未解决）\n")
+	if len(plats) > 0 {
+		parts := make([]string, 0, len(plats))
+		for _, t := range plats {
+			parts = append(parts, fmt.Sprintf("%s×%d", t.Key, t.Count))
+		}
+		fmt.Fprintf(bld, "平台: `%s`\n", strings.Join(parts, ", "))
+	}
+	if len(users) > 0 {
+		parts := make([]string, 0, len(users))
+		for _, t := range users {
+			parts = append(parts, fmt.Sprintf("%s×%d", truncate(t.Key, 16), t.Count))
+		}
+		fmt.Fprintf(bld, "用户: `%s`\n", strings.Join(parts, ", "))
+	}
+	bld.WriteString("\n")
+}
+
 func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, page int, notice string) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
@@ -2977,15 +3005,24 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 		}
 	}
 
+	var tallyPages []*sub2api.OpsErrorPage
 	switch kind {
 	case "u":
 		pageData, err1 := cli.ListUpstreamErrors(ctx, page+1, 10)
 		fmt.Fprintf(&bld, "标签: `上游` · 第 %d 页\n", page+1)
+		if err1 == nil {
+			tallyPages = append(tallyPages, pageData)
+		}
+		writeErrorTallySummaryDiscord(&bld, tallyPages...)
 		writePage("上游错误", "u", pageData, err1, 8)
 		comps = append(comps, errorPageNav("u", page, pageData)...)
 	case "r":
 		pageData, err2 := cli.ListRequestErrors(ctx, page+1, 10)
 		fmt.Fprintf(&bld, "标签: `请求` · 第 %d 页\n", page+1)
+		if err2 == nil {
+			tallyPages = append(tallyPages, pageData)
+		}
+		writeErrorTallySummaryDiscord(&bld, tallyPages...)
 		writePage("请求错误", "r", pageData, err2, 8)
 		comps = append(comps, errorPageNav("r", page, pageData)...)
 	default:
@@ -2994,8 +3031,33 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 		if err1 != nil && err2 != nil {
 			return "错误列表失败: " + err1.Error(), opsComponents()
 		}
+		if err1 == nil {
+			tallyPages = append(tallyPages, up)
+		}
+		if err2 == nil {
+			tallyPages = append(tallyPages, req)
+		}
+		writeErrorTallySummaryDiscord(&bld, tallyPages...)
 		writePage("上游错误", "u", up, err1, 4)
 		writePage("请求错误", "r", req, err2, 3)
+	}
+
+	// optional top platform jumps (only if we still have row budget later)
+	if items := browse.CollectUnresolvedOpsErrors(tallyPages...); len(items) > 0 {
+		var platBtns []discord.Component
+		for i, t := range browse.TopUnresolvedErrorPlatforms(items, 2) {
+			key := strings.ToLower(strings.TrimSpace(t.Key))
+			if key == "" {
+				continue
+			}
+			platBtns = append(platBtns, discord.Button("🏷 "+truncate(key, 8), "mgr_browse:"+browse.Token("plat:"+key)+":0", 2))
+			if i >= 1 {
+				break
+			}
+		}
+		if len(platBtns) > 0 {
+			comps = append(comps, discord.ActionRow(platBtns...))
+		}
 	}
 
 	// Discord allows max 5 action rows: tabs + up to 2 error rows + resolve-all + footer.

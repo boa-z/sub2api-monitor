@@ -756,6 +756,7 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 		},
 	}
 
+	var tallyPages []*sub2api.OpsErrorPage
 	switch kind {
 	case "u":
 		pageData, err1 := cli.ListUpstreamErrors(ctx, page+1, 10)
@@ -763,6 +764,8 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 		if err1 != nil {
 			fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err1.Error()))
 		} else {
+			tallyPages = append(tallyPages, pageData)
+			writeErrorTallySummary(&bld, pageData)
 			writeErrorItems(&bld, pageData, "u", 8, canWrite, &rows)
 			rows = append(rows, errorPageNav("u", page, pageData)...)
 		}
@@ -772,6 +775,8 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 		if err2 != nil {
 			fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err2.Error()))
 		} else {
+			tallyPages = append(tallyPages, pageData)
+			writeErrorTallySummary(&bld, pageData)
 			writeErrorItems(&bld, pageData, "r", 8, canWrite, &rows)
 			rows = append(rows, errorPageNav("r", page, pageData)...)
 		}
@@ -782,6 +787,13 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 		if err1 != nil && err2 != nil {
 			return b.editOrSend(ctx, chatID, msgID, "错误列表失败: "+telegram.EscapeHTML(err1.Error()), opsKeyboard())
 		}
+		if err1 == nil {
+			tallyPages = append(tallyPages, up)
+		}
+		if err2 == nil {
+			tallyPages = append(tallyPages, req)
+		}
+		writeErrorTallySummary(&bld, tallyPages...)
 		bld.WriteString(telegram.Bold("上游错误") + "\n")
 		if err1 != nil {
 			fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err1.Error()))
@@ -793,6 +805,23 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 			fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err2.Error()))
 		} else {
 			writeErrorItems(&bld, req, "r", 3, canWrite, &rows)
+		}
+	}
+	// top problem platforms from the same sample → browse filter
+	if items := browse.CollectUnresolvedOpsErrors(tallyPages...); len(items) > 0 {
+		var platRow []telegram.InlineKeyboardButton
+		for i, t := range browse.TopUnresolvedErrorPlatforms(items, 3) {
+			if t.Key == "" {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(t.Key))
+			platRow = append(platRow, telegram.Btn("🏷 "+truncateRunes(key, 8), "mgr_browse:plat|"+key+":0"))
+			if i >= 2 {
+				break
+			}
+		}
+		if len(platRow) > 0 {
+			rows = append(rows, platRow)
 		}
 	}
 
@@ -859,6 +888,35 @@ func errorPageNav(kind string, page int, pageData *sub2api.OpsErrorPage) [][]tel
 
 // writeErrorItems renders error lines and appends resolve/manage/live/heal buttons.
 // kind is "u" (upstream) or "r" (request) for compact callback_data.
+// writeErrorTallySummary prints top platforms/users from unresolved sample.
+func writeErrorTallySummary(bld *strings.Builder, pages ...*sub2api.OpsErrorPage) {
+	items := browse.CollectUnresolvedOpsErrors(pages...)
+	if len(items) == 0 {
+		return
+	}
+	plats := browse.TopUnresolvedErrorPlatforms(items, 3)
+	users := browse.TopUnresolvedErrorUsers(items, 3)
+	if len(plats) == 0 && len(users) == 0 {
+		return
+	}
+	bld.WriteString(telegram.Bold("样本汇总") + "（本页未解决）\n")
+	if len(plats) > 0 {
+		parts := make([]string, 0, len(plats))
+		for _, t := range plats {
+			parts = append(parts, fmt.Sprintf("%s×%d", t.Key, t.Count))
+		}
+		fmt.Fprintf(bld, "平台: %s\n", telegram.Code(strings.Join(parts, ", ")))
+	}
+	if len(users) > 0 {
+		parts := make([]string, 0, len(users))
+		for _, t := range users {
+			parts = append(parts, fmt.Sprintf("%s×%d", truncateRunes(t.Key, 16), t.Count))
+		}
+		fmt.Fprintf(bld, "用户: %s\n", telegram.Code(strings.Join(parts, ", ")))
+	}
+	bld.WriteString("\n")
+}
+
 func writeErrorItems(bld *strings.Builder, page *sub2api.OpsErrorPage, kind string, maxShow int, canWrite bool, rows *[][]telegram.InlineKeyboardButton) {
 	if page == nil || len(page.Items) == 0 {
 		bld.WriteString("无\n")
