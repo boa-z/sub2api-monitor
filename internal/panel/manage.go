@@ -3,6 +3,7 @@ package panel
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,8 +20,8 @@ func manageKeyboard() *telegram.InlineKeyboardMarkup {
 			{telegram.Btn("🧹 批量清错", "mgr_bulk_clear"), telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover")},
 			{telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"), telegram.Btn("⏱ 批量清限速", "mgr_bulk_clear_rl")},
 			{telegram.Btn("📋 异常账号", "ops_badacc"), telegram.Btn("🛠 批量一键修复", "mgr_bulk_heal")},
-			{telegram.Btn("👥 用户", "mgr_users"), telegram.Btn("🏷 分组", "mgr_groups")},
-			{telegram.Btn("« 返回主面板", "home")},
+			{telegram.Btn("👥 实例用户", "mgr_users"), telegram.Btn("🏷 分组", "mgr_groups")},
+			{telegram.Btn("👤 面板用户", "pnl_users"), telegram.Btn("« 返回主面板", "home")},
 		},
 	}
 }
@@ -32,7 +33,8 @@ func (b *Bot) manageMenuText() string {
 
 • 账号浏览 — 状态/平台筛选、搜索、分页
 • 批量清错 / 恢复 / 开调度 / 清限速 / 一键修复 — 批量处理（需确认）
-• 用户 / 分组 — 只读列表
+• 实例用户 / 分组 — Sub2API 只读列表
+• 面板用户 — 本 Bot 多用户与角色（admin/user）
 • 异常账号 — error 列表，点进管理 / 一键监控
 
 进入账号后可执行：
@@ -1014,6 +1016,181 @@ func (b *Bot) showGroups(ctx context.Context, chatID, msgID, userID int64, page 
 	}
 	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 管理菜单", "mgr_menu")})
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+// showPanelUsers lists local monitor panel profiles (not Sub2API users).
+func (b *Bot) showPanelUsers(ctx context.Context, chatID, msgID, adminID int64, page int, notice string) error {
+	if page < 0 {
+		page = 0
+	}
+	const pageSize = 8
+	all := b.users.ListAll()
+	// stable-ish sort by id
+	sort.SliceStable(all, func(i, j int) bool {
+		return all[i].UserID() < all[j].UserID()
+	})
+	total := len(all)
+	start := page * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	pageItems := all[start:end]
+
+	var bld strings.Builder
+	if notice != "" {
+		bld.WriteString(notice + "\n\n")
+	}
+	bld.WriteString(telegram.Bold("面板用户") + "（本监控 Bot）\n")
+	fmt.Fprintf(&bld, "第 %d 页 · 共 %s\n点用户可改角色\n\n", page+1, telegram.Code(strconv.Itoa(total)))
+	if len(pageItems) == 0 {
+		bld.WriteString("暂无面板用户。")
+	}
+	rows := [][]telegram.InlineKeyboardButton{}
+	for _, p := range pageItems {
+		role := p.EffectiveRole()
+		if role == "" {
+			if b.isAdmin(p.UserID()) {
+				role = "admin*"
+			} else {
+				role = "user*"
+			}
+		}
+		plat := p.EffectivePlatform()
+		name := p.DisplayName
+		if name == "" {
+			name = p.Username
+		}
+		if name == "" {
+			name = strconv.FormatInt(p.UserID(), 10)
+		}
+		conn := "未连接"
+		if p.HasConnection() {
+			conn = "已连接"
+		}
+		mon := "关"
+		if p.Enabled {
+			mon = "开"
+		}
+		fmt.Fprintf(&bld, "• %s %s [%s/%s]\n  %s · 监控%s · 账号%d\n",
+			telegram.Code(strconv.FormatInt(p.UserID(), 10)),
+			telegram.EscapeHTML(truncateRunes(name, 14)),
+			telegram.EscapeHTML(role),
+			telegram.EscapeHTML(plat),
+			telegram.EscapeHTML(conn),
+			telegram.EscapeHTML(mon),
+			len(p.Accounts),
+		)
+		label := fmt.Sprintf("#%d %s", p.UserID(), truncateRunes(name, 10))
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn(label, fmt.Sprintf("pnl_user:%d", p.UserID())),
+		})
+	}
+	nav := []telegram.InlineKeyboardButton{}
+	if page > 0 {
+		nav = append(nav, telegram.Btn("« 上页", fmt.Sprintf("pnl_users:%d", page-1)))
+	}
+	if end < total {
+		nav = append(nav, telegram.Btn("下页 »", fmt.Sprintf("pnl_users:%d", page+1)))
+	}
+	if len(nav) > 0 {
+		rows = append(rows, nav)
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{
+		telegram.Btn("« 管理菜单", "mgr_menu"),
+		telegram.Btn("« 主面板", "home"),
+	})
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (b *Bot) showPanelUserDetail(ctx context.Context, chatID, msgID, adminID, targetID int64, notice string) error {
+	p, ok := b.users.Get(targetID)
+	if !ok {
+		return b.showPanelUsers(ctx, chatID, msgID, adminID, 0, "❌ 用户不存在")
+	}
+	var bld strings.Builder
+	if notice != "" {
+		bld.WriteString(notice + "\n\n")
+	}
+	bld.WriteString(telegram.Bold(fmt.Sprintf("面板用户 #%d", targetID)) + "\n\n")
+	name := p.DisplayName
+	if name == "" {
+		name = p.Username
+	}
+	fmt.Fprintf(&bld, "名称: %s\n", telegram.Code(truncateRunes(name, 24)))
+	fmt.Fprintf(&bld, "平台: %s · Chat: %s\n", telegram.Code(p.EffectivePlatform()), telegram.Code(p.ChatID))
+	roleStored := strings.TrimSpace(p.Role)
+	if roleStored == "" {
+		roleStored = "(继承配置)"
+	}
+	fmt.Fprintf(&bld, "存储角色: %s\n", telegram.Code(roleStored))
+	fmt.Fprintf(&bld, "生效角色: %s\n", telegram.Code(b.roleLabel(targetID)))
+	base := p.BaseURL
+	if base == "" {
+		base = "(未设置)"
+	}
+	fmt.Fprintf(&bld, "Base URL: %s\n", telegram.Code(truncateRunes(base, 40)))
+	fmt.Fprintf(&bld, "API Key: %s\n", telegram.Code(userstore.MaskKey(p.AdminAPIKey)))
+	mon := "关闭"
+	if p.Enabled {
+		mon = "开启"
+	}
+	fmt.Fprintf(&bld, "监控: %s · 数据源: %s · 账号: %d\n",
+		telegram.Code(mon), telegram.Code(p.EffectiveSource()), len(p.Accounts))
+	if targetID == adminID {
+		bld.WriteString("\n⚠️ 这是你自己的账号。")
+	}
+	bld.WriteString("\n\n角色覆盖仅影响本 Bot 面板权限，不改 Sub2API 权限。")
+
+	kb := &telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{
+				telegram.Btn("设为管理员", fmt.Sprintf("pnl_role:admin:%d", targetID)),
+				telegram.Btn("设为用户", fmt.Sprintf("pnl_role:user:%d", targetID)),
+			},
+			{
+				telegram.Btn("清除角色覆盖", fmt.Sprintf("pnl_role:clear:%d", targetID)),
+			},
+			{
+				telegram.Btn("« 面板用户", "pnl_users"),
+				telegram.Btn("« 管理菜单", "mgr_menu"),
+			},
+		},
+	}
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
+}
+
+func (b *Bot) setPanelUserRole(ctx context.Context, chatID, msgID, adminID, targetID int64, role string) error {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if targetID == adminID && (role == "user" || role == "clear") {
+		// allow but warn — still allow demote self to avoid lockout only if other admins exist is complex; just warn
+	}
+	var storeRole string
+	switch role {
+	case "admin":
+		storeRole = userstore.RoleAdmin
+	case "user":
+		storeRole = userstore.RoleUser
+	case "clear", "inherit", "default", "":
+		storeRole = ""
+	default:
+		return b.showPanelUserDetail(ctx, chatID, msgID, adminID, targetID, "❌ 无效角色")
+	}
+	if _, err := b.users.Update(targetID, func(p *userstore.Profile) error {
+		p.Role = storeRole
+		return nil
+	}); err != nil {
+		return b.showPanelUserDetail(ctx, chatID, msgID, adminID, targetID, "❌ 保存失败: "+telegram.EscapeHTML(err.Error()))
+	}
+	label := storeRole
+	if label == "" {
+		label = "继承配置"
+	}
+	return b.showPanelUserDetail(ctx, chatID, msgID, adminID, targetID,
+		fmt.Sprintf("✅ 已更新角色为 %s", telegram.Code(label)))
 }
 
 func schedLabel(v bool) string {

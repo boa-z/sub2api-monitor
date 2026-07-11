@@ -35,10 +35,23 @@ func opsKeyboard() *telegram.InlineKeyboardMarkup {
 	return &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn("✅ 可用性", "ops_avail")},
-			{telegram.Btn("🚨 告警", "ops_alerts"), telegram.Btn("❌ 错误", "ops_errors")},
+			{telegram.Btn("🚨 告警", "ops_alerts"), telegram.Btn("❌ 错误", "ops_errors:all:0")},
 			{telegram.Btn("⚙️ 并发", "ops_conc"), telegram.Btn("📡 渠道探测", "ops_channels")},
 			{telegram.Btn("📋 异常账号", "ops_badacc"), telegram.Btn("🧰 账号管理", "mgr_menu")},
 			{telegram.Btn("🔄 刷新菜单", "ops_menu"), telegram.Btn("« 主面板", "home")},
+		},
+	}
+}
+
+// opsViewKeyboard is ops menu plus a self-refresh button for the current view.
+func opsViewKeyboard(refreshData string) *telegram.InlineKeyboardMarkup {
+	return &telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{telegram.Btn("🔄 刷新", refreshData), telegram.Btn("« 运维菜单", "ops_menu")},
+			{telegram.Btn("📈 看板", "ops_dash"), telegram.Btn("✅ 可用性", "ops_avail")},
+			{telegram.Btn("🚨 告警", "ops_alerts"), telegram.Btn("❌ 错误", "ops_errors:all:0")},
+			{telegram.Btn("⚙️ 并发", "ops_conc"), telegram.Btn("📋 异常账号", "ops_badacc")},
+			{telegram.Btn("« 主面板", "home")},
 		},
 	}
 }
@@ -117,7 +130,7 @@ func (b *Bot) showDashboard(ctx context.Context, chatID, msgID, userID int64) er
 			telegram.EscapeHTML(traf.WindowLabel()),
 			telegram.Code(fmt.Sprintf("%.3f", traf.CurrentQPS())))
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsKeyboard())
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsViewKeyboard("ops_dash"))
 }
 
 func (b *Bot) showAvailability(ctx context.Context, chatID, msgID, userID int64) error {
@@ -241,7 +254,7 @@ func (b *Bot) showAvailability(ctx context.Context, chatID, msgID, userID int64)
 			telegram.EscapeHTML(truncateRunes(msg, 40)),
 		)
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsKeyboard())
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsViewKeyboard("ops_avail"))
 }
 
 func (b *Bot) showAlerts(ctx context.Context, chatID, msgID, userID int64) error {
@@ -299,42 +312,87 @@ func (b *Bot) showAlerts(ctx context.Context, chatID, msgID, userID int64) error
 		}
 		shown++
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsKeyboard())
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsViewKeyboard("ops_alerts"))
 }
 
 func (b *Bot) showErrors(ctx context.Context, chatID, msgID, userID int64) error {
-	return b.showErrorsNotice(ctx, chatID, msgID, userID, "")
+	return b.showErrorsView(ctx, chatID, msgID, userID, "all", 0, "")
 }
 
 func (b *Bot) showErrorsNotice(ctx context.Context, chatID, msgID, userID int64, notice string) error {
+	return b.showErrorsView(ctx, chatID, msgID, userID, "all", 0, notice)
+}
+
+func (b *Bot) showErrorsNoticeKind(ctx context.Context, chatID, msgID, userID int64, kind, notice string) error {
+	return b.showErrorsView(ctx, chatID, msgID, userID, kind, 0, notice)
+}
+
+// showErrorsView renders ops errors.
+// kind: all | u (upstream) | r (request). page is 0-based for u/r tabs.
+func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, kind string, page int, notice string) error {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
 	}
-	up, err1 := cli.ListUpstreamErrors(ctx, 1, 15)
-	req, err2 := cli.ListRequestErrors(ctx, 1, 10)
+	if page < 0 {
+		page = 0
+	}
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind != "u" && kind != "r" {
+		kind = "all"
+	}
+
 	var bld strings.Builder
 	if notice != "" {
 		bld.WriteString(notice + "\n\n")
 	}
-	bld.WriteString(telegram.Bold("近期错误") + "（优先未解决）\n\n")
-	if err1 != nil && err2 != nil {
-		return b.editOrSend(ctx, chatID, msgID, "错误列表失败: "+telegram.EscapeHTML(err1.Error()), opsKeyboard())
+	bld.WriteString(telegram.Bold("近期错误") + "（优先未解决）\n")
+	rows := [][]telegram.InlineKeyboardButton{
+		{
+			telegram.Btn(errorTabLabel("全部", kind, "all"), "ops_errors:all:0"),
+			telegram.Btn(errorTabLabel("上游", kind, "u"), "ops_errors:u:0"),
+			telegram.Btn(errorTabLabel("请求", kind, "r"), "ops_errors:r:0"),
+		},
 	}
 
-	rows := [][]telegram.InlineKeyboardButton{}
-
-	bld.WriteString(telegram.Bold("上游错误") + "\n")
-	if err1 != nil {
-		fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err1.Error()))
-	} else {
-		writeErrorItems(&bld, up, "u", 5, &rows)
-	}
-	bld.WriteString("\n" + telegram.Bold("请求错误") + "\n")
-	if err2 != nil {
-		fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err2.Error()))
-	} else {
-		writeErrorItems(&bld, req, "r", 3, &rows)
+	switch kind {
+	case "u":
+		pageData, err1 := cli.ListUpstreamErrors(ctx, page+1, 10)
+		fmt.Fprintf(&bld, "标签: %s · 第 %d 页\n\n", telegram.Code("上游"), page+1)
+		if err1 != nil {
+			fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err1.Error()))
+		} else {
+			writeErrorItems(&bld, pageData, "u", 8, &rows)
+			rows = append(rows, errorPageNav("u", page, pageData)...)
+		}
+	case "r":
+		pageData, err2 := cli.ListRequestErrors(ctx, page+1, 10)
+		fmt.Fprintf(&bld, "标签: %s · 第 %d 页\n\n", telegram.Code("请求"), page+1)
+		if err2 != nil {
+			fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err2.Error()))
+		} else {
+			writeErrorItems(&bld, pageData, "r", 8, &rows)
+			rows = append(rows, errorPageNav("r", page, pageData)...)
+		}
+	default:
+		up, err1 := cli.ListUpstreamErrors(ctx, 1, 15)
+		req, err2 := cli.ListRequestErrors(ctx, 1, 10)
+		bld.WriteString("\n")
+		if err1 != nil && err2 != nil {
+			return b.editOrSend(ctx, chatID, msgID, "错误列表失败: "+telegram.EscapeHTML(err1.Error()), opsKeyboard())
+		}
+		bld.WriteString(telegram.Bold("上游错误") + "\n")
+		if err1 != nil {
+			fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err1.Error()))
+		} else {
+			writeErrorItems(&bld, up, "u", 5, &rows)
+		}
+		bld.WriteString("\n" + telegram.Bold("请求错误") + "\n")
+		if err2 != nil {
+			fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err2.Error()))
+		} else {
+			writeErrorItems(&bld, req, "r", 3, &rows)
+		}
 	}
 
 	rows = append(rows,
@@ -343,7 +401,7 @@ func (b *Bot) showErrorsNotice(ctx context.Context, chatID, msgID, userID int64,
 			telegram.Btn("✅ 解决请求", "oe:resolve_all:r"),
 		},
 		[]telegram.InlineKeyboardButton{
-			telegram.Btn("🔄 刷新", "ops_errors"),
+			telegram.Btn("🔄 刷新", fmt.Sprintf("ops_errors:%s:%d", kind, page)),
 			telegram.Btn("« 运维菜单", "ops_menu"),
 		},
 		[]telegram.InlineKeyboardButton{
@@ -351,6 +409,41 @@ func (b *Bot) showErrorsNotice(ctx context.Context, chatID, msgID, userID int64,
 		},
 	)
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func errorTabLabel(label, cur, val string) string {
+	if cur == val {
+		return "• " + label
+	}
+	return label
+}
+
+func errorPageNav(kind string, page int, pageData *sub2api.OpsErrorPage) [][]telegram.InlineKeyboardButton {
+	if pageData == nil {
+		return nil
+	}
+	nav := []telegram.InlineKeyboardButton{}
+	if page > 0 {
+		nav = append(nav, telegram.Btn("« 上页", fmt.Sprintf("ops_errors:%s:%d", kind, page-1)))
+	}
+	// next if this page looks full or total indicates more
+	pageSize := pageData.PageSize
+	if pageSize <= 0 {
+		pageSize = 10
+	}
+	hasMore := false
+	if pageData.Total > 0 && int64((page+1)*pageSize) < pageData.Total {
+		hasMore = true
+	} else if len(pageData.Items) >= pageSize {
+		hasMore = true
+	}
+	if hasMore {
+		nav = append(nav, telegram.Btn("下页 »", fmt.Sprintf("ops_errors:%s:%d", kind, page+1)))
+	}
+	if len(nav) == 0 {
+		return nil
+	}
+	return [][]telegram.InlineKeyboardButton{nav}
 }
 
 // writeErrorItems renders error lines and appends resolve/manage buttons.
@@ -386,20 +479,31 @@ func writeErrorItems(bld *strings.Builder, page *sub2api.OpsErrorPage, kind stri
 		if model == "" {
 			model = e.RequestedModel
 		}
-		fmt.Fprintf(bld, "• #%d [%s] %s %s\n  %s · %s\n  %s\n",
+		when := ""
+		if !e.CreatedAt.IsZero() {
+			when = e.CreatedAt.Local().Format("01-02 15:04")
+		}
+		fmt.Fprintf(bld, "• #%d [%s] %s %s\n  %s · %s",
 			e.ID,
 			telegram.EscapeHTML(e.Severity),
 			telegram.Code(strconv.Itoa(e.StatusCode)),
 			telegram.EscapeHTML(truncateRunes(name, 14)),
 			telegram.EscapeHTML(e.Platform),
 			telegram.EscapeHTML(truncateRunes(model, 18)),
-			telegram.EscapeHTML(truncateRunes(e.Message, 70)),
 		)
+		if when != "" {
+			fmt.Fprintf(bld, " · %s", telegram.Code(when))
+		}
+		bld.WriteString("\n")
+		fmt.Fprintf(bld, "  %s\n", telegram.EscapeHTML(truncateRunes(e.Message, 70)))
 		btnRow := []telegram.InlineKeyboardButton{
 			telegram.Btn(fmt.Sprintf("✅ 解决 #%d", e.ID), fmt.Sprintf("oe:r:%s:%d", kind, e.ID)),
 		}
 		if e.AccountID > 0 {
-			btnRow = append(btnRow, telegram.Btn(fmt.Sprintf("管理 #%d", e.AccountID), fmt.Sprintf("mgr_acc:%d", e.AccountID)))
+			btnRow = append(btnRow,
+				telegram.Btn(fmt.Sprintf("管理 #%d", e.AccountID), fmt.Sprintf("mgr_acc:%d", e.AccountID)),
+				telegram.Btn("修复", fmt.Sprintf("mgr_act:heal:%d", e.AccountID)),
+			)
 		}
 		*rows = append(*rows, btnRow)
 		shown++
@@ -422,10 +526,14 @@ func (b *Bot) resolveOpsError(ctx context.Context, chatID, msgID, userID int64, 
 	if kind == "r" {
 		apiKind = "request"
 	}
-	if err := cli.ResolveOpsError(ctx, apiKind, errorID); err != nil {
-		return b.showErrorsNotice(ctx, chatID, msgID, userID, "❌ 标记失败: "+telegram.EscapeHTML(err.Error()))
+	tab := kind
+	if tab != "u" && tab != "r" {
+		tab = "all"
 	}
-	return b.showErrorsNotice(ctx, chatID, msgID, userID, fmt.Sprintf("✅ 已标记错误 #%d 为已解决", errorID))
+	if err := cli.ResolveOpsError(ctx, apiKind, errorID); err != nil {
+		return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab, "❌ 标记失败: "+telegram.EscapeHTML(err.Error()))
+	}
+	return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab, fmt.Sprintf("✅ 已标记错误 #%d 为已解决", errorID))
 }
 
 // resolveAllUpstreamErrors resolves up to N unresolved upstream errors.
@@ -452,8 +560,12 @@ func (b *Bot) resolveAllOpsErrors(ctx context.Context, chatID, msgID, userID int
 		page, err = cli.ListUpstreamErrors(ctx, 1, 20)
 		apiKind = "upstream"
 	}
+	tab := "u"
+	if apiKind == "request" {
+		tab = "r"
+	}
 	if err != nil {
-		return b.showErrorsNotice(ctx, chatID, msgID, userID, "❌ 拉取失败: "+telegram.EscapeHTML(err.Error()))
+		return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab, "❌ 拉取失败: "+telegram.EscapeHTML(err.Error()))
 	}
 	okN, failN, n := 0, 0, 0
 	const maxOps = 15
@@ -472,9 +584,9 @@ func (b *Bot) resolveAllOpsErrors(ctx context.Context, chatID, msgID, userID int
 		}
 	}
 	if n == 0 {
-		return b.showErrorsNotice(ctx, chatID, msgID, userID, "✅ 没有未解决的"+label+"错误。")
+		return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab, "✅ 没有未解决的"+label+"错误。")
 	}
-	return b.showErrorsNotice(ctx, chatID, msgID, userID,
+	return b.showErrorsNoticeKind(ctx, chatID, msgID, userID, tab,
 		fmt.Sprintf("✅ 批量标记%s错误：成功 %d · 失败 %d", label, okN, failN))
 }
 
@@ -546,7 +658,7 @@ func (b *Bot) showConcurrency(ctx context.Context, chatID, msgID, userID int64) 
 			r.b.LoadPercentage,
 		)
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsKeyboard())
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsViewKeyboard("ops_conc"))
 }
 
 func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64) error {
@@ -584,7 +696,7 @@ func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64) err
 			telegram.Code(last),
 		)
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsKeyboard())
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsViewKeyboard("ops_channels"))
 }
 
 func (b *Bot) showBadAccounts(ctx context.Context, chatID, msgID, userID int64) error {
@@ -714,17 +826,56 @@ func formatDurationSec(sec int64) string {
 	return fmt.Sprintf("%.1fd", d.Hours()/24)
 }
 
+// handleLiveAction runs a quick manage action then refreshes the live account view.
+func (b *Bot) handleLiveAction(ctx context.Context, chatID, msgID, userID int64, action string, accountID int64) error {
+	cli, _, err := b.userClient(userID, 25*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	notice := ""
+	switch action {
+	case "heal":
+		notice = b.healAccount(ctx, cli, accountID)
+	case "clear_err":
+		if _, err := cli.ClearAccountError(ctx, accountID); err != nil {
+			notice = "❌ 清除错误失败: " + telegram.EscapeHTML(err.Error())
+		} else {
+			notice = "✅ 已清除错误状态"
+		}
+	case "clear_rl":
+		if _, err := cli.ClearAccountRateLimit(ctx, accountID); err != nil {
+			notice = "❌ 清除限速失败: " + telegram.EscapeHTML(err.Error())
+		} else {
+			notice = "✅ 已清除限速"
+		}
+	case "recover":
+		if _, err := cli.RecoverAccountState(ctx, accountID); err != nil {
+			notice = "❌ 恢复状态失败: " + telegram.EscapeHTML(err.Error())
+		} else {
+			notice = "✅ 已请求恢复状态"
+		}
+	default:
+		notice = "未知操作"
+	}
+	return b.showAccountLiveWithNotice(ctx, chatID, msgID, userID, accountID, notice)
+}
+
 func (b *Bot) showAccountLive(ctx context.Context, chatID, msgID, userID, accountID int64) error {
+	return b.showAccountLiveWithNotice(ctx, chatID, msgID, userID, accountID, "")
+}
+
+func (b *Bot) showAccountLiveWithNotice(ctx context.Context, chatID, msgID, userID, accountID int64, notice string) error {
 	cli, p, err := b.userClient(userID, 20*time.Second)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
 	}
 	var bld strings.Builder
+	if notice != "" {
+		bld.WriteString(notice + "\n\n")
+	}
 	bld.WriteString(telegram.Bold(fmt.Sprintf("账号 #%d 实时", accountID)) + "\n\n")
 
-	name := ""
 	if acc, err := cli.GetAccount(ctx, accountID); err == nil && acc != nil {
-		name = acc.Name
 		fmt.Fprintf(&bld, "名称: %s\n", telegram.Code(acc.Name))
 		fmt.Fprintf(&bld, "平台/类型: %s / %s\n", telegram.Code(acc.Platform), telegram.Code(acc.Type))
 		fmt.Fprintf(&bld, "状态: %s · 可调度: %s\n",
@@ -778,7 +929,6 @@ func (b *Bot) showAccountLive(ctx context.Context, chatID, msgID, userID, accoun
 		)
 	}
 
-	// availability map lookup
 	if av, err := cli.GetAccountAvailability(ctx); err == nil && av != nil {
 		if st, ok := av.Account[strconv.FormatInt(accountID, 10)]; ok {
 			fmt.Fprintf(&bld, "\n运行态: available=%v error=%v rl=%v ol=%v\n",
@@ -786,12 +936,29 @@ func (b *Bot) showAccountLive(ctx context.Context, chatID, msgID, userID, accoun
 		}
 	}
 
-	_ = name
-	kb := &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn("🔄 刷新", fmt.Sprintf("acc_live:%d", accountID)), telegram.Btn("🧰 管理", fmt.Sprintf("mgr_acc:%d", accountID))},
-			{telegram.Btn("« 账号详情", fmt.Sprintf("acc:%d", accountID)), telegram.Btn("« 列表", "cfg_acc")},
-		},
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("🔄 刷新", fmt.Sprintf("acc_live:%d", accountID))},
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)
+	if b.isAdmin(userID) {
+		rows = append(rows,
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("🛠 一键修复", fmt.Sprintf("live_act:heal:%d", accountID)),
+				telegram.Btn("🧹 清错误", fmt.Sprintf("live_act:clear_err:%d", accountID)),
+			},
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("⏱ 清限速", fmt.Sprintf("live_act:clear_rl:%d", accountID)),
+				telegram.Btn("♻️ 恢复", fmt.Sprintf("live_act:recover:%d", accountID)),
+			},
+			[]telegram.InlineKeyboardButton{
+				telegram.Btn("🧰 完整管理", fmt.Sprintf("mgr_acc:%d", accountID)),
+			},
+		)
+	}
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("« 账号详情", fmt.Sprintf("acc:%d", accountID)),
+			telegram.Btn("« 列表", "cfg_acc"),
+		},
+	)
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
 }

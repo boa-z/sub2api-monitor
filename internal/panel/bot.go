@@ -291,11 +291,22 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return nil
 		}
 		return b.showAlerts(ctx, chatID, msgID, cq.From.ID)
-	case data == "ops_errors":
+	case data == "ops_errors" || strings.HasPrefix(data, "ops_errors:"):
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
 		}
-		return b.showErrors(ctx, chatID, msgID, cq.From.ID)
+		kind, page := "all", 0
+		if strings.HasPrefix(data, "ops_errors:") {
+			rest := strings.TrimPrefix(data, "ops_errors:")
+			parts := strings.Split(rest, ":")
+			if len(parts) >= 1 && parts[0] != "" {
+				kind = parts[0]
+			}
+			if len(parts) >= 2 {
+				page, _ = strconv.Atoi(parts[1])
+			}
+		}
+		return b.showErrorsView(ctx, chatID, msgID, cq.From.ID, kind, page, "")
 	case data == "ops_conc":
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
@@ -459,6 +470,33 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_groups:"))
 		}
 		return b.showGroups(ctx, chatID, msgID, cq.From.ID, page)
+	case data == "pnl_users" || strings.HasPrefix(data, "pnl_users:"):
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		page := 0
+		if strings.HasPrefix(data, "pnl_users:") {
+			page, _ = strconv.Atoi(strings.TrimPrefix(data, "pnl_users:"))
+		}
+		return b.showPanelUsers(ctx, chatID, msgID, cq.From.ID, page, "")
+	case strings.HasPrefix(data, "pnl_user:"):
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "pnl_user:"), 10, 64)
+		return b.showPanelUserDetail(ctx, chatID, msgID, cq.From.ID, id, "")
+	case strings.HasPrefix(data, "pnl_role:"):
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		// pnl_role:<admin|user|clear>:<targetUserID>
+		rest := strings.TrimPrefix(data, "pnl_role:")
+		role, idStr, ok := strings.Cut(rest, ":")
+		if !ok {
+			return b.showPanelUsers(ctx, chatID, msgID, cq.From.ID, 0, "")
+		}
+		tid, _ := strconv.ParseInt(idStr, 10, 64)
+		return b.setPanelUserRole(ctx, chatID, msgID, cq.From.ID, tid, role)
 	case data == "set_base":
 		b.setAwait(cq.From.ID, awaitBaseURL, 0, "")
 		return b.editOrSend(ctx, chatID, msgID, "请发送 Base URL（如 <code>http://host:8080</code>）\n/cancel 取消", cancelKeyboard())
@@ -532,6 +570,18 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		idStr := strings.TrimPrefix(data, "acc:")
 		id, _ := strconv.ParseInt(idStr, 10, 64)
 		return b.editOrSend(ctx, chatID, msgID, b.accountDetailText(cq.From.ID, id), b.accountDetailKeyboard(cq.From.ID, id))
+	case strings.HasPrefix(data, "live_act:"):
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		// live_act:<action>:<accountID> — admin quick ops, stay on live view
+		rest := strings.TrimPrefix(data, "live_act:")
+		action, idStr, ok := strings.Cut(rest, ":")
+		if !ok {
+			return b.sendHome(ctx, chatID, cq.From.ID)
+		}
+		id, _ := strconv.ParseInt(idStr, 10, 64)
+		return b.handleLiveAction(ctx, chatID, msgID, cq.From.ID, action, id)
 	case strings.HasPrefix(data, "acc_live:"):
 		idStr := strings.TrimPrefix(data, "acc_live:")
 		id, _ := strconv.ParseInt(idStr, 10, 64)
@@ -1464,7 +1514,7 @@ func helpText() string {
 ` + telegram.Bold("说明") + `
 • 每位用户独立保存 base_url / key / 账号 / 阈值
 • <b>普通用户</b>：自助连接 / 监控账号 / 阈值 / 立即检查
-• <b>管理员</b>：运维视图 + 账号管理（调度/启停/清错/一键修复/临时停调度/重置额度/批量/搜索/错误解决）
+• <b>管理员</b>：运维视图 + 账号管理（调度/启停/清错/一键修复/临时停调度/重置额度/批量/搜索/错误分页解决/面板用户角色）
 • 管理员入口由 admin_user_ids 或 profile.role=admin 控制；菜单对普通用户隐藏
 • 用量达到阈值时 Bot 会私聊提醒你（Telegram / Discord 按平台投递）
 • 支持 passive（轻量缓存）与 active（刷新上游）数据源

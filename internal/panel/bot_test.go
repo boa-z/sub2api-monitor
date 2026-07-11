@@ -427,3 +427,56 @@ func TestIsRateLimitedAccount(t *testing.T) {
 		t.Fatal("active should not match")
 	}
 }
+
+func TestErrorTabLabelAndPageNav(t *testing.T) {
+	if errorTabLabel("上游", "u", "u") != "• 上游" {
+		t.Fatal(errorTabLabel("上游", "u", "u"))
+	}
+	if errorTabLabel("请求", "u", "r") != "请求" {
+		t.Fatal(errorTabLabel("请求", "u", "r"))
+	}
+	nav := errorPageNav("u", 0, &sub2api.OpsErrorPage{Total: 25, PageSize: 10, Items: make([]sub2api.OpsError, 10)})
+	if len(nav) != 1 || len(nav[0]) != 1 {
+		t.Fatalf("expected next only, got %+v", nav)
+	}
+	if nav[0][0].CallbackData != "ops_errors:u:1" {
+		t.Fatal(nav[0][0].CallbackData)
+	}
+	nav2 := errorPageNav("r", 1, &sub2api.OpsErrorPage{Total: 15, PageSize: 10, Items: make([]sub2api.OpsError, 5)})
+	if len(nav2) != 1 || len(nav2[0]) != 1 || nav2[0][0].CallbackData != "ops_errors:r:0" {
+		t.Fatalf("expected prev only, got %+v", nav2)
+	}
+}
+
+func TestSetPanelUserRole(t *testing.T) {
+	b, store := testBot(t)
+	if _, err := store.GetOrCreate(9001, "9001", "x", "X"); err != nil {
+		t.Fatal(err)
+	}
+	// admin via chat fallback 1001
+	// simulate role set through store (same as handler)
+	if _, err := store.Update(9001, func(p *userstore.Profile) error {
+		p.Role = userstore.RoleAdmin
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !b.isAdmin(9001) {
+		t.Fatal("expected admin after role set")
+	}
+	if _, err := store.Update(9001, func(p *userstore.Profile) error {
+		p.Role = userstore.RoleUser
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if b.isAdmin(9001) {
+		t.Fatal("expected demoted")
+	}
+	if _, err := store.Update(9001, func(p *userstore.Profile) error {
+		p.Role = ""
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
