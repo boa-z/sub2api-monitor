@@ -291,12 +291,39 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, b.showErrors(ctx, uid), opsComponents())
+		text, comps := b.showErrors(ctx, uid)
+		return b.update(ctx, it, text, comps)
 	case data == "ops_badacc":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, b.showBadAccounts(ctx, uid), opsComponents())
+		text, comps := b.showBadAccounts(ctx, uid)
+		return b.update(ctx, it, text, comps)
+	case data == "oe:resolve_all:u":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		text, comps := b.resolveAllOpsErrors(ctx, uid, "upstream", "上游")
+		return b.update(ctx, it, text, comps)
+	case data == "oe:resolve_all:r":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		text, comps := b.resolveAllOpsErrors(ctx, uid, "request", "请求")
+		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "oe:r:"):
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		rest := strings.TrimPrefix(data, "oe:r:")
+		kind, idStr, ok := strings.Cut(rest, ":")
+		if !ok {
+			text, comps := b.showErrors(ctx, uid)
+			return b.update(ctx, it, text, comps)
+		}
+		eid, _ := strconv.ParseInt(idStr, 10, 64)
+		text, comps := b.resolveOpsError(ctx, uid, kind, eid)
+		return b.update(ctx, it, text, comps)
 	case data == "mgr_menu":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -347,7 +374,38 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, b.bulkClearErrors(ctx, uid), manageComponents())
+		text, comps := b.bulkActionPrompt(ctx, uid, "clear_err", "批量清错", "mgr_bulk_clear_go")
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_bulk_clear_go":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		text, comps := b.bulkAccountActionExecute(ctx, uid, "clear_err")
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_bulk_recover":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		text, comps := b.bulkActionPrompt(ctx, uid, "recover", "批量恢复", "mgr_bulk_recover_go")
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_bulk_recover_go":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		text, comps := b.bulkAccountActionExecute(ctx, uid, "recover")
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_bulk_sched_on":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		text, comps := b.bulkActionPrompt(ctx, uid, "sched_on", "批量开调度", "mgr_bulk_sched_on_go")
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_bulk_sched_on_go":
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		text, comps := b.bulkAccountActionExecute(ctx, uid, "sched_on")
+		return b.update(ctx, it, text, comps)
 	case data == "thr_add":
 		return b.update(ctx, it, "选择窗口后使用固定阈值，或之后可在配置中细化：", thrWindowComponents())
 	case strings.HasPrefix(data, "thr_set:"):

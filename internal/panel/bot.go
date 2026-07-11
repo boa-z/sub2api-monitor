@@ -362,6 +362,11 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return nil
 		}
 		return b.resolveAllUpstreamErrors(ctx, chatID, msgID, cq.From.ID)
+	case data == "oe:resolve_all:r":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.resolveAllRequestErrors(ctx, chatID, msgID, cq.From.ID)
 	case strings.HasPrefix(data, "oe:r:"):
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
@@ -506,7 +511,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		// account detail
 		idStr := strings.TrimPrefix(data, "acc:")
 		id, _ := strconv.ParseInt(idStr, 10, 64)
-		return b.editOrSend(ctx, chatID, msgID, b.accountDetailText(cq.From.ID, id), accountDetailKeyboard(id))
+		return b.editOrSend(ctx, chatID, msgID, b.accountDetailText(cq.From.ID, id), b.accountDetailKeyboard(cq.From.ID, id))
 	case strings.HasPrefix(data, "acc_live:"):
 		idStr := strings.TrimPrefix(data, "acc_live:")
 		id, _ := strconv.ParseInt(idStr, 10, 64)
@@ -661,7 +666,7 @@ func (b *Bot) handleAwait(ctx context.Context, m *telegram.InMessage, s *session
 		if err != nil {
 			return b.tg.SendChat(ctx, m.Chat.ID, "重命名失败: "+telegram.EscapeHTML(err.Error()), nil)
 		}
-		return b.tg.SendChat(ctx, m.Chat.ID, "✅ 已更新名称\n\n"+b.accountDetailText(m.From.ID, id), accountDetailKeyboard(id))
+		return b.tg.SendChat(ctx, m.Chat.ID, "✅ 已更新名称\n\n"+b.accountDetailText(m.From.ID, id), b.accountDetailKeyboard(m.From.ID, id))
 	default:
 		b.clearSession(m.From.ID)
 		return b.sendHome(ctx, m.Chat.ID, m.From.ID)
@@ -1322,18 +1327,23 @@ func (b *Bot) accountsKeyboard(userID int64) *telegram.InlineKeyboardMarkup {
 	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
-func accountDetailKeyboard(id int64) *telegram.InlineKeyboardMarkup {
-	return &telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{telegram.Btn("📡 实时状态/用量", fmt.Sprintf("acc_live:%d", id))},
-			{telegram.Btn("🧰 管理操作", fmt.Sprintf("mgr_acc:%d", id))},
-			{
-				telegram.Btn("✏️ 重命名", fmt.Sprintf("rename:%d", id)),
-				telegram.Btn("🗑 删除", fmt.Sprintf("del_acc:%d", id)),
-			},
-			{telegram.Btn("« 返回账号列表", "cfg_acc")},
-		},
+func (b *Bot) accountDetailKeyboard(userID, id int64) *telegram.InlineKeyboardMarkup {
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("📡 实时状态/用量", fmt.Sprintf("acc_live:%d", id))},
 	}
+	if b.isAdmin(userID) {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("🧰 管理操作", fmt.Sprintf("mgr_acc:%d", id)),
+		})
+	}
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("✏️ 重命名", fmt.Sprintf("rename:%d", id)),
+			telegram.Btn("🗑 删除", fmt.Sprintf("del_acc:%d", id)),
+		},
+		[]telegram.InlineKeyboardButton{telegram.Btn("« 返回账号列表", "cfg_acc")},
+	)
+	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func thresholdsKeyboard(userID int64, b *Bot) *telegram.InlineKeyboardMarkup {
@@ -1434,10 +1444,11 @@ func helpText() string {
 ` + telegram.Bold("说明") + `
 • 每位用户独立保存 base_url / key / 账号 / 阈值
 • <b>普通用户</b>：自助连接 / 监控账号 / 阈值 / 立即检查
-• <b>管理员</b>：运维视图 + 账号管理（调度/启停/清错/临时停调度/重置额度/批量/搜索）
-• 用量达到阈值时 Bot 会私聊提醒你
+• <b>管理员</b>：运维视图 + 账号管理（调度/启停/清错/临时停调度/重置额度/批量/搜索/错误解决）
+• 管理员入口由 admin_user_ids 或 profile.role=admin 控制；菜单对普通用户隐藏
+• 用量达到阈值时 Bot 会私聊提醒你（Telegram / Discord 按平台投递）
 • 支持 passive（轻量缓存）与 active（刷新上游）数据源
-• 配置按 Telegram 用户隔离，存于 data/users.json
+• 配置按用户隔离，存于 data/users.json（跨平台共享）
 • 发送 /cancel 取消当前输入
 `
 }

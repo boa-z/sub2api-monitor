@@ -297,3 +297,80 @@ func TestEditTextClampHelpers(t *testing.T) {
 		t.Fatalf("%s %d", st, page)
 	}
 }
+
+func TestIsAdminRoleOverrideAndFallback(t *testing.T) {
+	b, store := testBot(t)
+	// empty admin list + chat_id owner fallback
+	if !b.isAdmin(1001) {
+		t.Fatal("chat_id owner should be admin when admin_user_ids empty")
+	}
+	if b.isAdmin(2002) {
+		t.Fatal("other user should not be admin")
+	}
+	b.cfg.Telegram.Panel.AdminUserIDs = []int64{3003}
+	if !b.isAdmin(3003) {
+		t.Fatal("admin_user_ids should grant admin")
+	}
+	if b.isAdmin(1001) {
+		t.Fatal("chat_id fallback disabled when admin list non-empty")
+	}
+	if _, err := store.GetOrCreate(4004, "4004", "u", "U"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(4004, func(p *userstore.Profile) error {
+		p.Role = userstore.RoleAdmin
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !b.isAdmin(4004) {
+		t.Fatal("profile.role=admin should override")
+	}
+	// create profile 3003 with user role to demote config-level admin
+	if _, err := store.GetOrCreate(3003, "3003", "a", "A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(3003, func(p *userstore.Profile) error {
+		p.Role = userstore.RoleUser
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if b.isAdmin(3003) {
+		t.Fatal("profile.role=user should demote even if in admin_user_ids")
+	}
+}
+
+func TestAccountDetailKeyboardHidesManageForUser(t *testing.T) {
+	b, store := testBot(t)
+	if _, err := store.GetOrCreate(55, "55", "u", "U"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(55, func(p *userstore.Profile) error {
+		p.Role = userstore.RoleUser
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	kb := b.accountDetailKeyboard(55, 9)
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			if strings.HasPrefix(btn.CallbackData, "mgr_acc:") {
+				t.Fatal("non-admin should not see manage button")
+			}
+		}
+	}
+	// admin via chat_id fallback
+	kb2 := b.accountDetailKeyboard(1001, 9)
+	found := false
+	for _, row := range kb2.InlineKeyboard {
+		for _, btn := range row {
+			if strings.HasPrefix(btn.CallbackData, "mgr_acc:") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("admin should see manage button")
+	}
+}

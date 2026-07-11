@@ -17,8 +17,9 @@ func helpText() string {
 	return `**Sub2API Discord 面板**
 
 • **普通用户**：连接 / 监控账号 / 阈值 / 立即检查
-• **管理员**：运维视图 + 账号管理（调度/清错/批量）
-• 配置按用户隔离，存于 users.json
+• **管理员**：运维视图 + 账号管理（调度/清错/恢复/批量/错误解决）
+• 管理员由 admin_user_ids 或 profile.role=admin 控制
+• 配置按用户隔离，存于 users.json（可与 Telegram 共享）
 • 斜杠命令：` + "`/panel` `/status` `/check` `/setbase` `/setkey` `/addaccount` `/ops` `/manage`"
 }
 
@@ -225,7 +226,7 @@ func thrWindowComponents() []discord.Component {
 }
 
 func opsMenuText() string {
-	return "**运维视图**\n\n只读查询你连接的 Sub2API 实例状态。"
+	return "**运维视图**\n\n基于当前连接的 Admin API：\n• 看板 / 可用性 / 告警\n• 错误（可标记已解决）\n• 异常账号（跳转管理 / 批量处理）"
 }
 
 func opsComponents() []discord.Component {
@@ -238,13 +239,14 @@ func opsComponents() []discord.Component {
 		discord.ActionRow(
 			discord.Button("错误", "ops_errors", 2),
 			discord.Button("异常账号", "ops_badacc", 2),
+			discord.Button("账号管理", "mgr_menu", 2),
 		),
 		discord.ActionRow(discord.Button("« 主面板", "home", 2)),
 	}
 }
 
 func manageMenuText() string {
-	return "**账号管理**\n\n浏览账号、切换调度、清错、批量处理（Admin API）。"
+	return "**账号管理**\n\n浏览账号、切换调度、清错/恢复、批量处理（Admin API，需确认）。"
 }
 
 func manageComponents() []discord.Component {
@@ -256,8 +258,13 @@ func manageComponents() []discord.Component {
 		),
 		discord.ActionRow(
 			discord.DangerButton("批量清错", "mgr_bulk_clear"),
+			discord.Button("批量恢复", "mgr_bulk_recover", 2),
+			discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
 		),
-		discord.ActionRow(discord.Button("« 主面板", "home", 2)),
+		discord.ActionRow(
+			discord.Button("异常账号", "ops_badacc", 2),
+			discord.Button("« 主面板", "home", 2),
+		),
 	}
 }
 
@@ -510,9 +517,22 @@ func (b *Bot) showDashboard(ctx context.Context, userID int64) string {
 		return "看板失败: " + err.Error()
 	}
 	var bld strings.Builder
-	bld.WriteString("**Dashboard**\n\n")
-	// best-effort fields via fmt
-	fmt.Fprintf(&bld, "```\n%v\n```\n", truncate(fmt.Sprintf("%+v", st), 900))
+	bld.WriteString("**实例看板**\n\n")
+	fmt.Fprintf(&bld, "账号: 总 `%v` · 正常 `%v` · 异常 `%v` · 限速 `%v` · 过载 `%v`\n",
+		st.TotalAccounts, st.NormalAccounts, st.ErrorAccounts, st.RatelimitAccounts, st.OverloadAccounts)
+	fmt.Fprintf(&bld, "用户: 总 `%v` · 活跃 `%v` · 今日新增 `%v`\n",
+		st.TotalUsers, st.ActiveUsers, st.TodayNewUsers)
+	fmt.Fprintf(&bld, "今日: 请求 `%v` · Token `%v` · 费用 `%.2f`\n",
+		st.TodayRequests, st.TodayTokens, st.TodayCost)
+	fmt.Fprintf(&bld, "累计: 请求 `%v` · Token `%v` · 费用 `%.2f`\n",
+		st.TotalRequests, st.TotalTokens, st.TotalCost)
+	if st.RPM > 0 || st.TPM > 0 {
+		fmt.Fprintf(&bld, "RPM/TPM: `%.2f` / `%.0f`\n", st.RPM, st.TPM)
+	}
+	if rt, err := cli.GetRealtimeDashboard(ctx); err == nil && rt != nil {
+		fmt.Fprintf(&bld, "实时: 活跃 `%v` · RPM `%.2f` · 错误率 `%.2f%%`\n",
+			rt.ActiveRequests, rt.RequestsPerMinute, rt.ErrorRate)
+	}
 	return bld.String()
 }
 
@@ -525,7 +545,51 @@ func (b *Bot) showAvailability(ctx context.Context, userID int64) string {
 	if err != nil {
 		return "可用性失败: " + err.Error()
 	}
-	return "**可用性**\n```\n" + truncate(fmt.Sprintf("%+v", av), 900) + "\n```"
+	var bld strings.Builder
+	bld.WriteString("**账号可用性**\n\n")
+	if av == nil {
+		return bld.String() + "无数据。"
+	}
+	// Platform map
+	type kv struct {
+		k string
+		v sub2api.AvailabilityBucket
+	}
+	var plats []kv
+	for k, v := range av.Platform {
+		plats = append(plats, kv{k, v})
+	}
+	if len(plats) == 0 && len(av.Group) > 0 {
+		for k, v := range av.Group {
+			plats = append(plats, kv{"g:" + k, v})
+		}
+	}
+	if len(plats) == 0 {
+		// fallback dump
+		return "**可用性**\n```\n" + truncate(fmt.Sprintf("%+v", av), 900) + "\n```"
+	}
+	// simple sort by key
+	for i := 0; i < len(plats); i++ {
+		for j := i + 1; j < len(plats); j++ {
+			if plats[j].k < plats[i].k {
+				plats[i], plats[j] = plats[j], plats[i]
+			}
+		}
+	}
+	for i, p := range plats {
+		if i >= 12 {
+			break
+		}
+		tot := p.v.TotalNum()
+		avn := p.v.AvailableNum()
+		rate := 0.0
+		if tot > 0 {
+			rate = float64(avn) / float64(tot) * 100
+		}
+		fmt.Fprintf(&bld, "• `%s` 可用 %d/%d (%.0f%%) · err %d · rl %d\n",
+			p.k, avn, tot, rate, p.v.ErrorNum(), p.v.RateLimitNum())
+	}
+	return bld.String()
 }
 
 func (b *Bot) showAlerts(ctx context.Context, userID int64) string {
@@ -547,40 +611,175 @@ func (b *Bot) showAlerts(ctx context.Context, userID int64) string {
 		if i >= 10 {
 			break
 		}
-		fmt.Fprintf(&bld, "• %s\n", truncate(fmt.Sprintf("%+v", e), 120))
+		title := e.DisplayTitle()
+		if title == "" {
+			title = e.Status
+		}
+		fmt.Fprintf(&bld, "• [%s] %s — %s\n", strings.ToUpper(e.Severity), truncate(title, 40), e.Status)
+		if msg := e.DisplayMessage(); msg != "" {
+			fmt.Fprintf(&bld, "  %s\n", truncate(msg, 80))
+		}
 	}
 	return bld.String()
 }
 
-func (b *Bot) showErrors(ctx context.Context, userID int64) string {
+func (b *Bot) showErrors(ctx context.Context, userID int64) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
-		return "❌ " + err.Error()
+		return "❌ " + err.Error(), opsComponents()
 	}
-	reqPage, _ := cli.ListRequestErrors(ctx, 1, 10)
-	upPage, _ := cli.ListUpstreamErrors(ctx, 1, 10)
-	reqN, upN := 0, 0
-	if reqPage != nil {
-		reqN = len(reqPage.Items)
-	}
-	if upPage != nil {
-		upN = len(upPage.Items)
-	}
+	upPage, err1 := cli.ListUpstreamErrors(ctx, 1, 12)
+	reqPage, err2 := cli.ListRequestErrors(ctx, 1, 8)
 	var bld strings.Builder
-	bld.WriteString("**错误**\n\n")
-	fmt.Fprintf(&bld, "request: %d 条样例\n", reqN)
-	fmt.Fprintf(&bld, "upstream: %d 条样例\n", upN)
-	return bld.String()
+	bld.WriteString("**近期错误**（优先未解决）\n\n")
+	if err1 != nil && err2 != nil {
+		return "错误列表失败: " + err1.Error(), opsComponents()
+	}
+	comps := []discord.Component{}
+	var resolveIDs []struct {
+		kind string
+		id   int64
+	}
+
+	writeKind := func(title, kind string, page *sub2api.OpsErrorPage, pullErr error, maxShow int) {
+		bld.WriteString("**" + title + "**\n")
+		if pullErr != nil {
+			fmt.Fprintf(&bld, "拉取失败: %s\n", pullErr.Error())
+			return
+		}
+		if page == nil || len(page.Items) == 0 {
+			bld.WriteString("无\n")
+			return
+		}
+		shown := 0
+		for _, e := range page.Items {
+			if e.Resolved {
+				continue
+			}
+			if shown >= maxShow {
+				break
+			}
+			name := e.AccountName
+			if name == "" && e.AccountID > 0 {
+				name = fmt.Sprintf("#%d", e.AccountID)
+			}
+			if name == "" {
+				name = "(无账号)"
+			}
+			fmt.Fprintf(&bld, "• #%d [%s] %d %s\n  %s\n",
+				e.ID, e.Severity, e.StatusCode, truncate(name, 14),
+				truncate(e.Message, 70))
+			resolveIDs = append(resolveIDs, struct {
+				kind string
+				id   int64
+			}{kind, e.ID})
+			shown++
+		}
+		if shown == 0 {
+			bld.WriteString("无未解决项。\n")
+		}
+		if page.Total > 0 {
+			fmt.Fprintf(&bld, "列表共约 %d 条\n", page.Total)
+		}
+	}
+	writeKind("上游错误", "u", upPage, err1, 4)
+	bld.WriteString("\n")
+	writeKind("请求错误", "r", reqPage, err2, 3)
+
+	// Resolve buttons: up to 4 single + batch
+	var row []discord.Component
+	for i, r := range resolveIDs {
+		if i >= 4 {
+			break
+		}
+		row = append(row, discord.Button(fmt.Sprintf("解决 #%d", r.id), fmt.Sprintf("oe:r:%s:%d", r.kind, r.id), 3))
+		if len(row) == 2 {
+			comps = append(comps, discord.ActionRow(row...))
+			row = nil
+		}
+	}
+	if len(row) > 0 {
+		comps = append(comps, discord.ActionRow(row...))
+	}
+	comps = append(comps,
+		discord.ActionRow(
+			discord.SuccessButton("全部解决上游", "oe:resolve_all:u"),
+			discord.SuccessButton("全部解决请求", "oe:resolve_all:r"),
+			discord.Button("刷新", "ops_errors", 2),
+		),
+		discord.ActionRow(
+			discord.Button("« 运维", "ops_menu", 2),
+			discord.Button("« 主面板", "home", 2),
+		),
+	)
+	return bld.String(), comps
 }
 
-func (b *Bot) showBadAccounts(ctx context.Context, userID int64) string {
+func (b *Bot) resolveOpsError(ctx context.Context, userID int64, kind string, errorID int64) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 15*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), opsComponents()
+	}
+	apiKind := "upstream"
+	if kind == "r" {
+		apiKind = "request"
+	}
+	if err := cli.ResolveOpsError(ctx, apiKind, errorID); err != nil {
+		text, comps := b.showErrors(ctx, userID)
+		return "❌ 标记失败: " + err.Error() + "\n\n" + text, comps
+	}
+	text, comps := b.showErrors(ctx, userID)
+	return fmt.Sprintf("✅ 已标记错误 #%d 为已解决\n\n", errorID) + text, comps
+}
+
+func (b *Bot) resolveAllOpsErrors(ctx context.Context, userID int64, apiKind, label string) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 30*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), opsComponents()
+	}
+	var page *sub2api.OpsErrorPage
+	switch apiKind {
+	case "request":
+		page, err = cli.ListRequestErrors(ctx, 1, 20)
+	default:
+		page, err = cli.ListUpstreamErrors(ctx, 1, 20)
+		apiKind = "upstream"
+	}
+	if err != nil {
+		text, comps := b.showErrors(ctx, userID)
+		return "❌ 拉取失败: " + err.Error() + "\n\n" + text, comps
+	}
+	okN, failN, n := 0, 0, 0
+	const maxOps = 15
+	for _, e := range page.Items {
+		if e.Resolved {
+			continue
+		}
+		if n >= maxOps {
+			break
+		}
+		n++
+		if err := cli.ResolveOpsError(ctx, apiKind, e.ID); err != nil {
+			failN++
+		} else {
+			okN++
+		}
+	}
+	text, comps := b.showErrors(ctx, userID)
+	if n == 0 {
+		return "✅ 没有未解决的" + label + "错误。\n\n" + text, comps
+	}
+	return fmt.Sprintf("✅ 批量标记%s错误：成功 %d · 失败 %d\n\n", label, okN, failN) + text, comps
+}
+
+func (b *Bot) showBadAccounts(ctx context.Context, userID int64) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
-		return "❌ " + err.Error()
+		return "❌ " + err.Error(), opsComponents()
 	}
 	items, total, err := cli.ListAccountsEx(ctx, 1, 15, sub2api.AccountListFilter{Status: "error"})
 	if err != nil {
-		return "列表失败: " + err.Error()
+		return "列表失败: " + err.Error(), opsComponents()
 	}
 	var bld strings.Builder
 	fmt.Fprintf(&bld, "**异常账号** · 约 %d\n\n", total)
@@ -590,7 +789,34 @@ func (b *Bot) showBadAccounts(ctx context.Context, userID int64) string {
 	if len(items) == 0 {
 		bld.WriteString("无 error 账号。")
 	}
-	return bld.String()
+	comps := []discord.Component{}
+	var row []discord.Component
+	for i, a := range items {
+		if i >= 4 {
+			break
+		}
+		row = append(row, discord.Button(fmt.Sprintf("管理 #%d", a.ID), fmt.Sprintf("mgr_acc:%d", a.ID), 1))
+		if len(row) == 2 {
+			comps = append(comps, discord.ActionRow(row...))
+			row = nil
+		}
+	}
+	if len(row) > 0 {
+		comps = append(comps, discord.ActionRow(row...))
+	}
+	comps = append(comps,
+		discord.ActionRow(
+			discord.DangerButton("批量清错", "mgr_bulk_clear"),
+			discord.Button("批量恢复", "mgr_bulk_recover", 2),
+			discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+		),
+		discord.ActionRow(
+			discord.Button("« 运维", "ops_menu", 2),
+			discord.Button("« 管理", "mgr_menu", 2),
+			discord.Button("« 主面板", "home", 2),
+		),
+	)
+	return bld.String(), comps
 }
 
 func (b *Bot) accountBrowser(ctx context.Context, userID int64, status string, page int) (string, []discord.Component) {
@@ -762,25 +988,94 @@ func (b *Bot) doManageAction(ctx context.Context, userID int64, action string, a
 	}
 }
 
-func (b *Bot) bulkClearErrors(ctx context.Context, userID int64) string {
-	cli, _, err := b.userClient(userID, 30*time.Second)
+func (b *Bot) bulkActionPrompt(ctx context.Context, userID int64, action, title, confirmID string) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 15*time.Second)
 	if err != nil {
-		return "❌ " + err.Error()
+		return "❌ " + err.Error(), manageComponents()
 	}
-	items, total, err := cli.ListAccountsEx(ctx, 1, 20, sub2api.AccountListFilter{Status: "error"})
+	items, total, err := cli.ListAccountsEx(ctx, 1, 30, sub2api.AccountListFilter{Status: "error"})
 	if err != nil {
-		return "拉取失败: " + err.Error()
+		return "拉取 error 账号失败: " + err.Error(), manageComponents()
 	}
 	if len(items) == 0 {
-		return "✅ 当前无 error 账号"
+		return "✅ 当前没有 status=error 的账号。", manageComponents()
+	}
+	const maxOps = 20
+	n := len(items)
+	if n > maxOps {
+		n = maxOps
+	}
+	var bld strings.Builder
+	fmt.Fprintf(&bld, "**%s**\n\n将对约 %d 个 error 账号中的前 %d 个执行「%s」：\n", title, total, n, action)
+	for i := 0; i < n && i < 8; i++ {
+		a := items[i]
+		fmt.Fprintf(&bld, "• #%d %s\n", a.ID, truncate(a.Name, 16))
+	}
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.DangerButton(fmt.Sprintf("确认处理 %d 个", n), confirmID),
+			discord.Button("取消", "mgr_menu", 2),
+		),
+	}
+	return bld.String(), comps
+}
+
+func (b *Bot) bulkAccountActionExecute(ctx context.Context, userID int64, action string) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 45*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), manageComponents()
+	}
+	items, total, err := cli.ListAccountsEx(ctx, 1, 30, sub2api.AccountListFilter{Status: "error"})
+	if err != nil {
+		return "拉取失败: " + err.Error(), manageComponents()
+	}
+	if len(items) == 0 {
+		return "✅ 当前无 error 账号", manageComponents()
+	}
+	const maxOps = 20
+	n := len(items)
+	if n > maxOps {
+		n = maxOps
 	}
 	okN, failN := 0, 0
-	for _, a := range items {
-		if _, err := cli.ClearAccountError(ctx, a.ID); err != nil {
+	var fails []string
+	for i := 0; i < n; i++ {
+		a := items[i]
+		var opErr error
+		switch action {
+		case "clear_err":
+			_, opErr = cli.ClearAccountError(ctx, a.ID)
+		case "recover":
+			_, opErr = cli.RecoverAccountState(ctx, a.ID)
+		case "sched_on":
+			_, opErr = cli.SetSchedulable(ctx, a.ID, true)
+		default:
+			opErr = fmt.Errorf("unknown action %s", action)
+		}
+		if opErr != nil {
 			failN++
+			if len(fails) < 5 {
+				fails = append(fails, fmt.Sprintf("#%d %s", a.ID, truncate(opErr.Error(), 40)))
+			}
 		} else {
 			okN++
 		}
 	}
-	return fmt.Sprintf("**批量清错**\nerror 约 %d · 成功 %d · 失败 %d", total, okN, failN)
+	title := map[string]string{
+		"clear_err": "批量清错",
+		"recover":   "批量恢复",
+		"sched_on":  "批量开调度",
+	}[action]
+	if title == "" {
+		title = "批量操作"
+	}
+	var bld strings.Builder
+	fmt.Fprintf(&bld, "**%s**\n\nerror 账号约 %d 个（本次处理 %d）\n✅ 成功 %d · ❌ 失败 %d\n", title, total, n, okN, failN)
+	if len(fails) > 0 {
+		bld.WriteString("\n失败样例:\n")
+		for _, f := range fails {
+			bld.WriteString("• " + f + "\n")
+		}
+	}
+	return bld.String(), manageComponents()
 }

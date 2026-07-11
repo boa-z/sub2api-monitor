@@ -339,11 +339,14 @@ func (b *Bot) showErrorsNotice(ctx context.Context, chatID, msgID, userID int64,
 
 	rows = append(rows,
 		[]telegram.InlineKeyboardButton{
-			telegram.Btn("✅ 全部标已解决(上游)", "oe:resolve_all:u"),
-			telegram.Btn("🔄 刷新", "ops_errors"),
+			telegram.Btn("✅ 解决上游", "oe:resolve_all:u"),
+			telegram.Btn("✅ 解决请求", "oe:resolve_all:r"),
 		},
 		[]telegram.InlineKeyboardButton{
+			telegram.Btn("🔄 刷新", "ops_errors"),
 			telegram.Btn("« 运维菜单", "ops_menu"),
+		},
+		[]telegram.InlineKeyboardButton{
 			telegram.Btn("« 主面板", "home"),
 		},
 	)
@@ -427,11 +430,28 @@ func (b *Bot) resolveOpsError(ctx context.Context, chatID, msgID, userID int64, 
 
 // resolveAllUpstreamErrors resolves up to N unresolved upstream errors.
 func (b *Bot) resolveAllUpstreamErrors(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.resolveAllOpsErrors(ctx, chatID, msgID, userID, "upstream", "上游")
+}
+
+// resolveAllRequestErrors resolves up to N unresolved request errors.
+func (b *Bot) resolveAllRequestErrors(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.resolveAllOpsErrors(ctx, chatID, msgID, userID, "request", "请求")
+}
+
+// resolveAllOpsErrors marks unresolved ops errors of the given kind as resolved.
+func (b *Bot) resolveAllOpsErrors(ctx context.Context, chatID, msgID, userID int64, apiKind, label string) error {
 	cli, _, err := b.userClient(userID, 30*time.Second)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
 	}
-	page, err := cli.ListUpstreamErrors(ctx, 1, 20)
+	var page *sub2api.OpsErrorPage
+	switch apiKind {
+	case "request":
+		page, err = cli.ListRequestErrors(ctx, 1, 20)
+	default:
+		page, err = cli.ListUpstreamErrors(ctx, 1, 20)
+		apiKind = "upstream"
+	}
 	if err != nil {
 		return b.showErrorsNotice(ctx, chatID, msgID, userID, "❌ 拉取失败: "+telegram.EscapeHTML(err.Error()))
 	}
@@ -445,17 +465,17 @@ func (b *Bot) resolveAllUpstreamErrors(ctx context.Context, chatID, msgID, userI
 			break
 		}
 		n++
-		if err := cli.ResolveOpsError(ctx, "upstream", e.ID); err != nil {
+		if err := cli.ResolveOpsError(ctx, apiKind, e.ID); err != nil {
 			failN++
 		} else {
 			okN++
 		}
 	}
 	if n == 0 {
-		return b.showErrorsNotice(ctx, chatID, msgID, userID, "✅ 没有未解决的上游错误。")
+		return b.showErrorsNotice(ctx, chatID, msgID, userID, "✅ 没有未解决的"+label+"错误。")
 	}
 	return b.showErrorsNotice(ctx, chatID, msgID, userID,
-		fmt.Sprintf("✅ 批量标记上游错误：成功 %d · 失败 %d", okN, failN))
+		fmt.Sprintf("✅ 批量标记%s错误：成功 %d · 失败 %d", label, okN, failN))
 }
 
 func (b *Bot) showConcurrency(ctx context.Context, chatID, msgID, userID int64) error {
@@ -613,6 +633,10 @@ func (b *Bot) showBadAccounts(ctx context.Context, chatID, msgID, userID int64) 
 	rows = append(rows,
 		[]telegram.InlineKeyboardButton{
 			telegram.Btn("🧹 批量清错", "mgr_bulk_clear"),
+			telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+		},
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
 			telegram.Btn("➕ 一键监控", "ops_watch_errors"),
 		},
 		[]telegram.InlineKeyboardButton{
