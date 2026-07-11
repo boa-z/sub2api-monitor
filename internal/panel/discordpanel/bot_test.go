@@ -997,3 +997,20 @@ func TestCollectAlertAccountIDsDiscord(t *testing.T) {
 		t.Fatalf("%v", ids)
 	}
 }
+
+func TestHotConcurrencyHelpersDiscord(t *testing.T) {
+	snap := &sub2api.ConcurrencySnapshot{
+		Platform: map[string]sub2api.ConcurrencyBucket{"openai": {Platform: "openai", LoadPercentage: 91}},
+		Group:    map[string]sub2api.ConcurrencyBucket{"1": {GroupID: 9, WaitingInQueue: 1}},
+		Account:  map[string]sub2api.ConcurrencyBucket{"a": {AccountID: 5, LoadPercentage: 85}},
+	}
+	if browse.HotConcurrencyPlatforms(snap, 1)[0] != "openai" {
+		t.Fatal("plat")
+	}
+	if browse.HotConcurrencyGroups(snap, 1)[0] != 9 {
+		t.Fatal("group")
+	}
+	if browse.HotConcurrencyAccounts(snap, 1)[0] != 5 {
+		t.Fatal("acc")
+	}
+}

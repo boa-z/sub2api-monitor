@@ -1468,3 +1468,24 @@ func TestCollectAlertAccountIDs(t *testing.T) {
 		t.Fatalf("fallback all: %v", ids2)
 	}
 }
+
+func TestHotConcurrencyHelpersWired(t *testing.T) {
+	// ensure browse helpers used by concurrency view stay available
+	if !browse.IsHotLoad(90, 0) {
+		t.Fatal("hot")
+	}
+	snap := &sub2api.ConcurrencySnapshot{
+		Account: map[string]sub2api.ConcurrencyBucket{
+			"1": {AccountID: 7, LoadPercentage: 95},
+		},
+		Platform: map[string]sub2api.ConcurrencyBucket{
+			"openai": {Platform: "openai", LoadPercentage: 88},
+		},
+	}
+	if ids := browse.HotConcurrencyAccounts(snap, 3); len(ids) != 1 || ids[0] != 7 {
+		t.Fatalf("%v", ids)
+	}
+	if plats := browse.HotConcurrencyPlatforms(snap, 2); len(plats) != 1 || plats[0] != "openai" {
+		t.Fatalf("%v", plats)
+	}
+}

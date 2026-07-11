@@ -1052,15 +1052,51 @@ func (b *Bot) showConcurrency(ctx context.Context, chatID, msgID, userID int64) 
 			r.b.LoadPercentage,
 		)
 	}
+	hotPlats := browse.HotConcurrencyPlatforms(snap, 3)
+	hotGroups := browse.HotConcurrencyGroups(snap, 2)
+	hotAccIDs := browse.HotConcurrencyAccounts(snap, 4)
+	// Fallback to top loaded accounts when nothing crosses hot threshold.
+	if len(hotAccIDs) == 0 {
+		for _, r := range accs {
+			if r.b.AccountID <= 0 {
+				continue
+			}
+			hotAccIDs = append(hotAccIDs, r.b.AccountID)
+			if len(hotAccIDs) >= 4 {
+				break
+			}
+		}
+	}
+	hotN := 0
+	for _, r := range plats {
+		if browse.IsHotLoad(r.b.LoadPercentage, r.b.WaitingInQueue) {
+			hotN++
+		}
+	}
+	for _, r := range groups {
+		if browse.IsHotLoad(r.b.LoadPercentage, r.b.WaitingInQueue) {
+			hotN++
+		}
+	}
+	for _, r := range accs {
+		if browse.IsHotLoad(r.b.LoadPercentage, r.b.WaitingInQueue) {
+			hotN++
+		}
+	}
+	if hotN > 0 {
+		fmt.Fprintf(&bld, "\n%s 高负载/排队项约 %s 个（阈值 ≥%.0f%% 或 wait>0）\n",
+			telegram.Bold("提示"), telegram.Code(strconv.Itoa(hotN)), browse.HotLoadThreshold)
+	}
+
 	rows := [][]telegram.InlineKeyboardButton{
 		{telegram.Btn("🔄 刷新", "ops_conc"), telegram.Btn("« 运维菜单", "ops_menu")},
 	}
 	var accRow []telegram.InlineKeyboardButton
-	for i, r := range accs {
-		if i >= 4 || r.b.AccountID <= 0 {
+	for i, id := range hotAccIDs {
+		if i >= 4 {
 			break
 		}
-		accRow = append(accRow, telegram.Btn(fmt.Sprintf("管理 #%d", r.b.AccountID), fmt.Sprintf("mgr_acc:%d", r.b.AccountID)))
+		accRow = append(accRow, telegram.Btn(fmt.Sprintf("管理 #%d", id), fmt.Sprintf("mgr_acc:%d", id)))
 		if len(accRow) == 2 {
 			rows = append(rows, accRow)
 			accRow = nil
@@ -1069,14 +1105,37 @@ func (b *Bot) showConcurrency(ctx context.Context, chatID, msgID, userID int64) 
 	if len(accRow) > 0 {
 		rows = append(rows, accRow)
 	}
+	var platRow []telegram.InlineKeyboardButton
+	for _, plat := range hotPlats {
+		platRow = append(platRow, telegram.Btn("🏷 "+truncateRunes(plat, 10), "mgr_browse:"+browse.Token("plat:"+plat)+":0"))
+	}
+	if len(platRow) > 0 {
+		rows = append(rows, platRow)
+	}
+	var grpRow []telegram.InlineKeyboardButton
+	for _, gid := range hotGroups {
+		grpRow = append(grpRow, telegram.Btn(fmt.Sprintf("分组 #%d", gid), fmt.Sprintf("mgr_group:%d", gid)))
+	}
+	if len(grpRow) > 0 {
+		// keep room for overload shortcut
+		if len(grpRow) > 2 {
+			grpRow = grpRow[:2]
+		}
+		grpRow = append(grpRow, telegram.Btn("过载账号", "ops_badacc:ol:0"))
+		rows = append(rows, grpRow)
+	} else {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("过载账号", "ops_badacc:ol:0"),
+			telegram.Btn("异常账号", "ops_badacc:error:0"),
+		})
+	}
 	b.setManageBack(userID, "ops_conc")
 	rows = append(rows,
 		[]telegram.InlineKeyboardButton{
-			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
 			telegram.Btn("📈 看板", "ops_dash"),
+			telegram.Btn("🏷 分组列表", "mgr_groups"),
 		},
 		[]telegram.InlineKeyboardButton{
-			telegram.Btn("🏷 分组列表", "mgr_groups"),
 			telegram.Btn("« 主面板", "home"),
 		},
 	)

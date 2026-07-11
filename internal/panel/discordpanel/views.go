@@ -2269,6 +2269,39 @@ func (b *Bot) showConcurrencyView(ctx context.Context, userID int64) (string, []
 		fmt.Fprintf(&bld, "• #%d %s: `%d/%d` (%.0f%%)\n",
 			r.b.AccountID, truncate(r.name, 14), r.b.CurrentInUse, r.b.MaxCapacity, r.b.LoadPercentage)
 	}
+	hotPlats := browse.HotConcurrencyPlatforms(snap, 3)
+	hotGroups := browse.HotConcurrencyGroups(snap, 2)
+	hotAccIDs := browse.HotConcurrencyAccounts(snap, 2)
+	if len(hotAccIDs) == 0 {
+		for _, r := range accs {
+			if r.b.AccountID <= 0 {
+				continue
+			}
+			hotAccIDs = append(hotAccIDs, r.b.AccountID)
+			if len(hotAccIDs) >= 2 {
+				break
+			}
+		}
+	}
+	hotN := 0
+	for _, r := range plats {
+		if browse.IsHotLoad(r.b.LoadPercentage, r.b.WaitingInQueue) {
+			hotN++
+		}
+	}
+	for _, r := range groups {
+		if browse.IsHotLoad(r.b.LoadPercentage, r.b.WaitingInQueue) {
+			hotN++
+		}
+	}
+	for _, r := range accs {
+		if browse.IsHotLoad(r.b.LoadPercentage, r.b.WaitingInQueue) {
+			hotN++
+		}
+	}
+	if hotN > 0 {
+		fmt.Fprintf(&bld, "\n提示: 高负载/排队项约 `%d` 个（≥%.0f%% 或 wait>0）\n", hotN, browse.HotLoadThreshold)
+	}
 	b.setManageBack(userID, "ops_conc")
 	comps := []discord.Component{
 		discord.ActionRow(
@@ -2277,25 +2310,38 @@ func (b *Bot) showConcurrencyView(ctx context.Context, userID int64) (string, []
 			discord.Button("« 主面板", "home", 2),
 		),
 	}
-	var row []discord.Component
-	for i, r := range accs {
-		if i >= 4 || r.b.AccountID <= 0 {
-			break
+	if len(hotAccIDs) > 0 {
+		row := []discord.Component{}
+		for _, id := range hotAccIDs {
+			row = append(row, discord.Button(fmt.Sprintf("管理 #%d", id), fmt.Sprintf("mgr_acc:%d", id), 1))
 		}
-		row = append(row, discord.Button(fmt.Sprintf("管理 #%d", r.b.AccountID), fmt.Sprintf("mgr_acc:%d", r.b.AccountID), 1))
-		if len(row) == 2 {
-			comps = append(comps, discord.ActionRow(row...))
-			row = nil
-		}
-	}
-	if len(row) > 0 {
 		comps = append(comps, discord.ActionRow(row...))
 	}
-	comps = append(comps, discord.ActionRow(
-		discord.Button("异常账号", "ops_badacc:error:0", 2),
+	if len(hotPlats) > 0 {
+		row := []discord.Component{}
+		for _, plat := range hotPlats {
+			row = append(row, discord.Button("🏷 "+truncate(plat, 10), "mgr_browse:"+browse.Token("plat:"+plat)+":0", 2))
+		}
+		comps = append(comps, discord.ActionRow(row...))
+	}
+	footer := []discord.Component{
+		discord.Button("过载账号", "ops_badacc:ol:0", 2),
 		discord.Button("看板", "ops_dash", 2),
-		discord.Button("分组列表", "mgr_groups", 2),
-	))
+	}
+	if len(hotGroups) > 0 {
+		footer = append([]discord.Component{
+			discord.Button(fmt.Sprintf("分组 #%d", hotGroups[0]), fmt.Sprintf("mgr_group:%d", hotGroups[0]), 2),
+		}, footer...)
+	} else {
+		footer = append(footer, discord.Button("分组列表", "mgr_groups", 2))
+	}
+	if len(footer) > 5 {
+		footer = footer[:5]
+	}
+	comps = append(comps, discord.ActionRow(footer...))
+	if len(comps) > 5 {
+		comps = comps[:5]
+	}
 	return bld.String(), comps
 }
 
