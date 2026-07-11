@@ -242,7 +242,7 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 		targets = append(targets, browse.WatchTarget{ID: a.ID, Name: name})
 		thByID[a.ID] = a.Thresholds
 	}
-	snaps := browse.FetchAccountSnaps(ctx, cli, targets, usageSrc, maxShow, 4)
+	snaps := browse.FetchAccountSnaps(ctx, cli, targets, browse.SnapOpts{Source: usageSrc, MaxShow: maxShow, Concurrency: 4})
 	for _, snap := range snaps {
 		name := snap.Name
 		if name == "" {
@@ -939,62 +939,75 @@ func (b *Bot) forceCheckView(ctx context.Context, userID int64) (string, []disco
 	fmt.Fprintf(&bld, "**立即检查** · `%s` · `%s`\n\n", src, forceLabel)
 	warnN := 0
 	var issueIDs []int64
+	var targets []browse.WatchTarget
+	thByID := map[int64][]config.UsageThreshold{}
 	for _, a := range p.Accounts {
 		if !a.IsEnabled() {
 			fmt.Fprintf(&bld, "• #%d 已暂停\n", a.ID)
 			continue
 		}
 		name := a.Name
-		accBad := false
-		if acc, err := cli.GetAccount(ctx, a.ID); err == nil && acc != nil {
-			if name == "" {
-				name = acc.Name
-			}
-			if strings.EqualFold(acc.Status, "error") || acc.ErrorMessage != "" || acc.RateLimitedAt != nil || !acc.Schedulable {
-				accBad = true
-			}
-		}
 		if name == "" {
 			name = fmt.Sprintf("#%d", a.ID)
 		}
-		usage, err := cli.GetAccountUsage(ctx, a.ID, src, force)
-		if err != nil {
-			fmt.Fprintf(&bld, "• #%d 失败: %s\n", a.ID, truncate(err.Error(), 60))
+		targets = append(targets, browse.WatchTarget{ID: a.ID, Name: name})
+		thByID[a.ID] = a.Thresholds
+	}
+	snaps := browse.FetchAccountSnaps(ctx, cli, targets, browse.SnapOpts{
+		Source: src, Force: force, WithToday: true, Concurrency: 4,
+	})
+	for _, snap := range snaps {
+		name := snap.Name
+		if name == "" {
+			name = fmt.Sprintf("#%d", snap.ID)
+		}
+		accBad := false
+		if acc := snap.Account; acc != nil {
+			if strings.EqualFold(acc.Status, "error") || acc.ErrorMessage != "" || acc.RateLimitedAt != nil || !acc.Schedulable {
+				accBad = true
+			}
+		} else if snap.AccountErr != nil {
+			accBad = true
+		}
+		if snap.UsageErr != nil {
+			fmt.Fprintf(&bld, "• #%d 失败: %s\n", snap.ID, truncate(snap.UsageErr.Error(), 60))
 			warnN++
 			if len(issueIDs) < 4 {
-				issueIDs = append(issueIDs, a.ID)
+				issueIDs = append(issueIDs, snap.ID)
 			}
 			continue
 		}
-		fmt.Fprintf(&bld, "**#%d %s**\n", a.ID, name)
+		fmt.Fprintf(&bld, "**#%d %s**\n", snap.ID, name)
 		hitThr := false
 		thMap := map[string]float64{}
-		ths := a.Thresholds
+		ths := thByID[snap.ID]
 		if len(ths) == 0 {
 			ths = thsDefault
 		}
 		for _, th := range ths {
 			thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
 		}
-		for _, w := range usage.Windows() {
-			mark := ""
-			if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
-				mark = " ⚠"
-				hitThr = true
+		if usage := snap.Usage; usage != nil {
+			for _, w := range usage.Windows() {
+				mark := ""
+				if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
+					mark = " ⚠"
+					hitThr = true
+				}
+				fmt.Fprintf(&bld, "  `%s` %.1f%%%s", w.Window, w.Utilization, mark)
+				if w.ResetsAt != nil {
+					fmt.Fprintf(&bld, " · 重置 %s", w.ResetsAt.Local().Format("01-02 15:04"))
+				}
+				bld.WriteString("\n")
 			}
-			fmt.Fprintf(&bld, "  `%s` %.1f%%%s", w.Window, w.Utilization, mark)
-			if w.ResetsAt != nil {
-				fmt.Fprintf(&bld, " · 重置 %s", w.ResetsAt.Local().Format("01-02 15:04"))
-			}
-			bld.WriteString("\n")
 		}
-		if today, err := cli.GetAccountTodayStats(ctx, a.ID); err == nil && today != nil {
+		if today := snap.Today; today != nil {
 			fmt.Fprintf(&bld, "  today: req=%d token=%d cost=%.2f\n", today.Requests, today.Tokens, today.Cost)
 		}
 		if hitThr || accBad {
 			warnN++
 			if len(issueIDs) < 4 {
-				issueIDs = append(issueIDs, a.ID)
+				issueIDs = append(issueIDs, snap.ID)
 			}
 		}
 	}
@@ -2088,10 +2101,30 @@ func (b *Bot) manageAccount(ctx context.Context, userID, accountID int64, notice
 	}
 	fmt.Fprintf(&bld, "面板监控: `%s`\n", map[bool]string{true: "已添加", false: "未添加"}[watched])
 
+	thMap := map[string]float64{}
+	if p, ok := b.users.Get(userID); ok {
+		ths := p.Thresholds
+		if len(ths) == 0 {
+			ths = b.defaults
+		}
+		for _, a := range p.Accounts {
+			if a.ID == accountID && len(a.Thresholds) > 0 {
+				ths = a.Thresholds
+				break
+			}
+		}
+		for _, th := range ths {
+			thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
+		}
+	}
 	if usage, err := cli.GetAccountUsage(ctx, accountID, "passive", false); err == nil && usage != nil {
 		bld.WriteString("\n**用量快照**\n")
 		for _, w := range usage.Windows() {
-			line := fmt.Sprintf("• `%s` `%.1f%%`", w.Window, w.Utilization)
+			mark := ""
+			if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
+				mark = " ⚠"
+			}
+			line := fmt.Sprintf("• `%s` `%.1f%%`%s", w.Window, w.Utilization, mark)
 			if w.ResetsAt != nil {
 				line += " · 重置 `" + w.ResetsAt.Local().Format("01-02 15:04") + "`"
 			}

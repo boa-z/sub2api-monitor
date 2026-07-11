@@ -99,10 +99,11 @@ func TestIsOverloaded(t *testing.T) {
 }
 
 func TestFetchAccountSnapsEmpty(t *testing.T) {
-	if got := FetchAccountSnaps(context.Background(), nil, nil, "passive", 8, 4); got != nil {
+	opts := SnapOpts{Source: "passive", MaxShow: 8, Concurrency: 4}
+	if got := FetchAccountSnaps(context.Background(), nil, nil, opts); got != nil {
 		t.Fatalf("nil client: %+v", got)
 	}
-	if got := FetchAccountSnaps(context.Background(), nil, []WatchTarget{{ID: 1}}, "passive", 8, 4); got != nil {
+	if got := FetchAccountSnaps(context.Background(), nil, []WatchTarget{{ID: 1}}, opts); got != nil {
 		t.Fatalf("nil client with targets: %+v", got)
 	}
 }

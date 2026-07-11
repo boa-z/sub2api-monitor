@@ -372,11 +372,31 @@ func (b *Bot) showManageAccount(ctx context.Context, chatID, msgID, userID, acco
 		statusData = fmt.Sprintf("mgr_act:enable:%d", accountID)
 	}
 
-	// enrich with quick usage snapshot (passive)
+	// enrich with quick usage snapshot (passive) + threshold marks
+	thMap := map[string]float64{}
+	if p, ok := b.users.Get(userID); ok {
+		ths := p.Thresholds
+		if len(ths) == 0 {
+			ths = b.defaults
+		}
+		for _, a := range p.Accounts {
+			if a.ID == accountID && len(a.Thresholds) > 0 {
+				ths = a.Thresholds
+				break
+			}
+		}
+		for _, th := range ths {
+			thMap[sub2api.NormalizeWindow(th.Window)] = th.UtilizationGTE
+		}
+	}
 	if usage, err := cli.GetAccountUsage(ctx, accountID, "passive", false); err == nil && usage != nil {
 		bld.WriteString("\n" + telegram.Bold("用量快照") + "\n")
 		for _, w := range usage.Windows() {
-			line := fmt.Sprintf("• %s %s%%", telegram.Code(w.Window), telegram.Code(fmt.Sprintf("%.1f", w.Utilization)))
+			mark := ""
+			if sub2api.ThresholdHit(w.Window, w.Utilization, thMap) {
+				mark = " ⚠️"
+			}
+			line := fmt.Sprintf("• %s %s%%%s", telegram.Code(w.Window), telegram.Code(fmt.Sprintf("%.1f", w.Utilization)), mark)
 			if w.ResetsAt != nil {
 				line += " · 重置 " + telegram.Code(w.ResetsAt.Local().Format("01-02 15:04"))
 			}

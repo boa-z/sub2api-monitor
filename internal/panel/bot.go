@@ -1025,19 +1025,28 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 	warnN := 0
 	var issueIDs []int64
 	var issueLabels []string
+	var targets []browse.WatchTarget
+	thByID := map[int64][]config.UsageThreshold{}
 	for _, a := range p.Accounts {
 		if !a.IsEnabled() {
 			fmt.Fprintf(&bld, "• #%d %s %s\n", a.ID, telegram.EscapeHTML(displayName(a)), telegram.Code("已暂停"))
 			continue
 		}
 		checked++
-		name := displayName(a)
+		targets = append(targets, browse.WatchTarget{ID: a.ID, Name: displayName(a)})
+		thByID[a.ID] = a.Thresholds
+	}
+	snaps := browse.FetchAccountSnaps(ctx, cli, targets, browse.SnapOpts{
+		Source: src, Force: force, WithToday: true, Concurrency: 4,
+	})
+	for _, snap := range snaps {
+		name := snap.Name
+		if name == "" {
+			name = fmt.Sprintf("#%d", snap.ID)
+		}
 		statusLine := ""
 		accBad := false
-		if acc, err := cli.GetAccount(ctx, a.ID); err == nil && acc != nil {
-			if name == fmt.Sprintf("#%d", a.ID) && acc.Name != "" {
-				name = acc.Name
-			}
+		if acc := snap.Account; acc != nil {
 			statusLine = fmt.Sprintf(" [%s]", acc.Status)
 			if acc.Platform != "" {
 				statusLine = fmt.Sprintf(" [%s/%s]", acc.Platform, acc.Status)
@@ -1045,19 +1054,21 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 			if strings.EqualFold(acc.Status, "error") || acc.ErrorMessage != "" || acc.RateLimitedAt != nil || !acc.Schedulable {
 				accBad = true
 			}
-		}
-		usage, err := cli.GetAccountUsage(ctx, a.ID, src, force)
-		fmt.Fprintf(&bld, "• %s%s\n", telegram.EscapeHTML(fmt.Sprintf("#%d %s", a.ID, name)), telegram.EscapeHTML(statusLine))
-		hitThr := false
-		if err != nil {
-			fmt.Fprintf(&bld, "  用量: %s\n", telegram.EscapeHTML(err.Error()))
+		} else if snap.AccountErr != nil {
 			accBad = true
-		} else {
+			statusLine = " [详情失败]"
+		}
+		fmt.Fprintf(&bld, "• %s%s\n", telegram.EscapeHTML(fmt.Sprintf("#%d %s", snap.ID, name)), telegram.EscapeHTML(statusLine))
+		hitThr := false
+		if snap.UsageErr != nil {
+			fmt.Fprintf(&bld, "  用量: %s\n", telegram.EscapeHTML(snap.UsageErr.Error()))
+			accBad = true
+		} else if usage := snap.Usage; usage != nil {
 			windows := usage.Windows()
 			if len(windows) == 0 {
 				bld.WriteString("  用量: (无窗口数据)\n")
 			}
-			ths := a.Thresholds
+			ths := thByID[snap.ID]
 			if len(ths) == 0 {
 				ths = thsDefault
 			}
@@ -1087,7 +1098,7 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 				accBad = true
 			}
 		}
-		if today, err := cli.GetAccountTodayStats(ctx, a.ID); err == nil && today != nil {
+		if today := snap.Today; today != nil {
 			fmt.Fprintf(&bld, "  今日: req=%s tok=%s cost=%s\n",
 				telegram.Code(strconv.FormatInt(today.Requests, 10)),
 				telegram.Code(strconv.FormatInt(today.Tokens, 10)),
@@ -1097,7 +1108,7 @@ func (b *Bot) forceCheck(ctx context.Context, chatID, userID int64) error {
 		if hitThr || accBad {
 			warnN++
 			if len(issueIDs) < 6 {
-				issueIDs = append(issueIDs, a.ID)
+				issueIDs = append(issueIDs, snap.ID)
 				issueLabels = append(issueLabels, name)
 			}
 		}
@@ -1341,7 +1352,7 @@ func (b *Bot) statusTextWithIssues(ctx context.Context, userID int64) (string, [
 		targets = append(targets, browse.WatchTarget{ID: a.ID, Name: displayName(a)})
 		thByID[a.ID] = a.Thresholds
 	}
-	snaps := browse.FetchAccountSnaps(ctx, cli, targets, usageSrc, maxShow, 4)
+	snaps := browse.FetchAccountSnaps(ctx, cli, targets, browse.SnapOpts{Source: usageSrc, MaxShow: maxShow, Concurrency: 4})
 	for _, snap := range snaps {
 		name := snap.Name
 		if name == "" {

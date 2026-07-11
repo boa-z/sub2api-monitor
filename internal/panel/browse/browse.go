@@ -326,17 +326,30 @@ type AccountSnap struct {
 	AccountErr error
 	Usage      *sub2api.UsageInfo
 	UsageErr   error
+	Today      *sub2api.WindowStats
+	TodayErr   error
 }
 
-// FetchAccountSnaps loads GetAccount + GetAccountUsage for up to maxShow targets
-// with bounded concurrency. Order matches the input targets (trimmed to maxShow).
-func FetchAccountSnaps(ctx context.Context, cli *sub2api.Client, targets []WatchTarget, source string, maxShow, concurrency int) []AccountSnap {
+// SnapOpts controls FetchAccountSnaps.
+type SnapOpts struct {
+	Source      string
+	Force       bool
+	WithToday   bool
+	MaxShow     int
+	Concurrency int
+}
+
+// FetchAccountSnaps loads GetAccount + GetAccountUsage (and optional today stats)
+// for up to MaxShow targets with bounded concurrency. Order matches input targets.
+func FetchAccountSnaps(ctx context.Context, cli *sub2api.Client, targets []WatchTarget, opts SnapOpts) []AccountSnap {
 	if cli == nil || len(targets) == 0 {
 		return nil
 	}
+	maxShow := opts.MaxShow
 	if maxShow <= 0 || maxShow > len(targets) {
 		maxShow = len(targets)
 	}
+	concurrency := opts.Concurrency
 	if concurrency <= 0 {
 		concurrency = 4
 	}
@@ -368,8 +381,13 @@ func FetchAccountSnaps(ctx context.Context, cli *sub2api.Client, targets []Watch
 			}
 			out[i].Name = name
 
-			usage, uerr := cli.GetAccountUsage(ctx, t.ID, source, false)
+			usage, uerr := cli.GetAccountUsage(ctx, t.ID, opts.Source, opts.Force)
 			out[i].Usage, out[i].UsageErr = usage, uerr
+
+			if opts.WithToday {
+				today, terr := cli.GetAccountTodayStats(ctx, t.ID)
+				out[i].Today, out[i].TodayErr = today, terr
+			}
 		}()
 	}
 	wg.Wait()
