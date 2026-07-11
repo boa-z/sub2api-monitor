@@ -56,6 +56,10 @@ func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int6
 	if page < 0 {
 		page = 0
 	}
+	if status == "" {
+		status = "all"
+	}
+	b.setBrowseView(userID, status, page)
 	const pageSize = 8
 	filterToken := status
 	if filterToken == "" {
@@ -316,7 +320,7 @@ func (b *Bot) showManageAccount(ctx context.Context, chatID, msgID, userID, acco
 				telegram.Btn("📊 重置额度", fmt.Sprintf("mgr_act:confirm_reset_quota:%d", accountID)),
 				telegram.Btn("📡 实时用量", fmt.Sprintf("acc_live:%d", accountID)),
 			},
-			{telegram.Btn("« 账号浏览", "mgr_browse"), telegram.Btn("« 管理菜单", "mgr_menu")},
+			{b.manageBackButton(userID), telegram.Btn("« 管理菜单", "mgr_menu")},
 		},
 	}
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), kb)

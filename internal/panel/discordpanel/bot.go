@@ -38,6 +38,10 @@ type session struct {
 	// OpsErrorKind/Page remember last errors view for resolve refresh.
 	OpsErrorKind string
 	OpsErrorPage int
+	// ManageBack is custom_id to return from account manage.
+	ManageBack   string
+	BrowseStatus string
+	BrowsePage   int
 }
 
 // Bot is the Discord interactive panel.
@@ -305,7 +309,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, b.showAvailability(ctx, uid), opsViewComponents("ops_avail"))
+		text, comps := b.showAvailabilityView(ctx, uid)
+		return b.update(ctx, it, text, comps)
 	case data == "ops_alerts":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -315,7 +320,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
-		return b.update(ctx, it, b.showConcurrency(ctx, uid), opsViewComponents("ops_conc"))
+		text, comps := b.showConcurrencyView(ctx, uid)
+		return b.update(ctx, it, text, comps)
 	case data == "ops_channels":
 		if !b.isAdmin(uid) {
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
@@ -386,6 +392,8 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		status, page := "all", 0
 		if strings.HasPrefix(data, "mgr_browse:") {
 			status, page = browse.ParseCallback(strings.TrimPrefix(data, "mgr_browse:"))
+		} else {
+			status, page = b.getBrowseView(uid)
 		}
 		text, comps := b.accountBrowser(ctx, uid, status, page)
 		return b.update(ctx, it, text, comps)
@@ -721,6 +729,82 @@ func (b *Bot) getOpsErrorView(userID int64) (kind string, page int) {
 		page = 0
 	}
 	return kind, page
+}
+
+func (b *Bot) setManageBack(userID int64, data string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.ManageBack = data
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getManageBack(userID int64) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil || s.ManageBack == "" {
+		return "mgr_menu"
+	}
+	return s.ManageBack
+}
+
+func (b *Bot) setBrowseView(userID int64, status string, page int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	if status == "" {
+		status = "all"
+	}
+	if page < 0 {
+		page = 0
+	}
+	s.BrowseStatus = status
+	s.BrowsePage = page
+	s.ManageBack = fmt.Sprintf("mgr_browse:%s:%d", browse.Token(status), page)
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getBrowseView(userID int64) (status string, page int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil || s.BrowseStatus == "" {
+		return "all", 0
+	}
+	return s.BrowseStatus, s.BrowsePage
+}
+
+func (b *Bot) manageBackLabel(userID int64) (label, data string) {
+	data = b.getManageBack(userID)
+	label = "« 返回"
+	switch {
+	case data == "mgr_menu":
+		label = "« 管理"
+	case data == "ops_menu":
+		label = "« 运维"
+	case data == "ops_avail":
+		label = "« 可用性"
+	case data == "ops_conc":
+		label = "« 并发"
+	case data == "ops_dash":
+		label = "« 看板"
+	case strings.HasPrefix(data, "ops_badacc"):
+		label = "« 异常账号"
+	case strings.HasPrefix(data, "mgr_browse"):
+		label = "« 浏览"
+	case strings.HasPrefix(data, "ops_errors"):
+		label = "« 错误"
+	}
+	return label, data
 }
 
 func (b *Bot) userClient(userID int64, timeout time.Duration) (*sub2api.Client, *userstore.Profile, error) {

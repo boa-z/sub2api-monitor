@@ -36,6 +36,11 @@ type session struct {
 	// OpsErrorKind/Page remember last errors view for resolve refresh.
 	OpsErrorKind string
 	OpsErrorPage int
+	// ManageBack is callback_data to return from account manage (e.g. mgr_browse:error:1).
+	ManageBack string
+	// BrowseStatus/Page remember last account browser filter.
+	BrowseStatus string
+	BrowsePage   int
 }
 
 // Bot is the interactive Telegram control panel.
@@ -431,6 +436,8 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		status, page := "all", 0
 		if strings.HasPrefix(data, "mgr_browse:") {
 			status, page = parseBrowseCallback(strings.TrimPrefix(data, "mgr_browse:"))
+		} else {
+			status, page = b.getBrowseView(cq.From.ID)
 		}
 		return b.showAccountBrowser(ctx, chatID, msgID, cq.From.ID, status, page)
 	case strings.HasPrefix(data, "mgr_acc:"):
@@ -1665,6 +1672,83 @@ func (b *Bot) getOpsErrorView(userID int64) (kind string, page int) {
 		page = 0
 	}
 	return kind, page
+}
+
+func (b *Bot) setManageBack(userID int64, data string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	s.ManageBack = data
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getManageBack(userID int64) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil || s.ManageBack == "" {
+		return "mgr_menu"
+	}
+	return s.ManageBack
+}
+
+func (b *Bot) setBrowseView(userID int64, status string, page int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil {
+		s = &session{}
+		b.sessions[userID] = s
+	}
+	if status == "" {
+		status = "all"
+	}
+	if page < 0 {
+		page = 0
+	}
+	s.BrowseStatus = status
+	s.BrowsePage = page
+	s.ManageBack = fmt.Sprintf("mgr_browse:%s:%d", browse.Token(status), page)
+	s.UpdatedAt = time.Now()
+}
+
+func (b *Bot) getBrowseView(userID int64) (status string, page int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[userID]
+	if s == nil || s.BrowseStatus == "" {
+		return "all", 0
+	}
+	return s.BrowseStatus, s.BrowsePage
+}
+
+// manageBackButton returns a back button labeled from the remembered source.
+func (b *Bot) manageBackButton(userID int64) telegram.InlineKeyboardButton {
+	data := b.getManageBack(userID)
+	label := "« 返回"
+	switch {
+	case data == "mgr_menu":
+		label = "« 管理菜单"
+	case data == "ops_menu":
+		label = "« 运维"
+	case data == "ops_avail":
+		label = "« 可用性"
+	case data == "ops_conc":
+		label = "« 并发"
+	case data == "ops_dash":
+		label = "« 看板"
+	case strings.HasPrefix(data, "ops_badacc"):
+		label = "« 异常账号"
+	case strings.HasPrefix(data, "mgr_browse"):
+		label = "« 账号浏览"
+	case strings.HasPrefix(data, "ops_errors"):
+		label = "« 错误列表"
+	}
+	return telegram.Btn(label, data)
 }
 
 func (b *Bot) getSession(userID int64) *session {

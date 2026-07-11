@@ -596,3 +596,31 @@ func TestDashboardKeyboard(t *testing.T) {
 		t.Fatal("nil stats should still offer badacc")
 	}
 }
+
+func TestManageBackAndBrowseMemory(t *testing.T) {
+	b, _ := testBot(t)
+	if b.getManageBack(7) != "mgr_menu" {
+		t.Fatal(b.getManageBack(7))
+	}
+	b.setManageBack(7, "ops_avail")
+	if b.getManageBack(7) != "ops_avail" {
+		t.Fatal(b.getManageBack(7))
+	}
+	btn := b.manageBackButton(7)
+	if btn.CallbackData != "ops_avail" || btn.Text != "« 可用性" {
+		t.Fatalf("%+v", btn)
+	}
+	b.setBrowseView(7, "error", 2)
+	st, page := b.getBrowseView(7)
+	if st != "error" || page != 2 {
+		t.Fatalf("%s %d", st, page)
+	}
+	if b.getManageBack(7) != "mgr_browse:error:2" {
+		t.Fatal(b.getManageBack(7))
+	}
+	// setAwait must not wipe manage back
+	b.setAwait(7, awaitSearch, 0, "")
+	if b.getManageBack(7) != "mgr_browse:error:2" {
+		t.Fatal("await wiped manage back")
+	}
+}

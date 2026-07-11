@@ -315,7 +315,37 @@ func (b *Bot) showAvailability(ctx context.Context, chatID, msgID, userID int64)
 			telegram.EscapeHTML(truncateRunes(msg, 40)),
 		)
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsViewKeyboard("ops_avail"))
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("🔄 刷新", "ops_avail"), telegram.Btn("« 运维菜单", "ops_menu")},
+	}
+	// top problem accounts → manage
+	var accRow []telegram.InlineKeyboardButton
+	for i, st := range bad {
+		if i >= 4 || st.AccountID <= 0 {
+			break
+		}
+		accRow = append(accRow, telegram.Btn(fmt.Sprintf("管理 #%d", st.AccountID), fmt.Sprintf("mgr_acc:%d", st.AccountID)))
+		if len(accRow) == 2 {
+			rows = append(rows, accRow)
+			accRow = nil
+		}
+	}
+	if len(accRow) > 0 {
+		rows = append(rows, accRow)
+	}
+	b.setManageBack(userID, "ops_avail")
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			telegram.Btn("⏱ 限速", "ops_badacc:rl:0"),
+		},
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("❌ 错误", "ops_errors:all:0"),
+			telegram.Btn("📈 看板", "ops_dash"),
+		},
+		[]telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")},
+	)
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
 func (b *Bot) showAlerts(ctx context.Context, chatID, msgID, userID int64) error {
@@ -404,6 +434,7 @@ func (b *Bot) showErrorsView(ctx context.Context, chatID, msgID, userID int64, k
 		kind = "all"
 	}
 	b.setOpsErrorView(userID, kind, page)
+	b.setManageBack(userID, fmt.Sprintf("ops_errors:%s:%d", kind, page))
 
 	var bld strings.Builder
 	if notice != "" {
@@ -732,7 +763,32 @@ func (b *Bot) showConcurrency(ctx context.Context, chatID, msgID, userID int64) 
 			r.b.LoadPercentage,
 		)
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsViewKeyboard("ops_conc"))
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("🔄 刷新", "ops_conc"), telegram.Btn("« 运维菜单", "ops_menu")},
+	}
+	var accRow []telegram.InlineKeyboardButton
+	for i, r := range accs {
+		if i >= 4 || r.b.AccountID <= 0 {
+			break
+		}
+		accRow = append(accRow, telegram.Btn(fmt.Sprintf("管理 #%d", r.b.AccountID), fmt.Sprintf("mgr_acc:%d", r.b.AccountID)))
+		if len(accRow) == 2 {
+			rows = append(rows, accRow)
+			accRow = nil
+		}
+	}
+	if len(accRow) > 0 {
+		rows = append(rows, accRow)
+	}
+	b.setManageBack(userID, "ops_conc")
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+			telegram.Btn("📈 看板", "ops_dash"),
+		},
+		[]telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")},
+	)
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
 func (b *Bot) showChannels(ctx context.Context, chatID, msgID, userID int64) error {
@@ -789,6 +845,7 @@ func (b *Bot) showBadAccountsView(ctx context.Context, chatID, msgID, userID int
 	}
 	kind = browse.NormalizeBadKind(kind)
 	const pageSize = 8
+	b.setManageBack(userID, fmt.Sprintf("ops_badacc:%s:%d", kind, page))
 
 	items, total, title, scope, err := browse.LoadBadAccountsPage(ctx, cli, kind, page, pageSize)
 	if err != nil {

@@ -258,3 +258,27 @@ func TestDashboardComponents(t *testing.T) {
 		t.Fatal("nil stats fallback")
 	}
 }
+
+func TestManageBackAndBrowseMemory(t *testing.T) {
+	b, _ := testBot(t)
+	if b.getManageBack(7) != "mgr_menu" {
+		t.Fatal(b.getManageBack(7))
+	}
+	b.setManageBack(7, "ops_conc")
+	label, data := b.manageBackLabel(7)
+	if data != "ops_conc" || label != "« 并发" {
+		t.Fatalf("%s %s", label, data)
+	}
+	b.setBrowseView(7, "rate_limited", 1)
+	st, page := b.getBrowseView(7)
+	if st != "rate_limited" || page != 1 {
+		t.Fatalf("%s %d", st, page)
+	}
+	if b.getManageBack(7) != "mgr_browse:rate_limited:1" {
+		t.Fatal(b.getManageBack(7))
+	}
+	b.setAwait(7, awaitSearch, 0, "")
+	if b.getManageBack(7) != "mgr_browse:rate_limited:1" {
+		t.Fatal("await wiped manage back")
+	}
+}

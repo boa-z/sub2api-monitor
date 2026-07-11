@@ -632,20 +632,24 @@ func dashboardComponents(st *sub2api.DashboardStats) []discord.Component {
 }
 
 func (b *Bot) showAvailability(ctx context.Context, userID int64) string {
+	text, _ := b.showAvailabilityView(ctx, userID)
+	return text
+}
+
+func (b *Bot) showAvailabilityView(ctx context.Context, userID int64) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
-		return "❌ " + err.Error()
+		return "❌ " + err.Error(), opsComponents()
 	}
 	av, err := cli.GetAccountAvailability(ctx)
 	if err != nil {
-		return "可用性失败: " + err.Error()
+		return "可用性失败: " + err.Error(), opsComponents()
 	}
 	var bld strings.Builder
 	bld.WriteString("**账号可用性**\n\n")
 	if av == nil {
-		return bld.String() + "无数据。"
+		return bld.String() + "无数据。", opsViewComponents("ops_avail")
 	}
-	// Platform map
 	type kv struct {
 		k string
 		v sub2api.AvailabilityBucket
@@ -660,17 +664,9 @@ func (b *Bot) showAvailability(ctx context.Context, userID int64) string {
 		}
 	}
 	if len(plats) == 0 {
-		// fallback dump
-		return "**可用性**\n```\n" + truncate(fmt.Sprintf("%+v", av), 900) + "\n```"
+		return "**可用性**\n```\n" + truncate(fmt.Sprintf("%+v", av), 900) + "\n```", opsViewComponents("ops_avail")
 	}
-	// simple sort by key
-	for i := 0; i < len(plats); i++ {
-		for j := i + 1; j < len(plats); j++ {
-			if plats[j].k < plats[i].k {
-				plats[i], plats[j] = plats[j], plats[i]
-			}
-		}
-	}
+	sort.Slice(plats, func(i, j int) bool { return plats[i].k < plats[j].k })
 	for i, p := range plats {
 		if i >= 12 {
 			break
@@ -684,7 +680,56 @@ func (b *Bot) showAvailability(ctx context.Context, userID int64) string {
 		fmt.Fprintf(&bld, "• `%s` 可用 %d/%d (%.0f%%) · err %d · rl %d\n",
 			p.k, avn, tot, rate, p.v.ErrorNum(), p.v.RateLimitNum())
 	}
-	return bld.String()
+	var bad []sub2api.AccountRuntimeStatus
+	for _, st := range av.Account {
+		if st.HasError || st.IsRateLimited || st.IsOverloaded || !st.IsAvailable {
+			bad = append(bad, st)
+		}
+	}
+	sort.Slice(bad, func(i, j int) bool {
+		if bad[i].HasError != bad[j].HasError {
+			return bad[i].HasError
+		}
+		return bad[i].AccountID < bad[j].AccountID
+	})
+	if len(bad) > 0 {
+		bld.WriteString("\n**异常/不可用账号**\n")
+		for i, st := range bad {
+			if i >= 8 {
+				fmt.Fprintf(&bld, "… 另有 %d 个\n", len(bad)-8)
+				break
+			}
+			fmt.Fprintf(&bld, "• #%d %s\n", st.AccountID, truncate(st.AccountName, 16))
+		}
+	}
+	b.setManageBack(userID, "ops_avail")
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button("刷新", "ops_avail", 2),
+			discord.Button("« 运维", "ops_menu", 2),
+			discord.Button("« 主面板", "home", 2),
+		),
+	}
+	var row []discord.Component
+	for i, st := range bad {
+		if i >= 4 || st.AccountID <= 0 {
+			break
+		}
+		row = append(row, discord.Button(fmt.Sprintf("管理 #%d", st.AccountID), fmt.Sprintf("mgr_acc:%d", st.AccountID), 1))
+		if len(row) == 2 {
+			comps = append(comps, discord.ActionRow(row...))
+			row = nil
+		}
+	}
+	if len(row) > 0 {
+		comps = append(comps, discord.ActionRow(row...))
+	}
+	comps = append(comps, discord.ActionRow(
+		discord.Button("异常账号", "ops_badacc:error:0", 2),
+		discord.Button("限速", "ops_badacc:rl:0", 2),
+		discord.Button("错误", "ops_errors:all:0", 2),
+	))
+	return bld.String(), comps
 }
 
 func (b *Bot) showAlerts(ctx context.Context, userID int64) string {
@@ -719,13 +764,18 @@ func (b *Bot) showAlerts(ctx context.Context, userID int64) string {
 }
 
 func (b *Bot) showConcurrency(ctx context.Context, userID int64) string {
+	text, _ := b.showConcurrencyView(ctx, userID)
+	return text
+}
+
+func (b *Bot) showConcurrencyView(ctx context.Context, userID int64) (string, []discord.Component) {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
-		return "❌ " + err.Error()
+		return "❌ " + err.Error(), opsComponents()
 	}
 	snap, err := cli.GetConcurrency(ctx)
 	if err != nil {
-		return "并发失败: " + err.Error()
+		return "并发失败: " + err.Error(), opsComponents()
 	}
 	var bld strings.Builder
 	bld.WriteString("**并发负载**\n\n")
@@ -737,8 +787,6 @@ func (b *Bot) showConcurrency(ctx context.Context, userID int64) string {
 	for k, v := range snap.Platform {
 		plats = append(plats, crow{k, v})
 	}
-	// simple order by load desc without sort import if missing - check imports
-	// use sort
 	sort.Slice(plats, func(i, j int) bool { return plats[i].b.LoadPercentage > plats[j].b.LoadPercentage })
 	bld.WriteString("**平台**\n")
 	for _, r := range plats {
@@ -768,7 +816,33 @@ func (b *Bot) showConcurrency(ctx context.Context, userID int64) string {
 		fmt.Fprintf(&bld, "• #%d %s: `%d/%d` (%.0f%%)\n",
 			r.b.AccountID, truncate(r.name, 14), r.b.CurrentInUse, r.b.MaxCapacity, r.b.LoadPercentage)
 	}
-	return bld.String()
+	b.setManageBack(userID, "ops_conc")
+	comps := []discord.Component{
+		discord.ActionRow(
+			discord.Button("刷新", "ops_conc", 2),
+			discord.Button("« 运维", "ops_menu", 2),
+			discord.Button("« 主面板", "home", 2),
+		),
+	}
+	var row []discord.Component
+	for i, r := range accs {
+		if i >= 4 || r.b.AccountID <= 0 {
+			break
+		}
+		row = append(row, discord.Button(fmt.Sprintf("管理 #%d", r.b.AccountID), fmt.Sprintf("mgr_acc:%d", r.b.AccountID), 1))
+		if len(row) == 2 {
+			comps = append(comps, discord.ActionRow(row...))
+			row = nil
+		}
+	}
+	if len(row) > 0 {
+		comps = append(comps, discord.ActionRow(row...))
+	}
+	comps = append(comps, discord.ActionRow(
+		discord.Button("异常账号", "ops_badacc:error:0", 2),
+		discord.Button("看板", "ops_dash", 2),
+	))
+	return bld.String(), comps
 }
 
 func (b *Bot) showChannels(ctx context.Context, userID int64) string {
@@ -819,6 +893,7 @@ func (b *Bot) showErrorsView(ctx context.Context, userID int64, kind string, pag
 		kind = "all"
 	}
 	b.setOpsErrorView(userID, kind, page)
+	b.setManageBack(userID, fmt.Sprintf("ops_errors:%s:%d", kind, page))
 
 	var bld strings.Builder
 	if notice != "" {
@@ -1348,6 +1423,7 @@ func (b *Bot) manageAccount(ctx context.Context, userID, accountID int64, notice
 		statusBtn = "启用"
 		statusData = fmt.Sprintf("mgr_act:enable:%d", accountID)
 	}
+	backLabel, backData := b.manageBackLabel(userID)
 	comps := []discord.Component{
 		discord.ActionRow(
 			discord.Button(schedBtn, schedData, 1),
@@ -1371,7 +1447,7 @@ func (b *Bot) manageAccount(ctx context.Context, userID, accountID int64, notice
 		),
 		discord.ActionRow(
 			discord.Button("实时用量", fmt.Sprintf("acc_live:%d", accountID), 1),
-			discord.Button("« 浏览", "mgr_browse:all:0", 2),
+			discord.Button(backLabel, backData, 2),
 			discord.Button("« 管理", "mgr_menu", 2),
 		),
 	}
