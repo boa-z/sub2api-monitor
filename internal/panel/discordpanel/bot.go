@@ -314,6 +314,15 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "acc:"), 10, 64)
 		text, comps := b.accountDetailView(ctx, uid, id)
 		return b.update(ctx, it, text, comps)
+	case strings.HasPrefix(data, "rename:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "rename:"), 10, 64)
+		if id <= 0 {
+			return b.update(ctx, it, b.accountsText(uid), b.accountsComponents(uid))
+		}
+		return b.openModal(ctx, it, discord.NewModal(
+			fmt.Sprintf("modal_rename:%d", id), "重命名监控账号", "name", "显示名称",
+			fmt.Sprintf("#%d", id), 64,
+		))
 	case strings.HasPrefix(data, "del_acc:"):
 		idStr := strings.TrimPrefix(data, "del_acc:")
 		msg := b.delAccount(uid, idStr)
@@ -767,6 +776,16 @@ func (b *Bot) handleModal(ctx context.Context, it *discord.Interaction, uid int6
 		msg := b.addAccount(ctx, uid, idRaw)
 		return b.respond(ctx, it, msg+"\n\n"+b.accountsText(uid), b.accountsComponents(uid), false)
 	default:
+		if strings.HasPrefix(it.Data.CustomID, "modal_rename:") {
+			id, _ := strconv.ParseInt(strings.TrimPrefix(it.Data.CustomID, "modal_rename:"), 10, 64)
+			name := strings.TrimSpace(it.ModalValue("name"))
+			msg := b.renameWatchAccount(uid, id, name)
+			if strings.HasPrefix(msg, "✅") {
+				text, comps := b.accountDetailView(ctx, uid, id)
+				return b.respond(ctx, it, msg+"\n\n"+text, comps, false)
+			}
+			return b.respond(ctx, it, msg, b.accountsComponents(uid), true)
+		}
 		return b.respond(ctx, it, "未知表单: "+it.Data.CustomID, b.homeComponents(uid), true)
 	}
 }
@@ -1026,6 +1045,32 @@ func (b *Bot) manageBackLabel(userID int64) (label, data string) {
 		label = "« 分组"
 	}
 	return label, data
+}
+
+func (b *Bot) renameWatchAccount(userID, id int64, name string) string {
+	name = strings.TrimSpace(name)
+	if id <= 0 {
+		return "账号 ID 无效"
+	}
+	if name == "" {
+		return "名称不能为空"
+	}
+	if len([]rune(name)) > 64 {
+		name = string([]rune(name)[:64])
+	}
+	_, err := b.users.Update(userID, func(p *userstore.Profile) error {
+		for i := range p.Accounts {
+			if p.Accounts[i].ID == id {
+				p.Accounts[i].Name = name
+				return nil
+			}
+		}
+		return fmt.Errorf("账号 #%d 不在监控列表", id)
+	})
+	if err != nil {
+		return "重命名失败: " + err.Error()
+	}
+	return fmt.Sprintf("✅ 已重命名 #%d → `%s`", id, name)
 }
 
 func (b *Bot) userClient(userID int64, timeout time.Duration) (*sub2api.Client, *userstore.Profile, error) {

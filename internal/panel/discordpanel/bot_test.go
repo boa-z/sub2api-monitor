@@ -708,3 +708,33 @@ func TestModalValueUsedByPanel(t *testing.T) {
 		t.Fatal("expected empty")
 	}
 }
+
+func TestRenameWatchAccount(t *testing.T) {
+	b, store := testBot(t)
+	_, err := store.GetOrCreatePlatform(42, userstore.PlatformDiscord, "42", "u", "U")
+	if err != nil {
+		t.Fatal(err)
+	}
+	en := true
+	_, err = store.Update(42, func(p *userstore.Profile) error {
+		p.Accounts = []userstore.AccountWatch{{ID: 7, Name: "old", Enabled: &en}}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := b.renameWatchAccount(42, 7, "  new-name  ")
+	if !strings.HasPrefix(msg, "✅") {
+		t.Fatal(msg)
+	}
+	p, ok := store.Get(42)
+	if !ok || len(p.Accounts) != 1 || p.Accounts[0].Name != "new-name" {
+		t.Fatalf("%+v", p)
+	}
+	if msg := b.renameWatchAccount(42, 99, "x"); !strings.Contains(msg, "失败") && !strings.Contains(msg, "不在") {
+		t.Fatal(msg)
+	}
+	if msg := b.renameWatchAccount(42, 7, "   "); msg != "名称不能为空" {
+		t.Fatal(msg)
+	}
+}

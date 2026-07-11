@@ -646,6 +646,7 @@ func (b *Bot) accountDetailView(ctx context.Context, userID, id int64) (string, 
 			discord.Button("账号阈值", fmt.Sprintf("acc_thr:%d", id), 2),
 		),
 		discord.ActionRow(
+			discord.Button("重命名", fmt.Sprintf("rename:%d", id), 2),
 			discord.DangerButton("移出监控", fmt.Sprintf("del_acc:%d", id)),
 		),
 	}
