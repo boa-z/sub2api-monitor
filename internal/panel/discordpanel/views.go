@@ -1149,32 +1149,59 @@ func manageComponentsFor(stats *sub2api.DashboardStats, canWrite bool, browseSta
 		),
 	}
 	if canWrite {
-		if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
+		switch strings.TrimSpace(browseStatus) {
+		case "disabled":
 			comps = append(comps,
 				discord.ActionRow(
-					discord.Button(healLabel, "mgr_bulk_heal", 1),
-					discord.DangerButton(clearLabel, "mgr_bulk_clear"),
-					discord.Button(rlLabel, "mgr_bulk_clear_rl", 2),
-				),
-				discord.ActionRow(
-					discord.Button("批量恢复", "mgr_bulk_recover", 2),
-					discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
-					discord.Button("搜索", "mgr_search", 2),
-				),
-			)
-		} else {
-			comps = append(comps,
-				discord.ActionRow(
-					discord.DangerButton(clearLabel, "mgr_bulk_clear"),
-					discord.Button("批量恢复", "mgr_bulk_recover", 2),
-					discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
-				),
-				discord.ActionRow(
-					discord.Button(rlLabel, "mgr_bulk_clear_rl", 2),
+					discord.SuccessButton("批量启用", "mgr_bulk_enable"),
 					discord.Button(healLabel, "mgr_bulk_heal", 1),
 					discord.Button("搜索", "mgr_search", 2),
 				),
+				discord.ActionRow(
+					discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+					discord.Button("批量恢复", "mgr_bulk_recover", 2),
+				),
 			)
+		case "temp":
+			comps = append(comps,
+				discord.ActionRow(
+					discord.Button("清临时停", "mgr_bulk_clear_temp", 2),
+					discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+					discord.Button("搜索", "mgr_search", 2),
+				),
+				discord.ActionRow(
+					discord.Button(healLabel, "mgr_bulk_heal", 1),
+					discord.Button("批量恢复", "mgr_bulk_recover", 2),
+				),
+			)
+		default:
+			if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
+				comps = append(comps,
+					discord.ActionRow(
+						discord.Button(healLabel, "mgr_bulk_heal", 1),
+						discord.DangerButton(clearLabel, "mgr_bulk_clear"),
+						discord.Button(rlLabel, "mgr_bulk_clear_rl", 2),
+					),
+					discord.ActionRow(
+						discord.Button("批量恢复", "mgr_bulk_recover", 2),
+						discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+						discord.Button("搜索", "mgr_search", 2),
+					),
+				)
+			} else {
+				comps = append(comps,
+					discord.ActionRow(
+						discord.DangerButton(clearLabel, "mgr_bulk_clear"),
+						discord.Button("批量恢复", "mgr_bulk_recover", 2),
+						discord.Button("批量开调度", "mgr_bulk_sched_on", 2),
+					),
+					discord.ActionRow(
+						discord.Button(rlLabel, "mgr_bulk_clear_rl", 2),
+						discord.Button(healLabel, "mgr_bulk_heal", 1),
+						discord.Button("搜索", "mgr_search", 2),
+					),
+				)
+			}
 		}
 		comps = append(comps, discord.ActionRow(
 			discord.Button("实例用户", "mgr_users", 2),

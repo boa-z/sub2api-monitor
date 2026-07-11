@@ -416,6 +416,18 @@ func TestInferBulkActionKey(t *testing.T) {
 	if inferBulkActionKey("mgr_bulk_sched_on_go") != "sched_on" {
 		t.Fatal(inferBulkActionKey("mgr_bulk_sched_on_go"))
 	}
+	if inferBulkActionKey("mgr_bulk_enable_go") != "enable" {
+		t.Fatal(inferBulkActionKey("mgr_bulk_enable_go"))
+	}
+	if inferBulkActionKey("mgr_bulk_clear_temp_go") != "clear_temp" {
+		t.Fatal(inferBulkActionKey("mgr_bulk_clear_temp_go"))
+	}
+	if inferBulkActionKey("mgr_bulk_clear_go") != "clear_err" {
+		t.Fatal(inferBulkActionKey("mgr_bulk_clear_go"))
+	}
+	if inferBulkActionKey("mgr_bulk_unknown_go") != "clear_err" {
+		t.Fatal(inferBulkActionKey("mgr_bulk_unknown_go"))
+	}
 }
 
 func TestIsRateLimitedAccount(t *testing.T) {
@@ -1271,5 +1283,32 @@ func TestManageKeyboardScopedLabels(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected scoped heal label in %v", kb)
+	}
+}
+
+func TestManageKeyboardTempDisabledBulk(t *testing.T) {
+	kb := manageKeyboardFor(nil, true, "disabled")
+	hasEnable := false
+	for _, row := range kb.InlineKeyboard {
+		for _, b := range row {
+			if b.CallbackData == "mgr_bulk_enable" {
+				hasEnable = true
+			}
+		}
+	}
+	if !hasEnable {
+		t.Fatal("disabled scope should surface bulk enable")
+	}
+	kb = manageKeyboardFor(nil, true, "temp")
+	hasClearTemp := false
+	for _, row := range kb.InlineKeyboard {
+		for _, b := range row {
+			if b.CallbackData == "mgr_bulk_clear_temp" {
+				hasClearTemp = true
+			}
+		}
+	}
+	if !hasClearTemp {
+		t.Fatal("temp scope should surface bulk clear_temp")
 	}
 }

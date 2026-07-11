@@ -919,3 +919,30 @@ func TestManageComponentsScopedLabels(t *testing.T) {
 		t.Fatalf("expected scoped heal label, got %v", labels)
 	}
 }
+
+func TestManageComponentsTempDisabledBulk(t *testing.T) {
+	comps := manageComponentsFor(nil, true, "disabled")
+	hasEnable := false
+	for _, row := range comps {
+		for _, c := range row.Components {
+			if c.CustomID == "mgr_bulk_enable" {
+				hasEnable = true
+			}
+		}
+	}
+	if !hasEnable {
+		t.Fatal("disabled scope should surface bulk enable")
+	}
+	comps = manageComponentsFor(nil, true, "temp")
+	hasClearTemp := false
+	for _, row := range comps {
+		for _, c := range row.Components {
+			if c.CustomID == "mgr_bulk_clear_temp" {
+				hasClearTemp = true
+			}
+		}
+	}
+	if !hasClearTemp {
+		t.Fatal("temp scope should surface bulk clear_temp")
+	}
+}

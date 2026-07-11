@@ -59,34 +59,59 @@ func manageKeyboardFor(stats *sub2api.DashboardStats, canWrite bool, browseStatu
 		{telegram.Btn(badLabel, "ops_badacc:error:0"), telegram.Btn("📈 看板", "ops_dash")},
 	}
 	if canWrite {
-		if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
+		switch strings.TrimSpace(browseStatus) {
+		case "disabled":
 			rows = append(rows,
 				[]telegram.InlineKeyboardButton{
+					telegram.Btn("✅ 批量启用", "mgr_bulk_enable"),
 					telegram.Btn(healLabel, "mgr_bulk_heal"),
-					telegram.Btn(clearLabel, "mgr_bulk_clear"),
-				},
-				[]telegram.InlineKeyboardButton{
-					telegram.Btn(rlLabel, "mgr_bulk_clear_rl"),
-					telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
 				},
 				[]telegram.InlineKeyboardButton{
 					telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
-				},
-			)
-		} else {
-			rows = append(rows,
-				[]telegram.InlineKeyboardButton{
-					telegram.Btn(clearLabel, "mgr_bulk_clear"),
 					telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
 				},
+			)
+		case "temp":
+			rows = append(rows,
 				[]telegram.InlineKeyboardButton{
+					telegram.Btn("🚫 批量清临时停", "mgr_bulk_clear_temp"),
 					telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
-					telegram.Btn(rlLabel, "mgr_bulk_clear_rl"),
 				},
 				[]telegram.InlineKeyboardButton{
 					telegram.Btn(healLabel, "mgr_bulk_heal"),
+					telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
 				},
 			)
+		default:
+			if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
+				rows = append(rows,
+					[]telegram.InlineKeyboardButton{
+						telegram.Btn(healLabel, "mgr_bulk_heal"),
+						telegram.Btn(clearLabel, "mgr_bulk_clear"),
+					},
+					[]telegram.InlineKeyboardButton{
+						telegram.Btn(rlLabel, "mgr_bulk_clear_rl"),
+						telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+					},
+					[]telegram.InlineKeyboardButton{
+						telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+					},
+				)
+			} else {
+				rows = append(rows,
+					[]telegram.InlineKeyboardButton{
+						telegram.Btn(clearLabel, "mgr_bulk_clear"),
+						telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover"),
+					},
+					[]telegram.InlineKeyboardButton{
+						telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"),
+						telegram.Btn(rlLabel, "mgr_bulk_clear_rl"),
+					},
+					[]telegram.InlineKeyboardButton{
+						telegram.Btn(healLabel, "mgr_bulk_heal"),
+					},
+				)
+			}
 		}
 	}
 	rows = append(rows,
@@ -126,10 +151,10 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 	bld.WriteString(`用你的 Admin API 管理实例（只对你配置的连接生效）：
 
 • 账号浏览 — 状态/平台筛选、搜索、分页
-• 批量清错 / 恢复 / 开调度 / 清限速 / 一键修复 — 批量处理（需确认；优先当前浏览/异常 tab 筛选）
+• 批量清错 / 恢复 / 开调度 / 清限速 / 清临时停 / 启用 / 一键修复 — 批量处理（需确认；优先当前浏览/异常 tab 筛选）
 • 实例用户 / 分组 — 搜索与只读详情
 • 面板用户 — 本 Bot 多用户与角色（admin/viewer/user，仅管理员可改）
-• 异常账号 — error/限速/停调度/汇总分标签分页，管理/实时/修复 / 一键监控
+• 异常账号 — error/限速/过载/停调度/临时停/禁用/汇总分标签分页，管理/实时/修复 / 一键监控
 
 进入账号后可执行：
 切换调度 · 启停状态 · 测试连通 · 清错误/限速 · 恢复/刷新
@@ -914,6 +939,10 @@ func inferBulkActionKey(confirmData string) string {
 		return "clear_rl"
 	case "mgr_bulk_heal_go":
 		return "heal"
+	case "mgr_bulk_enable_go":
+		return "enable"
+	case "mgr_bulk_clear_temp_go":
+		return "clear_temp"
 	default:
 		return "clear_err"
 	}
