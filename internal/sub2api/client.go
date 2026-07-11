@@ -146,18 +146,29 @@ func (c *Client) Health(ctx context.Context) error {
 }
 
 type DashboardStats struct {
-	TotalUsers        int64 `json:"total_users"`
-	TodayNewUsers     int64 `json:"today_new_users"`
-	ActiveUsers       int64 `json:"active_users"`
-	TotalAPIKeys      int64 `json:"total_api_keys"`
-	ActiveAPIKeys     int64 `json:"active_api_keys"`
-	TotalAccounts     int64 `json:"total_accounts"`
-	NormalAccounts    int64 `json:"normal_accounts"`
-	ErrorAccounts     int64 `json:"error_accounts"`
-	RatelimitAccounts int64 `json:"ratelimit_accounts"`
-	OverloadAccounts  int64 `json:"overload_accounts"`
-	TotalRequests     int64 `json:"total_requests"`
-	Uptime            int64 `json:"uptime"`
+	TotalUsers        int64   `json:"total_users"`
+	TodayNewUsers     int64   `json:"today_new_users"`
+	ActiveUsers       int64   `json:"active_users"`
+	HourlyActiveUsers int64   `json:"hourly_active_users"`
+	TotalAPIKeys      int64   `json:"total_api_keys"`
+	ActiveAPIKeys     int64   `json:"active_api_keys"`
+	TotalAccounts     int64   `json:"total_accounts"`
+	NormalAccounts    int64   `json:"normal_accounts"`
+	ErrorAccounts     int64   `json:"error_accounts"`
+	RatelimitAccounts int64   `json:"ratelimit_accounts"`
+	OverloadAccounts  int64   `json:"overload_accounts"`
+	TotalRequests     int64   `json:"total_requests"`
+	TodayRequests     int64   `json:"today_requests"`
+	TodayTokens       int64   `json:"today_tokens"`
+	TodayCost         float64 `json:"today_cost"`
+	TodayActualCost   float64 `json:"today_actual_cost"`
+	TotalTokens       int64   `json:"total_tokens"`
+	TotalCost         float64 `json:"total_cost"`
+	RPM               float64 `json:"rpm"`
+	TPM               float64 `json:"tpm"`
+	AverageDurationMS float64 `json:"average_duration_ms"`
+	Uptime            int64   `json:"uptime"`
+	StatsStale        bool    `json:"stats_stale"`
 }
 
 func (c *Client) GetDashboardStats(ctx context.Context) (*DashboardStats, error) {
@@ -296,7 +307,7 @@ type UsageInfo struct {
 	GeminiSharedDaily *UsageProgress                    `json:"gemini_shared_daily,omitempty"`
 	GeminiProDaily    *UsageProgress                    `json:"gemini_pro_daily,omitempty"`
 	GeminiFlashDaily  *UsageProgress                    `json:"gemini_flash_daily,omitempty"`
-	AntigravityQuota map[string]*AntigravityModelQuota `json:"antigravity_quota,omitempty"`
+	AntigravityQuota  map[string]*AntigravityModelQuota `json:"antigravity_quota,omitempty"`
 	Error             string                            `json:"error,omitempty"`
 	ErrorCode         string                            `json:"error_code,omitempty"`
 }
@@ -402,6 +413,7 @@ func (c *Client) GetAccountTodayStats(ctx context.Context, id int64) (*WindowSta
 }
 
 type AvailabilityBucket struct {
+	// legacy / alternate shapes
 	Total          int `json:"total"`
 	Available      int `json:"available"`
 	Error          int `json:"error"`
@@ -410,11 +422,22 @@ type AvailabilityBucket struct {
 	Disabled       int `json:"disabled"`
 	AvailableCount int `json:"available_count"`
 	TotalCount     int `json:"total_count"`
+	// current Sub2API ops shape
+	TotalAccounts  int `json:"total_accounts"`
+	RateLimitCount int `json:"rate_limit_count"`
+	ErrorCount     int `json:"error_count"`
+	// labels (optional)
+	Platform  string `json:"platform,omitempty"`
+	GroupID   int64  `json:"group_id,omitempty"`
+	GroupName string `json:"group_name,omitempty"`
 }
 
 func (b AvailabilityBucket) AvailableNum() int {
 	if b.Available > 0 {
 		return b.Available
+	}
+	if b.AvailableCount > 0 {
+		return b.AvailableCount
 	}
 	return b.AvailableCount
 }
@@ -423,14 +446,49 @@ func (b AvailabilityBucket) TotalNum() int {
 	if b.Total > 0 {
 		return b.Total
 	}
+	if b.TotalAccounts > 0 {
+		return b.TotalAccounts
+	}
 	return b.TotalCount
 }
 
+func (b AvailabilityBucket) ErrorNum() int {
+	if b.ErrorCount > 0 {
+		return b.ErrorCount
+	}
+	return b.Error
+}
+
+func (b AvailabilityBucket) RateLimitNum() int {
+	if b.RateLimitCount > 0 {
+		return b.RateLimitCount
+	}
+	return b.RateLimit
+}
+
+// AccountRuntimeStatus is per-account availability detail from ops endpoint.
+type AccountRuntimeStatus struct {
+	AccountID             int64  `json:"account_id"`
+	AccountName           string `json:"account_name"`
+	Platform              string `json:"platform"`
+	GroupID               int64  `json:"group_id"`
+	GroupName             string `json:"group_name"`
+	Status                string `json:"status"`
+	IsAvailable           bool   `json:"is_available"`
+	IsRateLimited         bool   `json:"is_rate_limited"`
+	IsOverloaded          bool   `json:"is_overloaded"`
+	HasError              bool   `json:"has_error"`
+	RateLimitRemainingSec *int64 `json:"rate_limit_remaining_sec"`
+	OverloadRemainingSec  *int64 `json:"overload_remaining_sec"`
+	ErrorMessage          string `json:"error_message"`
+}
+
 type AccountAvailability struct {
-	Enabled   bool                          `json:"enabled"`
-	Platform  map[string]AvailabilityBucket `json:"platform"`
-	Group     map[string]AvailabilityBucket `json:"group"`
-	Timestamp time.Time                     `json:"timestamp"`
+	Enabled   bool                            `json:"enabled"`
+	Platform  map[string]AvailabilityBucket   `json:"platform"`
+	Group     map[string]AvailabilityBucket   `json:"group"`
+	Account   map[string]AccountRuntimeStatus `json:"account"`
+	Timestamp time.Time                       `json:"timestamp"`
 }
 
 func (c *Client) GetAccountAvailability(ctx context.Context) (*AccountAvailability, error) {
@@ -446,22 +504,65 @@ func (c *Client) GetAccountAvailability(ctx context.Context) (*AccountAvailabili
 }
 
 type AlertEvent struct {
-	ID         int64     `json:"id"`
-	RuleID     int64     `json:"rule_id"`
-	RuleName   string    `json:"rule_name"`
-	Name       string    `json:"name"`
-	MetricType string    `json:"metric_type"`
-	Severity   string    `json:"severity"`
-	Status     string    `json:"status"`
-	Message    string    `json:"message"`
-	Value      float64   `json:"value"`
-	Threshold  float64   `json:"threshold"`
-	FiredAt    time.Time `json:"fired_at"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID             int64      `json:"id"`
+	RuleID         int64      `json:"rule_id"`
+	RuleName       string     `json:"rule_name"`
+	Name           string     `json:"name"`
+	Title          string     `json:"title"`
+	Description    string     `json:"description"`
+	MetricType     string     `json:"metric_type"`
+	Severity       string     `json:"severity"`
+	Status         string     `json:"status"`
+	Message        string     `json:"message"`
+	Value          float64    `json:"value"`
+	Threshold      float64    `json:"threshold"`
+	MetricValue    float64    `json:"metric_value"`
+	ThresholdValue float64    `json:"threshold_value"`
+	FiredAt        time.Time  `json:"fired_at"`
+	ResolvedAt     *time.Time `json:"resolved_at"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+func (e AlertEvent) DisplayTitle() string {
+	for _, s := range []string{e.Title, e.RuleName, e.Name, e.MetricType} {
+		if strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return "alert"
+}
+
+func (e AlertEvent) DisplayMessage() string {
+	for _, s := range []string{e.Description, e.Message} {
+		if strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func (e AlertEvent) Metric() float64 {
+	if e.MetricValue != 0 {
+		return e.MetricValue
+	}
+	return e.Value
+}
+
+func (e AlertEvent) ThresholdVal() float64 {
+	if e.ThresholdValue != 0 {
+		return e.ThresholdValue
+	}
+	return e.Threshold
 }
 
 func (c *Client) ListAlertEvents(ctx context.Context, page, pageSize int) ([]AlertEvent, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 50
+	}
 	q := url.Values{}
 	q.Set("page", strconv.Itoa(page))
 	q.Set("page_size", strconv.Itoa(pageSize))
@@ -469,15 +570,16 @@ func (c *Client) ListAlertEvents(ctx context.Context, page, pageSize int) ([]Ale
 	if err != nil {
 		return nil, err
 	}
+	// live API often returns a bare array after envelope unwrap
+	var arr []AlertEvent
+	if err := json.Unmarshal(body, &arr); err == nil {
+		return arr, nil
+	}
 	var a struct {
 		Items []AlertEvent `json:"items"`
 		Data  []AlertEvent `json:"data"`
 	}
 	if err := json.Unmarshal(body, &a); err != nil {
-		var arr []AlertEvent
-		if err2 := json.Unmarshal(body, &arr); err2 == nil {
-			return arr, nil
-		}
 		return nil, err
 	}
 	if a.Items != nil {
@@ -486,9 +588,16 @@ func (c *Client) ListAlertEvents(ctx context.Context, page, pageSize int) ([]Ale
 	return a.Data, nil
 }
 
+type TrafficMetric struct {
+	Current float64 `json:"current"`
+	Peak    float64 `json:"peak"`
+	Avg     float64 `json:"avg"`
+}
+
 type TrafficSummary struct {
-	Enabled bool    `json:"enabled"`
-	Window  string  `json:"window"`
+	Enabled bool   `json:"enabled"`
+	Window  string `json:"window"`
+	// flat / legacy fields
 	QPS     float64 `json:"qps"`
 	Current struct {
 		QPS float64 `json:"qps"`
@@ -497,9 +606,22 @@ type TrafficSummary struct {
 	Avg struct {
 		QPS float64 `json:"qps"`
 	} `json:"avg"`
+	// nested ops shape: data.summary.qps.current
+	Summary struct {
+		Window string        `json:"window"`
+		QPS    TrafficMetric `json:"qps"`
+		TPS    TrafficMetric `json:"tps"`
+	} `json:"summary"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 func (t TrafficSummary) CurrentQPS() float64 {
+	if t.Summary.QPS.Current > 0 {
+		return t.Summary.QPS.Current
+	}
+	if t.Summary.QPS.Avg > 0 {
+		return t.Summary.QPS.Avg
+	}
 	if t.QPS > 0 {
 		return t.QPS
 	}
@@ -507,6 +629,13 @@ func (t TrafficSummary) CurrentQPS() float64 {
 		return t.Current.QPS
 	}
 	return t.Avg.QPS
+}
+
+func (t TrafficSummary) WindowLabel() string {
+	if t.Summary.Window != "" {
+		return t.Summary.Window
+	}
+	return t.Window
 }
 
 func (c *Client) GetRealtimeTraffic(ctx context.Context, window string) (*TrafficSummary, error) {

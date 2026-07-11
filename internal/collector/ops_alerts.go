@@ -53,31 +53,30 @@ func (o *opsAlertsCollector) Run(ctx context.Context) error {
 			}
 		}
 
-		name := ev.RuleName
-		if name == "" {
-			name = ev.Name
-		}
-		if name == "" {
-			name = ev.MetricType
-		}
+		name := ev.DisplayTitle()
 		id := ev.ID
 		if id == 0 {
 			id = ev.RuleID
 		}
-		fp := fmt.Sprintf("ops_alert:%d:%s", id, ev.MetricType)
+		metricKey := ev.MetricType
+		if metricKey == "" {
+			metricKey = name
+		}
+		fp := fmt.Sprintf("ops_alert:%d:%s", id, metricKey)
 		if id == 0 {
-			fp = fmt.Sprintf("ops_alert:%s:%s", name, ev.MetricType)
+			fp = fmt.Sprintf("ops_alert:%s:%s", name, metricKey)
 		}
 
 		resolved := st == "resolved" || st == "ok" || st == "closed"
 		body := line("规则", name) +
 			line("指标", ev.MetricType) +
 			line("状态", ev.Status)
-		if ev.Message != "" {
-			body += line("消息", trim(ev.Message, 400))
+		if msg := ev.DisplayMessage(); msg != "" {
+			body += line("消息", trim(msg, 400))
 		}
-		if ev.Threshold != 0 || ev.Value != 0 {
-			body += line("值/阈值", fmt.Sprintf("%.4g / %.4g", ev.Value, ev.Threshold))
+		mv, tv := ev.Metric(), ev.ThresholdVal()
+		if mv != 0 || tv != 0 {
+			body += line("值/阈值", fmt.Sprintf("%.4g / %.4g", mv, tv))
 		}
 
 		severity := alerter.Severity(sev)
