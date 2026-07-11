@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -370,5 +371,56 @@ func TestForceCheckViewEmpty(t *testing.T) {
 	text, comps := b.forceCheckView(context.Background(), 42)
 	if text == "" || len(comps) == 0 {
 		t.Fatal("empty force check view")
+	}
+}
+
+func TestStatusComponents(t *testing.T) {
+	b, _ := testBot(t)
+	// admin is 100
+	comps := b.statusComponents(100)
+	if !containsCustomID(comps, "status") || !containsCustomID(comps, "ops_menu") {
+		t.Fatalf("admin status comps missing: %+v", comps)
+	}
+	if len(comps) > 5 {
+		t.Fatalf("too many rows: %d", len(comps))
+	}
+	comps2 := b.statusComponents(42)
+	if containsCustomID(comps2, "ops_menu") {
+		t.Fatal("user should not see ops")
+	}
+	if !containsCustomID(comps2, "check_now") {
+		t.Fatal("missing check")
+	}
+}
+
+func TestManageComponentsHasUsersGroups(t *testing.T) {
+	comps := manageComponentsFor(nil)
+	if !containsCustomID(comps, "mgr_users") || !containsCustomID(comps, "mgr_groups") {
+		t.Fatalf("%+v", comps)
+	}
+	if len(comps) > 5 {
+		t.Fatalf("manage rows >5: %d", len(comps))
+	}
+}
+
+func TestManageBackUsersGroups(t *testing.T) {
+	b, _ := testBot(t)
+	b.setManageBack(7, "mgr_users:1")
+	label, data := b.manageBackLabel(7)
+	if label != "« 实例用户" || data != "mgr_users:1" {
+		t.Fatalf("%s %s", label, data)
+	}
+	b.setManageBack(7, "mgr_groups")
+	label, data = b.manageBackLabel(7)
+	if label != "« 分组" || data != "mgr_groups" {
+		t.Fatalf("%s %s", label, data)
+	}
+}
+
+func TestStatusTextBasic(t *testing.T) {
+	b, _ := testBot(t)
+	txt := b.statusText(context.Background(), 42)
+	if !strings.Contains(txt, "运行状态") {
+		t.Fatalf("%s", txt)
 	}
 }

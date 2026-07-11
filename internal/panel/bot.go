@@ -285,7 +285,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 		b.clearSession(cq.From.ID)
 		return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), b.homeKeyboardFor(cq.From.ID))
 	case data == "status":
-		return b.editOrSend(ctx, chatID, msgID, b.homeText(cq.From.ID), b.homeKeyboardFor(cq.From.ID))
+		return b.showStatus(ctx, chatID, msgID, cq.From.ID)
 	case data == "cfg_conn":
 		return b.editOrSend(ctx, chatID, msgID, b.connText(cq.From.ID), connKeyboardFor(b.isAdmin(cq.From.ID)))
 	case data == "cfg_acc":
@@ -1220,7 +1220,193 @@ func (b *Bot) sendHome(ctx context.Context, chatID, userID int64) error {
 }
 
 func (b *Bot) sendStatus(ctx context.Context, chatID, userID int64) error {
-	return b.tg.SendChat(ctx, chatID, b.homeText(userID), b.homeKeyboardFor(userID))
+	return b.tg.SendChat(ctx, chatID, b.statusText(ctx, userID), b.statusKeyboardFor(userID))
+}
+
+func (b *Bot) showStatus(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.editOrSend(ctx, chatID, msgID, b.statusText(ctx, userID), b.statusKeyboardFor(userID))
+}
+
+// statusText is a live status view: profile + watched accounts health (best-effort).
+func (b *Bot) statusText(ctx context.Context, userID int64) string {
+	p, _ := b.users.Get(userID)
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold("运行状态") + "\n")
+	bld.WriteString("实例: " + telegram.Code(b.cfg.Instance) + "\n")
+	fmt.Fprintf(&bld, "角色: %s · 检查间隔: %s · 冷却: %s\n",
+		telegram.Code(b.roleLabel(userID)),
+		telegram.Code(b.cfg.Telegram.Panel.CheckInterval.String()),
+		telegram.Code(b.cfg.Telegram.Panel.Cooldown.String()),
+	)
+	fmt.Fprintf(&bld, "时间: %s\n\n", telegram.Code(time.Now().Local().Format("01-02 15:04:05")))
+
+	if b.isAdmin(userID) {
+		if cli, _, err := b.userClient(userID, 5*time.Second); err == nil && cli != nil {
+			if line, issues := adminHealthSnapshot(ctx, cli); line != "" {
+				bld.WriteString(telegram.Bold("实例健康") + "\n")
+				bld.WriteString(line + "\n")
+				if issues {
+					bld.WriteString("可从下方运维入口处理异常。\n")
+				}
+				bld.WriteString("\n")
+			}
+		}
+	}
+
+	if p == nil {
+		bld.WriteString("尚未创建配置，点「主面板」开始。")
+		return bld.String()
+	}
+	mon := "关闭"
+	if p.Enabled {
+		mon = "开启"
+	}
+	fmt.Fprintf(&bld, "监控: %s · 数据源: %s\n", telegram.Code(mon), telegram.Code(p.EffectiveSource()))
+	base := p.BaseURL
+	if base == "" {
+		base = "(未设置)"
+	}
+	fmt.Fprintf(&bld, "Base URL: %s\n", telegram.Code(base))
+	fmt.Fprintf(&bld, "API Key: %s\n", telegram.Code(userstore.MaskKey(p.AdminAPIKey)))
+
+	enabled := make([]userstore.AccountWatch, 0, len(p.Accounts))
+	for _, a := range p.Accounts {
+		if a.IsEnabled() {
+			enabled = append(enabled, a)
+		}
+	}
+	fmt.Fprintf(&bld, "监控账号: %s 个（启用 %s）\n\n",
+		telegram.Code(strconv.Itoa(len(p.Accounts))),
+		telegram.Code(strconv.Itoa(len(enabled))),
+	)
+
+	// thresholds one-liner
+	ths := p.Thresholds
+	src := "系统默认"
+	if len(ths) > 0 {
+		src = "自定义"
+	} else {
+		ths = b.defaults
+	}
+	fmt.Fprintf(&bld, "阈值(%s): ", src)
+	if len(ths) == 0 {
+		bld.WriteString("(无)\n")
+	} else {
+		parts := make([]string, 0, len(ths))
+		for _, t := range ths {
+			parts = append(parts, fmt.Sprintf("%s≥%.0f%%", t.Window, t.UtilizationGTE))
+		}
+		bld.WriteString(telegram.Code(strings.Join(parts, ", ")) + "\n")
+	}
+
+	if !p.HasConnection() {
+		bld.WriteString("\n⚠️ 请先配置连接信息")
+		return bld.String()
+	}
+	if len(p.Accounts) == 0 {
+		bld.WriteString("\n⚠️ 请添加至少一个监控账号")
+		return bld.String()
+	}
+
+	bld.WriteString("\n" + telegram.Bold("启用账号快照") + "\n")
+	cli, err := sub2api.NewClient(config.Sub2APIConfig{
+		BaseURL: p.BaseURL, AdminAPIKey: p.AdminAPIKey, JWT: p.JWT, Timeout: 8 * time.Second,
+	})
+	if err != nil {
+		bld.WriteString("客户端错误: " + telegram.EscapeHTML(err.Error()))
+		return bld.String()
+	}
+	warnN := 0
+	shown := 0
+	const maxShow = 12
+	for _, a := range enabled {
+		if shown >= maxShow {
+			fmt.Fprintf(&bld, "… 另有 %s 个启用账号\n", telegram.Code(strconv.Itoa(len(enabled)-maxShow)))
+			break
+		}
+		shown++
+		name := displayName(a)
+		flag := "✅"
+		detail := ""
+		if acc, err := cli.GetAccount(ctx, a.ID); err != nil {
+			flag = "❓"
+			detail = telegram.EscapeHTML(truncateRunes(err.Error(), 40))
+			warnN++
+		} else if acc != nil {
+			if acc.Name != "" && name == fmt.Sprintf("#%d", a.ID) {
+				name = acc.Name
+			}
+			parts := []string{acc.Status}
+			if acc.Platform != "" {
+				parts = []string{acc.Platform, acc.Status}
+			}
+			if !acc.Schedulable {
+				parts = append(parts, "停调度")
+				flag = "⏸"
+				warnN++
+			}
+			if acc.RateLimitedAt != nil || strings.Contains(strings.ToLower(acc.Status), "rate") {
+				parts = append(parts, "限速")
+				flag = "⏱"
+				warnN++
+			}
+			if strings.EqualFold(acc.Status, "error") || acc.ErrorMessage != "" {
+				flag = "❌"
+				warnN++
+				if acc.ErrorMessage != "" {
+					detail = telegram.EscapeHTML(truncateRunes(acc.ErrorMessage, 48))
+				}
+			}
+			if strings.EqualFold(acc.Status, "disabled") {
+				flag = "🚫"
+				warnN++
+			}
+			detailLine := strings.Join(parts, "/")
+			fmt.Fprintf(&bld, "%s #%d %s · %s\n",
+				flag,
+				a.ID,
+				telegram.EscapeHTML(truncateRunes(name, 14)),
+				telegram.Code(detailLine),
+			)
+			if detail != "" && flag == "❌" {
+				fmt.Fprintf(&bld, "   %s\n", detail)
+			}
+			continue
+		}
+		fmt.Fprintf(&bld, "%s #%d %s · %s\n", flag, a.ID, telegram.EscapeHTML(truncateRunes(name, 14)), detail)
+	}
+	if len(enabled) == 0 {
+		bld.WriteString("(没有启用的监控账号)\n")
+	} else if warnN > 0 {
+		fmt.Fprintf(&bld, "\n⚠️ 需关注 %s 个账号，可用「立即检查」看用量详情。\n", telegram.Code(strconv.Itoa(warnN)))
+	} else {
+		bld.WriteString("\n✅ 启用账号状态正常。\n")
+	}
+	if !p.Enabled {
+		bld.WriteString("\n⏸ 自动监控已关闭（不会后台告警）。")
+	} else {
+		bld.WriteString("\n✅ 自动监控开启中。")
+	}
+	return bld.String()
+}
+
+func (b *Bot) statusKeyboardFor(userID int64) *telegram.InlineKeyboardMarkup {
+	rows := [][]telegram.InlineKeyboardButton{
+		{telegram.Btn("🔄 刷新状态", "status"), telegram.Btn("▶️ 立即检查", "check_now")},
+		{telegram.Btn("👤 监控账号", "cfg_acc"), telegram.Btn("🔌 连接", "cfg_conn")},
+	}
+	if b.isAdmin(userID) {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("🛠 运维视图", "ops_menu"),
+			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
+		})
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			telegram.Btn("📈 看板", "ops_dash"),
+			telegram.Btn("🧰 账号管理", "mgr_menu"),
+		})
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")})
+	return &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func (b *Bot) homeText(userID int64) string {
@@ -1840,6 +2026,10 @@ func (b *Bot) manageBackButton(userID int64) telegram.InlineKeyboardButton {
 		label = "« 账号浏览"
 	case strings.HasPrefix(data, "ops_errors"):
 		label = "« 错误列表"
+	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:"):
+		label = "« 实例用户"
+	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:"):
+		label = "« 分组"
 	}
 	return telegram.Btn(label, data)
 }

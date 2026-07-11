@@ -814,3 +814,56 @@ func TestManageKeyboardForHealth(t *testing.T) {
 		t.Fatalf("missing clear: %s", joined)
 	}
 }
+
+func TestStatusKeyboardFor(t *testing.T) {
+	b, store := testBot(t)
+	// non-admin
+	kb := b.statusKeyboardFor(42)
+	joined := ""
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			joined += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined, "status") || !strings.Contains(joined, "check_now") || !strings.Contains(joined, "home") {
+		t.Fatalf("user kb: %s", joined)
+	}
+	if strings.Contains(joined, "ops_menu") || strings.Contains(joined, "mgr_menu") {
+		t.Fatalf("user should not see admin ops: %s", joined)
+	}
+	// admin via config chat owner fallback + AdminUserIDs
+	b.cfg.Telegram.Panel.AdminUserIDs = []int64{7}
+	kb2 := b.statusKeyboardFor(7)
+	joined2 := ""
+	for _, row := range kb2.InlineKeyboard {
+		for _, btn := range row {
+			joined2 += btn.CallbackData + ","
+		}
+	}
+	if !strings.Contains(joined2, "ops_menu") || !strings.Contains(joined2, "ops_dash") {
+		t.Fatalf("admin kb: %s", joined2)
+	}
+	_ = store
+}
+
+func TestStatusTextWithoutProfile(t *testing.T) {
+	b, _ := testBot(t)
+	txt := b.statusText(context.Background(), 99)
+	if !strings.Contains(txt, "运行状态") {
+		t.Fatalf("got %s", txt)
+	}
+}
+
+func TestManageBackUsersGroups(t *testing.T) {
+	b, _ := testBot(t)
+	b.setManageBack(1, "mgr_users:2")
+	btn := b.manageBackButton(1)
+	if btn.Text != "« 实例用户" || btn.CallbackData != "mgr_users:2" {
+		t.Fatalf("%+v", btn)
+	}
+	b.setManageBack(1, "mgr_groups")
+	btn = b.manageBackButton(1)
+	if btn.Text != "« 分组" || btn.CallbackData != "mgr_groups" {
+		t.Fatalf("%+v", btn)
+	}
+}

@@ -890,12 +890,25 @@ func (b *Bot) showUsers(ctx context.Context, chatID, msgID, userID int64, page i
 	bld.WriteString(telegram.Bold("用户列表") + "\n")
 	fmt.Fprintf(&bld, "第 %d 页 · 共 %s\n\n", page+1, telegram.Code(itoa(total)))
 	for _, u := range items {
-		fmt.Fprintf(&bld, "• #%d %s [%s] %s\n",
+		name := u.Username
+		if name == "" {
+			name = u.Email
+		}
+		fmt.Fprintf(&bld, "• #%d %s [%s] %s",
 			u.ID,
-			telegram.EscapeHTML(truncateRunes(u.Username, 16)),
+			telegram.EscapeHTML(truncateRunes(name, 16)),
 			telegram.EscapeHTML(u.Role),
 			telegram.EscapeHTML(u.Status),
 		)
+		if u.CurrentConcurrency > 0 || u.Concurrency > 0 {
+			fmt.Fprintf(&bld, " · 并发 %s/%s",
+				telegram.Code(itoa(u.CurrentConcurrency)),
+				telegram.Code(itoa(u.Concurrency)))
+		}
+		if u.Balance != 0 {
+			fmt.Fprintf(&bld, " · 余额 %s", telegram.Code(fmt.Sprintf("%.2f", u.Balance)))
+		}
+		bld.WriteString("\n")
 	}
 	if len(items) == 0 {
 		bld.WriteString("无用户。")
@@ -937,12 +950,17 @@ func (b *Bot) showGroups(ctx context.Context, chatID, msgID, userID int64, page 
 	bld.WriteString(telegram.Bold("分组列表") + "\n")
 	fmt.Fprintf(&bld, "第 %d 页 · 共 %s\n\n", page+1, telegram.Code(itoa(total)))
 	for _, g := range items {
-		fmt.Fprintf(&bld, "• #%d %s [%s/%s] ×%.2f\n",
+		excl := ""
+		if g.IsExclusive {
+			excl = " · 独占"
+		}
+		fmt.Fprintf(&bld, "• #%d %s [%s/%s] ×%.2f%s\n",
 			g.ID,
 			telegram.EscapeHTML(truncateRunes(g.Name, 20)),
 			telegram.EscapeHTML(g.Platform),
 			telegram.EscapeHTML(g.Status),
 			g.RateMultiplier,
+			excl,
 		)
 	}
 	if len(items) == 0 {

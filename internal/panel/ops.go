@@ -837,6 +837,43 @@ func (b *Bot) showConcurrency(ctx context.Context, chatID, msgID, userID int64) 
 			telegram.Code(strconv.Itoa(r.b.WaitingInQueue)),
 		)
 	}
+	// top loaded groups
+	var groups []crow
+	for k, v := range snap.Group {
+		name := v.GroupName
+		if name == "" {
+			name = k
+		}
+		if name == "" && v.GroupID > 0 {
+			name = fmt.Sprintf("#%d", v.GroupID)
+		}
+		if v.CurrentInUse > 0 || v.LoadPercentage > 0 || v.WaitingInQueue > 0 {
+			groups = append(groups, crow{name, v})
+		}
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].b.LoadPercentage > groups[j].b.LoadPercentage })
+	bld.WriteString("\n" + telegram.Bold("高负载分组") + "\n")
+	if len(groups) == 0 {
+		bld.WriteString("当前无分组占用。\n")
+	}
+	for i, r := range groups {
+		if i >= 6 {
+			fmt.Fprintf(&bld, "… 另有 %d 个\n", len(groups)-6)
+			break
+		}
+		idPart := ""
+		if r.b.GroupID > 0 {
+			idPart = fmt.Sprintf("#%d ", r.b.GroupID)
+		}
+		fmt.Fprintf(&bld, "• %s%s: %s/%s (%.0f%%) wait=%s\n",
+			idPart,
+			telegram.EscapeHTML(truncateRunes(r.name, 14)),
+			telegram.Code(strconv.Itoa(r.b.CurrentInUse)),
+			telegram.Code(strconv.Itoa(r.b.MaxCapacity)),
+			r.b.LoadPercentage,
+			telegram.Code(strconv.Itoa(r.b.WaitingInQueue)),
+		)
+	}
 	// top loaded accounts
 	var accs []crow
 	for _, v := range snap.Account {
@@ -889,7 +926,10 @@ func (b *Bot) showConcurrency(ctx context.Context, chatID, msgID, userID int64) 
 			telegram.Btn("📋 异常账号", "ops_badacc:error:0"),
 			telegram.Btn("📈 看板", "ops_dash"),
 		},
-		[]telegram.InlineKeyboardButton{telegram.Btn("« 主面板", "home")},
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("🏷 分组列表", "mgr_groups"),
+			telegram.Btn("« 主面板", "home"),
+		},
 	)
 	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
 }

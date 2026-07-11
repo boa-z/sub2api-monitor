@@ -168,8 +168,10 @@ func (b *Bot) handleCommand(ctx context.Context, it *discord.Interaction, uid in
 	}
 	name := it.Data.Name
 	switch name {
-	case "panel", "status":
+	case "panel":
 		return b.respond(ctx, it, b.homeText(uid), b.homeComponents(uid), false)
+	case "status":
+		return b.respond(ctx, it, b.statusText(ctx, uid), b.statusComponents(uid), false)
 	case "help":
 		return b.respond(ctx, it, helpText(), b.homeComponents(uid), false)
 	case "check":
@@ -225,8 +227,10 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 	}
 
 	switch {
-	case data == "home" || data == "status":
+	case data == "home":
 		return b.update(ctx, it, b.homeText(uid), b.homeComponents(uid))
+	case data == "status":
+		return b.update(ctx, it, b.statusText(ctx, uid), b.statusComponents(uid))
 	case data == "cfg_conn":
 		return b.update(ctx, it, b.connText(uid), b.connComponents(uid))
 	case data == "cfg_acc":
@@ -388,6 +392,26 @@ func (b *Bot) handleComponent(ctx context.Context, it *discord.Interaction, uid 
 			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
 		}
 		text, comps := b.manageMenuView(ctx, uid)
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:"):
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		page := 0
+		if strings.HasPrefix(data, "mgr_users:") {
+			page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_users:"))
+		}
+		text, comps := b.showUsersView(ctx, uid, page)
+		return b.update(ctx, it, text, comps)
+	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:"):
+		if !b.isAdmin(uid) {
+			return b.update(ctx, it, "⛔ 需要管理员权限", b.homeComponents(uid))
+		}
+		page := 0
+		if strings.HasPrefix(data, "mgr_groups:") {
+			page, _ = strconv.Atoi(strings.TrimPrefix(data, "mgr_groups:"))
+		}
+		text, comps := b.showGroupsView(ctx, uid, page)
 		return b.update(ctx, it, text, comps)
 	case data == "mgr_browse" || strings.HasPrefix(data, "mgr_browse:"):
 		if !b.isAdmin(uid) {
@@ -813,6 +837,10 @@ func (b *Bot) manageBackLabel(userID int64) (label, data string) {
 		label = "« 浏览"
 	case strings.HasPrefix(data, "ops_errors"):
 		label = "« 错误"
+	case data == "mgr_users" || strings.HasPrefix(data, "mgr_users:"):
+		label = "« 实例用户"
+	case data == "mgr_groups" || strings.HasPrefix(data, "mgr_groups:"):
+		label = "« 分组"
 	}
 	return label, data
 }

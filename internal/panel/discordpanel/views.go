@@ -115,6 +115,165 @@ func (b *Bot) homeComponents(userID int64) []discord.Component {
 	}
 }
 
+func (b *Bot) statusText(ctx context.Context, userID int64) string {
+	p, _ := b.users.Get(userID)
+	var bld strings.Builder
+	bld.WriteString("**运行状态**\n")
+	fmt.Fprintf(&bld, "实例: `%s` · 角色: `%s`\n", b.cfg.Instance, b.roleLabel(userID))
+	fmt.Fprintf(&bld, "检查间隔: `%s` · 冷却: `%s`\n",
+		b.panelCfg().CheckInterval.String(), b.panelCfg().Cooldown.String())
+	fmt.Fprintf(&bld, "时间: `%s`\n\n", time.Now().Local().Format("01-02 15:04:05"))
+
+	if b.isAdmin(userID) {
+		if cli, _, err := b.userClient(userID, 5*time.Second); err == nil && cli != nil {
+			if st, err := cli.GetDashboardStats(ctx); err == nil && st != nil {
+				bld.WriteString("**实例健康**\n")
+				fmt.Fprintf(&bld, "正常 `%v` · 异常 `%v` · 限速 `%v` · 过载 `%v`\n",
+					st.NormalAccounts, st.ErrorAccounts, st.RatelimitAccounts, st.OverloadAccounts)
+				if st.ErrorAccounts > 0 || st.RatelimitAccounts > 0 {
+					bld.WriteString("可从下方运维入口处理异常。\n")
+				}
+				bld.WriteString("\n")
+			}
+		}
+	}
+	if p == nil {
+		bld.WriteString("尚未创建配置，点「主面板」开始。")
+		return bld.String()
+	}
+	mon := "关闭"
+	if p.Enabled {
+		mon = "开启"
+	}
+	fmt.Fprintf(&bld, "监控: `%s` · 数据源: `%s`\n", mon, p.EffectiveSource())
+	base := p.BaseURL
+	if base == "" {
+		base = "(未设置)"
+	}
+	fmt.Fprintf(&bld, "Base URL: `%s`\n", base)
+	fmt.Fprintf(&bld, "API Key: `%s`\n", userstore.MaskKey(p.AdminAPIKey))
+	enabled := make([]userstore.AccountWatch, 0, len(p.Accounts))
+	for _, a := range p.Accounts {
+		if a.IsEnabled() {
+			enabled = append(enabled, a)
+		}
+	}
+	fmt.Fprintf(&bld, "监控账号: `%d` 个（启用 `%d`）\n\n", len(p.Accounts), len(enabled))
+	if !p.HasConnection() {
+		bld.WriteString("⚠️ 请先配置连接信息")
+		return bld.String()
+	}
+	if len(p.Accounts) == 0 {
+		bld.WriteString("⚠️ 请添加至少一个监控账号")
+		return bld.String()
+	}
+	bld.WriteString("**启用账号快照**\n")
+	cli, err := sub2api.NewClient(config.Sub2APIConfig{
+		BaseURL: p.BaseURL, AdminAPIKey: p.AdminAPIKey, JWT: p.JWT, Timeout: 8 * time.Second,
+	})
+	if err != nil {
+		bld.WriteString("客户端错误: " + err.Error())
+		return bld.String()
+	}
+	warnN := 0
+	const maxShow = 12
+	for i, a := range enabled {
+		if i >= maxShow {
+			fmt.Fprintf(&bld, "… 另有 `%d` 个启用账号\n", len(enabled)-maxShow)
+			break
+		}
+		name := a.Name
+		if name == "" {
+			name = fmt.Sprintf("#%d", a.ID)
+		}
+		flag := "✅"
+		if acc, err := cli.GetAccount(ctx, a.ID); err != nil {
+			flag = "❓"
+			warnN++
+			fmt.Fprintf(&bld, "%s `#%d` %s · %s\n", flag, a.ID, truncate(name, 14), truncate(err.Error(), 40))
+			continue
+		} else if acc != nil {
+			if acc.Name != "" && name == fmt.Sprintf("#%d", a.ID) {
+				name = acc.Name
+			}
+			parts := []string{acc.Status}
+			if acc.Platform != "" {
+				parts = []string{acc.Platform, acc.Status}
+			}
+			if !acc.Schedulable {
+				parts = append(parts, "停调度")
+				flag = "⏸"
+				warnN++
+			}
+			if acc.RateLimitedAt != nil || strings.Contains(strings.ToLower(acc.Status), "rate") {
+				parts = append(parts, "限速")
+				flag = "⏱"
+				warnN++
+			}
+			if strings.EqualFold(acc.Status, "error") || acc.ErrorMessage != "" {
+				flag = "❌"
+				warnN++
+			}
+			if strings.EqualFold(acc.Status, "disabled") {
+				flag = "🚫"
+				warnN++
+			}
+			fmt.Fprintf(&bld, "%s `#%d` %s · `%s`\n", flag, a.ID, truncate(name, 14), strings.Join(parts, "/"))
+			if flag == "❌" && acc.ErrorMessage != "" {
+				fmt.Fprintf(&bld, "   %s\n", truncate(acc.ErrorMessage, 48))
+			}
+			continue
+		}
+		fmt.Fprintf(&bld, "%s `#%d` %s\n", flag, a.ID, truncate(name, 14))
+	}
+	if len(enabled) == 0 {
+		bld.WriteString("(没有启用的监控账号)\n")
+	} else if warnN > 0 {
+		fmt.Fprintf(&bld, "\n⚠️ 需关注 `%d` 个账号，可用「立即检查」看用量详情。\n", warnN)
+	} else {
+		bld.WriteString("\n✅ 启用账号状态正常。\n")
+	}
+	if !p.Enabled {
+		bld.WriteString("\n⏸ 自动监控已关闭（不会后台告警）。")
+	} else {
+		bld.WriteString("\n✅ 自动监控开启中。")
+	}
+	return bld.String()
+}
+
+func (b *Bot) statusComponents(userID int64) []discord.Component {
+	if b.isAdmin(userID) {
+		return []discord.Component{
+			discord.ActionRow(
+				discord.Button("刷新状态", "status", 2),
+				discord.SuccessButton("立即检查", "check_now"),
+				discord.Button("运维", "ops_menu", 2),
+			),
+			discord.ActionRow(
+				discord.Button("异常账号", "ops_badacc:error:0", 2),
+				discord.Button("看板", "ops_dash", 2),
+				discord.Button("账号管理", "mgr_menu", 2),
+			),
+			discord.ActionRow(
+				discord.Button("监控账号", "cfg_acc", 2),
+				discord.Button("连接", "cfg_conn", 2),
+				discord.Button("« 主面板", "home", 2),
+			),
+		}
+	}
+	return []discord.Component{
+		discord.ActionRow(
+			discord.Button("刷新状态", "status", 2),
+			discord.SuccessButton("立即检查", "check_now"),
+			discord.Button("监控账号", "cfg_acc", 2),
+		),
+		discord.ActionRow(
+			discord.Button("连接", "cfg_conn", 2),
+			discord.Button("« 主面板", "home", 2),
+		),
+	}
+}
+
 func (b *Bot) connText(userID int64) string {
 	p, _ := b.users.Get(userID)
 	var bld strings.Builder
@@ -310,7 +469,7 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 			bld.WriteString("\n")
 		}
 	}
-	bld.WriteString("浏览（状态/平台/停调度/限速）、搜索、切换调度、清错/恢复/一键修复、临时停调度、批量处理、面板用户角色（Admin API / Bot 权限）。")
+	bld.WriteString("浏览（状态/平台/停调度/限速）、搜索、切换调度、清错/恢复/一键修复、临时停调度、批量处理、实例用户/分组只读列表、面板用户角色（Admin API / Bot 权限）。")
 	return bld.String()
 }
 
@@ -371,6 +530,8 @@ func manageComponentsFor(stats *sub2api.DashboardStats) []discord.Component {
 		)
 	}
 	comps = append(comps, discord.ActionRow(
+		discord.Button("实例用户", "mgr_users", 2),
+		discord.Button("分组", "mgr_groups", 2),
 		discord.Button("面板用户", "pnl_users", 2),
 		discord.Button("« 主面板", "home", 2),
 	))
@@ -1026,6 +1187,36 @@ func (b *Bot) showConcurrencyView(ctx context.Context, userID int64) (string, []
 		fmt.Fprintf(&bld, "• %s: `%d/%d` (%.0f%%) wait=`%d`\n",
 			r.name, r.b.CurrentInUse, r.b.MaxCapacity, r.b.LoadPercentage, r.b.WaitingInQueue)
 	}
+	var groups []crow
+	for k, v := range snap.Group {
+		name := v.GroupName
+		if name == "" {
+			name = k
+		}
+		if name == "" && v.GroupID > 0 {
+			name = fmt.Sprintf("#%d", v.GroupID)
+		}
+		if v.CurrentInUse > 0 || v.LoadPercentage > 0 || v.WaitingInQueue > 0 {
+			groups = append(groups, crow{name, v})
+		}
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].b.LoadPercentage > groups[j].b.LoadPercentage })
+	bld.WriteString("\n**高负载分组**\n")
+	if len(groups) == 0 {
+		bld.WriteString("当前无分组占用。\n")
+	}
+	for i, r := range groups {
+		if i >= 6 {
+			fmt.Fprintf(&bld, "… 另有 %d 个\n", len(groups)-6)
+			break
+		}
+		idPart := ""
+		if r.b.GroupID > 0 {
+			idPart = fmt.Sprintf("#%d ", r.b.GroupID)
+		}
+		fmt.Fprintf(&bld, "• %s%s: `%d/%d` (%.0f%%) wait=`%d`\n",
+			idPart, truncate(r.name, 14), r.b.CurrentInUse, r.b.MaxCapacity, r.b.LoadPercentage, r.b.WaitingInQueue)
+	}
 	var accs []crow
 	for _, v := range snap.Account {
 		name := v.AccountName
@@ -1074,6 +1265,7 @@ func (b *Bot) showConcurrencyView(ctx context.Context, userID int64) (string, []
 	comps = append(comps, discord.ActionRow(
 		discord.Button("异常账号", "ops_badacc:error:0", 2),
 		discord.Button("看板", "ops_dash", 2),
+		discord.Button("分组列表", "mgr_groups", 2),
 	))
 	return bld.String(), comps
 }
@@ -2198,6 +2390,108 @@ func (b *Bot) healAccount(ctx context.Context, cli *sub2api.Client, accountID in
 		msg += "\n⚠️ 部分失败: " + strings.Join(fail, "; ")
 	}
 	return msg
+}
+
+func (b *Bot) showUsersView(ctx context.Context, userID int64, page int) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), manageComponents()
+	}
+	if page < 0 {
+		page = 0
+	}
+	const pageSize = 12
+	items, total, err := cli.ListUsers(ctx, page+1, pageSize)
+	if err != nil {
+		return "用户列表失败: " + err.Error(), manageComponents()
+	}
+	var bld strings.Builder
+	bld.WriteString("**实例用户**（Sub2API）\n")
+	fmt.Fprintf(&bld, "第 %d 页 · 共 `%d`\n\n", page+1, total)
+	for _, u := range items {
+		name := u.Username
+		if name == "" {
+			name = u.Email
+		}
+		fmt.Fprintf(&bld, "• `#%d` %s [%s] `%s`",
+			u.ID, truncate(name, 16), u.Role, u.Status)
+		if u.CurrentConcurrency > 0 || u.Concurrency > 0 {
+			fmt.Fprintf(&bld, " · 并发 `%d/%d`", u.CurrentConcurrency, u.Concurrency)
+		}
+		if u.Balance != 0 {
+			fmt.Fprintf(&bld, " · 余额 `%.2f`", u.Balance)
+		}
+		bld.WriteString("\n")
+	}
+	if len(items) == 0 {
+		bld.WriteString("无用户。")
+	}
+	comps := []discord.Component{}
+	nav := []discord.Component{}
+	if page > 0 {
+		nav = append(nav, discord.Button("« 上页", fmt.Sprintf("mgr_users:%d", page-1), 2))
+	}
+	if int64((page+1)*pageSize) < total {
+		nav = append(nav, discord.Button("下页 »", fmt.Sprintf("mgr_users:%d", page+1), 2))
+	}
+	if len(nav) > 0 {
+		comps = append(comps, discord.ActionRow(nav...))
+	}
+	comps = append(comps, discord.ActionRow(
+		discord.Button("分组", "mgr_groups", 2),
+		discord.Button("浏览账号", "mgr_browse:all:0", 2),
+		discord.Button("« 管理", "mgr_menu", 2),
+	))
+	return bld.String(), comps
+}
+
+func (b *Bot) showGroupsView(ctx context.Context, userID int64, page int) (string, []discord.Component) {
+	cli, _, err := b.userClient(userID, 12*time.Second)
+	if err != nil {
+		return "❌ " + err.Error(), manageComponents()
+	}
+	if page < 0 {
+		page = 0
+	}
+	const pageSize = 12
+	items, total, err := cli.ListGroups(ctx, page+1, pageSize)
+	if err != nil {
+		return "分组列表失败: " + err.Error(), manageComponents()
+	}
+	var bld strings.Builder
+	bld.WriteString("**分组列表**（Sub2API）\n")
+	fmt.Fprintf(&bld, "第 %d 页 · 共 `%d`\n\n", page+1, total)
+	for _, g := range items {
+		excl := ""
+		if g.IsExclusive {
+			excl = " · 独占"
+		}
+		fmt.Fprintf(&bld, "• `#%d` %s [`%s`/`%s`] ×`%.2f`%s\n",
+			g.ID, truncate(g.Name, 20), g.Platform, g.Status, g.RateMultiplier, excl)
+		if g.Description != "" {
+			fmt.Fprintf(&bld, "  %s\n", truncate(g.Description, 60))
+		}
+	}
+	if len(items) == 0 {
+		bld.WriteString("无分组。")
+	}
+	comps := []discord.Component{}
+	nav := []discord.Component{}
+	if page > 0 {
+		nav = append(nav, discord.Button("« 上页", fmt.Sprintf("mgr_groups:%d", page-1), 2))
+	}
+	if int64((page+1)*pageSize) < total {
+		nav = append(nav, discord.Button("下页 »", fmt.Sprintf("mgr_groups:%d", page+1), 2))
+	}
+	if len(nav) > 0 {
+		comps = append(comps, discord.ActionRow(nav...))
+	}
+	comps = append(comps, discord.ActionRow(
+		discord.Button("实例用户", "mgr_users", 2),
+		discord.Button("浏览账号", "mgr_browse:all:0", 2),
+		discord.Button("« 管理", "mgr_menu", 2),
+	))
+	return bld.String(), comps
 }
 
 func (b *Bot) showPanelUsers(userID int64, page int, notice string) (string, []discord.Component) {
