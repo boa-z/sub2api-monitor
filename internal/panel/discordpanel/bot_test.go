@@ -356,12 +356,12 @@ func TestAlertsComponents(t *testing.T) {
 }
 
 func TestManageComponentsForHealth(t *testing.T) {
-	comps := manageComponentsFor(&sub2api.DashboardStats{ErrorAccounts: 2, RatelimitAccounts: 1}, true)
+	comps := manageComponentsFor(&sub2api.DashboardStats{ErrorAccounts: 2, RatelimitAccounts: 1}, true, "")
 	if !containsCustomID(comps, "mgr_bulk_heal") || !containsCustomID(comps, "ops_badacc:error:0") {
 		t.Fatalf("%+v", comps)
 	}
 	// healthy path still has bulk clear
-	comps2 := manageComponentsFor(nil, true)
+	comps2 := manageComponentsFor(nil, true, "")
 	if !containsCustomID(comps2, "mgr_bulk_clear") {
 		t.Fatal("nil stats missing bulk clear")
 	}
@@ -395,7 +395,7 @@ func TestStatusComponents(t *testing.T) {
 }
 
 func TestManageComponentsHasUsersGroups(t *testing.T) {
-	comps := manageComponentsFor(nil, true)
+	comps := manageComponentsFor(nil, true, "")
 	if !containsCustomID(comps, "mgr_users") || !containsCustomID(comps, "mgr_groups") {
 		t.Fatalf("%+v", comps)
 	}
@@ -475,7 +475,7 @@ func TestViewerRolePermissionsDiscord(t *testing.T) {
 	if containsCustomID(compsUser, "ops_menu") {
 		t.Fatal("user home should hide ops")
 	}
-	m := manageComponentsFor(&sub2api.DashboardStats{ErrorAccounts: 2}, false)
+	m := manageComponentsFor(&sub2api.DashboardStats{ErrorAccounts: 2}, false, "")
 	if containsCustomID(m, "mgr_bulk_heal") || containsCustomID(m, "pnl_users") {
 		t.Fatal("viewer manage should hide write actions")
 	}
@@ -892,5 +892,30 @@ func TestShowAccountLiveContextAware(t *testing.T) {
 	// should not have clear_rl as first-priority for error (may appear elsewhere? plan doesn't include it)
 	if containsCustomID(comps, "live_act:clear_rl:9") {
 		t.Fatal("error plan should not include clear_rl")
+	}
+}
+
+func TestManageComponentsScopedLabels(t *testing.T) {
+	comps := manageComponentsFor(nil, true, "problem")
+	// button labels are embedded in components
+	found := false
+	for _, row := range comps {
+		for _, c := range row.Components {
+			if c.CustomID == "mgr_bulk_heal" && strings.Contains(c.Label, "异常") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		// dump labels
+		var labels []string
+		for _, row := range comps {
+			for _, c := range row.Components {
+				if c.CustomID == "mgr_bulk_heal" {
+					labels = append(labels, c.Label)
+				}
+			}
+		}
+		t.Fatalf("expected scoped heal label, got %v", labels)
 	}
 }

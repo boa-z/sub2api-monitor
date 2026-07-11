@@ -1062,11 +1062,12 @@ func (b *Bot) manageMenuText(ctx context.Context, userID int64) string {
 }
 
 func manageComponents() []discord.Component {
-	return manageComponentsFor(nil, true)
+	return manageComponentsFor(nil, true, "")
 }
 
-func manageComponentsFor(stats *sub2api.DashboardStats, canWrite bool) []discord.Component {
+func manageComponentsFor(stats *sub2api.DashboardStats, canWrite bool, browseStatus string) []discord.Component {
 	badLabel := "异常账号"
+	healLabel := "一键修复"
 	clearLabel := "批量清错"
 	rlLabel := "批量清限速"
 	if stats != nil {
@@ -1076,6 +1077,23 @@ func manageComponentsFor(stats *sub2api.DashboardStats, canWrite bool) []discord
 		}
 		if stats.RatelimitAccounts > 0 {
 			rlLabel = fmt.Sprintf("清限速 %v", stats.RatelimitAccounts)
+		}
+	}
+	if st := strings.TrimSpace(browseStatus); st != "" && st != "all" {
+		scope := browse.Title(st)
+		if r := []rune(scope); len(r) > 6 {
+			scope = string(r[:6])
+		}
+		healLabel = "修复·" + scope
+		if stats == nil || stats.ErrorAccounts == 0 {
+			clearLabel = "清错·" + scope
+		} else {
+			clearLabel = fmt.Sprintf("清错 %v·%s", stats.ErrorAccounts, scope)
+		}
+		if stats == nil || stats.RatelimitAccounts == 0 {
+			rlLabel = "限速·" + scope
+		} else {
+			rlLabel = fmt.Sprintf("限速 %v·%s", stats.RatelimitAccounts, scope)
 		}
 	}
 	comps := []discord.Component{
@@ -1094,7 +1112,7 @@ func manageComponentsFor(stats *sub2api.DashboardStats, canWrite bool) []discord
 		if stats != nil && (stats.ErrorAccounts > 0 || stats.RatelimitAccounts > 0) {
 			comps = append(comps,
 				discord.ActionRow(
-					discord.Button("一键修复", "mgr_bulk_heal", 1),
+					discord.Button(healLabel, "mgr_bulk_heal", 1),
 					discord.DangerButton(clearLabel, "mgr_bulk_clear"),
 					discord.Button(rlLabel, "mgr_bulk_clear_rl", 2),
 				),
@@ -1113,7 +1131,7 @@ func manageComponentsFor(stats *sub2api.DashboardStats, canWrite bool) []discord
 				),
 				discord.ActionRow(
 					discord.Button(rlLabel, "mgr_bulk_clear_rl", 2),
-					discord.Button("一键修复", "mgr_bulk_heal", 1),
+					discord.Button(healLabel, "mgr_bulk_heal", 1),
 					discord.Button("搜索", "mgr_search", 2),
 				),
 			)
@@ -1151,7 +1169,8 @@ func (b *Bot) manageMenuView(ctx context.Context, userID int64) (string, []disco
 			stats = st
 		}
 	}
-	return b.manageMenuText(ctx, userID), manageComponentsFor(stats, b.canOpsWrite(userID))
+	st, _ := b.getBrowseView(userID)
+	return b.manageMenuText(ctx, userID), manageComponentsFor(stats, b.canOpsWrite(userID), st)
 }
 
 func confirmComponents(action string, accountID int64) []discord.Component {

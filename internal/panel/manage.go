@@ -15,12 +15,13 @@ import (
 )
 
 func manageKeyboard() *telegram.InlineKeyboardMarkup {
-	return manageKeyboardFor(nil, true)
+	return manageKeyboardFor(nil, true, "")
 }
 
 // manageKeyboardFor builds manage hub buttons. With stats, prioritizes triage actions.
 // canWrite=false hides bulk mutations and panel-user admin tools (viewer mode).
-func manageKeyboardFor(stats *sub2api.DashboardStats, canWrite bool) *telegram.InlineKeyboardMarkup {
+// browseStatus, when non-empty and not "all", annotates bulk labels with the active scope.
+func manageKeyboardFor(stats *sub2api.DashboardStats, canWrite bool, browseStatus string) *telegram.InlineKeyboardMarkup {
 	badLabel := "📋 异常账号"
 	healLabel := "🛠 批量一键修复"
 	clearLabel := "🧹 批量清错"
@@ -32,6 +33,25 @@ func manageKeyboardFor(stats *sub2api.DashboardStats, canWrite bool) *telegram.I
 		}
 		if stats.RatelimitAccounts > 0 {
 			rlLabel = fmt.Sprintf("⏱ 清限速 %v", stats.RatelimitAccounts)
+		}
+	}
+	if st := strings.TrimSpace(browseStatus); st != "" && st != "all" {
+		scope := browse.Title(st)
+		// Keep labels short for TG button width.
+		if len([]rune(scope)) > 6 {
+			r := []rune(scope)
+			scope = string(r[:6])
+		}
+		healLabel = "🛠 修复·" + scope
+		if stats == nil || stats.ErrorAccounts == 0 {
+			clearLabel = "🧹 清错·" + scope
+		} else {
+			clearLabel = fmt.Sprintf("🧹 清错 %v·%s", stats.ErrorAccounts, scope)
+		}
+		if stats == nil || stats.RatelimitAccounts == 0 {
+			rlLabel = "⏱ 限速·" + scope
+		} else {
+			rlLabel = fmt.Sprintf("⏱ 限速 %v·%s", stats.RatelimitAccounts, scope)
 		}
 	}
 	rows := [][]telegram.InlineKeyboardButton{
@@ -127,7 +147,8 @@ func (b *Bot) showManageMenu(ctx context.Context, chatID, msgID, userID int64) e
 			stats = st
 		}
 	}
-	return b.editOrSend(ctx, chatID, msgID, b.manageMenuText(ctx, userID), manageKeyboardFor(stats, b.canOpsWrite(userID)))
+	st, _ := b.getBrowseView(userID)
+	return b.editOrSend(ctx, chatID, msgID, b.manageMenuText(ctx, userID), manageKeyboardFor(stats, b.canOpsWrite(userID), st))
 }
 
 func (b *Bot) showAccountBrowser(ctx context.Context, chatID, msgID, userID int64, status string, page int) error {

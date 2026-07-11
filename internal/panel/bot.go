@@ -248,7 +248,8 @@ func (b *Bot) handleMessage(ctx context.Context, m *telegram.InMessage) error {
 				stats = st
 			}
 		}
-		return b.tg.SendChat(ctx, m.Chat.ID, b.manageMenuText(ctx, m.From.ID), manageKeyboardFor(stats, b.canOpsWrite(m.From.ID)))
+		st, _ := b.getBrowseView(m.From.ID)
+		return b.tg.SendChat(ctx, m.Chat.ID, b.manageMenuText(ctx, m.From.ID), manageKeyboardFor(stats, b.canOpsWrite(m.From.ID), st))
 	case cmd == "/search" || strings.HasPrefix(cmd, "/search"):
 		if !b.canOpsRead(m.From.ID) {
 			return b.tg.SendChat(ctx, m.Chat.ID, "⛔ 搜索账号仅管理员或只读运维可用。", b.homeKeyboardFor(m.From.ID))

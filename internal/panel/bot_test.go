@@ -817,7 +817,7 @@ func TestCheckResultKeyboard(t *testing.T) {
 }
 
 func TestManageKeyboardForHealth(t *testing.T) {
-	kb := manageKeyboardFor(&sub2api.DashboardStats{ErrorAccounts: 4, RatelimitAccounts: 1}, true)
+	kb := manageKeyboardFor(&sub2api.DashboardStats{ErrorAccounts: 4, RatelimitAccounts: 1}, true, "")
 	joined := ""
 	for _, row := range kb.InlineKeyboard {
 		for _, btn := range row {
@@ -992,7 +992,7 @@ func TestHomeKeyboardViewer(t *testing.T) {
 }
 
 func TestManageKeyboardViewerHidesBulk(t *testing.T) {
-	kb := manageKeyboardFor(&sub2api.DashboardStats{ErrorAccounts: 4, RatelimitAccounts: 1}, false)
+	kb := manageKeyboardFor(&sub2api.DashboardStats{ErrorAccounts: 4, RatelimitAccounts: 1}, false, "")
 	joined := ""
 	for _, row := range kb.InlineKeyboard {
 		for _, btn := range row {
@@ -1256,5 +1256,20 @@ func TestGroupPlatformSession(t *testing.T) {
 	b.setChannelTab(9, "BAD")
 	if b.getChannelTab(9) != "bad" {
 		t.Fatal(b.getChannelTab(9))
+	}
+}
+
+func TestManageKeyboardScopedLabels(t *testing.T) {
+	kb := manageKeyboardFor(nil, true, "rate_limited")
+	found := false
+	for _, row := range kb.InlineKeyboard {
+		for _, b := range row {
+			if b.CallbackData == "mgr_bulk_heal" && strings.Contains(b.Text, "限速") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected scoped heal label in %v", kb)
 	}
 }
