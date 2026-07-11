@@ -16,7 +16,8 @@ func manageKeyboard() *telegram.InlineKeyboardMarkup {
 	return &telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{telegram.Btn("📚 账号浏览", "mgr_browse"), telegram.Btn("🔎 搜索账号", "mgr_search")},
-			{telegram.Btn("🧹 批量清错", "mgr_bulk_clear"), telegram.Btn("📋 异常账号", "ops_badacc")},
+			{telegram.Btn("🧹 批量清错", "mgr_bulk_clear"), telegram.Btn("♻️ 批量恢复", "mgr_bulk_recover")},
+			{telegram.Btn("▶️ 批量开调度", "mgr_bulk_sched_on"), telegram.Btn("📋 异常账号", "ops_badacc")},
 			{telegram.Btn("👥 用户", "mgr_users"), telegram.Btn("🏷 分组", "mgr_groups")},
 			{telegram.Btn("« 返回主面板", "home")},
 		},
@@ -29,7 +30,7 @@ func (b *Bot) manageMenuText() string {
 用你的 Admin API 管理实例（只对你配置的连接生效）：
 
 • 账号浏览 — 状态/平台筛选、搜索、分页
-• 批量清错 — 对 error 账号一键清错（需确认）
+• 批量清错 / 批量恢复 / 批量开调度 — 对 error 账号批量处理（需确认）
 • 用户 / 分组 — 只读列表
 • 异常账号 — error 列表，点进管理 / 一键监控
 
@@ -679,6 +680,112 @@ func parseDurationLabel(s string) int64 {
 	default:
 		return 0
 	}
+}
+
+// bulkAccountActionPrompt previews error accounts then asks confirm for bulk action.
+func (b *Bot) bulkAccountActionPrompt(ctx context.Context, chatID, msgID, userID int64, action, title, confirmData string) error {
+	cli, _, err := b.userClient(userID, 15*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	items, total, err := cli.ListAccountsEx(ctx, 1, 30, sub2api.AccountListFilter{Status: "error"})
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "拉取 error 账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
+	}
+	if len(items) == 0 {
+		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有 status=error 的账号。", manageKeyboard())
+	}
+	const maxOps = 20
+	n := len(items)
+	if n > maxOps {
+		n = maxOps
+	}
+	var sample strings.Builder
+	for i := 0; i < n && i < 8; i++ {
+		a := items[i]
+		fmt.Fprintf(&sample, "• #%d %s\n", a.ID, telegram.EscapeHTML(truncateRunes(a.Name, 16)))
+	}
+	kb := &telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{telegram.Btn(fmt.Sprintf("✅ 确认处理 %d 个", n), confirmData)},
+			{telegram.Btn("取消", "mgr_menu")},
+		},
+	}
+	msg := fmt.Sprintf("%s\n\n将对约 %s 个 error 账号中的前 %s 个执行「%s」：\n%s\n共约 %s 个 error。",
+		telegram.Bold(title),
+		telegram.Code(itoa(total)),
+		telegram.Code(strconv.Itoa(n)),
+		telegram.EscapeHTML(action),
+		sample.String(),
+		telegram.Code(itoa(total)),
+	)
+	return b.editOrSend(ctx, chatID, msgID, msg, kb)
+}
+
+func (b *Bot) bulkRecoverPrompt(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.bulkAccountActionPrompt(ctx, chatID, msgID, userID, "恢复状态", "批量恢复确认", "mgr_bulk_recover_go")
+}
+
+func (b *Bot) bulkSchedOnPrompt(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.bulkAccountActionPrompt(ctx, chatID, msgID, userID, "开启调度", "批量开调度确认", "mgr_bulk_sched_on_go")
+}
+
+func (b *Bot) bulkAccountActionExecute(ctx context.Context, chatID, msgID, userID int64, action string) error {
+	cli, _, err := b.userClient(userID, 40*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	items, total, err := cli.ListAccountsEx(ctx, 1, 30, sub2api.AccountListFilter{Status: "error"})
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "拉取 error 账号失败: "+telegram.EscapeHTML(err.Error()), manageKeyboard())
+	}
+	if len(items) == 0 {
+		return b.editOrSend(ctx, chatID, msgID, "✅ 当前没有 status=error 的账号。", manageKeyboard())
+	}
+	okN, failN := 0, 0
+	var fails []string
+	const maxOps = 20
+	for i, a := range items {
+		if i >= maxOps {
+			break
+		}
+		var opErr error
+		switch action {
+		case "recover":
+			_, opErr = cli.RecoverAccountState(ctx, a.ID)
+		case "sched_on":
+			_, opErr = cli.SetSchedulable(ctx, a.ID, true)
+		default:
+			opErr = fmt.Errorf("unknown action")
+		}
+		if opErr != nil {
+			failN++
+			if len(fails) < 5 {
+				fails = append(fails, fmt.Sprintf("#%d %s", a.ID, truncateRunes(opErr.Error(), 40)))
+			}
+		} else {
+			okN++
+		}
+	}
+	title := map[string]string{"recover": "批量恢复结果", "sched_on": "批量开调度结果"}[action]
+	if title == "" {
+		title = "批量操作结果"
+	}
+	var bld strings.Builder
+	bld.WriteString(telegram.Bold(title) + "\n\n")
+	n := len(items)
+	if n > maxOps {
+		n = maxOps
+	}
+	fmt.Fprintf(&bld, "error 账号约 %s 个（本次处理 %d）\n", telegram.Code(itoa(total)), n)
+	fmt.Fprintf(&bld, "✅ 成功 %s · ❌ 失败 %s\n", telegram.Code(strconv.Itoa(okN)), telegram.Code(strconv.Itoa(failN)))
+	if len(fails) > 0 {
+		bld.WriteString("\n失败样例:\n")
+		for _, f := range fails {
+			bld.WriteString("• " + telegram.EscapeHTML(f) + "\n")
+		}
+	}
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), manageKeyboard())
 }
 
 // seedConnectionFromGlobal copies global sub2api config into the user's panel profile.

@@ -51,7 +51,7 @@ func (b *Bot) opsMenuText() string {
 • 看板 — 账号/用量/实时 RPM
 • 可用性 — 平台/分组可用率
 • 告警 — 内置 alert-events
-• 错误 — 请求/上游错误
+• 错误 — 请求/上游错误（可标记已解决）
 • 并发 — 账号/分组负载
 • 渠道探测 — channel monitors
 • 异常账号 — status=error 列表
@@ -303,61 +303,159 @@ func (b *Bot) showAlerts(ctx context.Context, chatID, msgID, userID int64) error
 }
 
 func (b *Bot) showErrors(ctx context.Context, chatID, msgID, userID int64) error {
+	return b.showErrorsNotice(ctx, chatID, msgID, userID, "")
+}
+
+func (b *Bot) showErrorsNotice(ctx context.Context, chatID, msgID, userID int64, notice string) error {
 	cli, _, err := b.userClient(userID, 12*time.Second)
 	if err != nil {
 		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
 	}
-	up, err1 := cli.ListUpstreamErrors(ctx, 1, 8)
-	req, err2 := cli.ListRequestErrors(ctx, 1, 5)
+	up, err1 := cli.ListUpstreamErrors(ctx, 1, 15)
+	req, err2 := cli.ListRequestErrors(ctx, 1, 10)
 	var bld strings.Builder
-	bld.WriteString(telegram.Bold("近期错误") + "\n\n")
+	if notice != "" {
+		bld.WriteString(notice + "\n\n")
+	}
+	bld.WriteString(telegram.Bold("近期错误") + "（优先未解决）\n\n")
 	if err1 != nil && err2 != nil {
 		return b.editOrSend(ctx, chatID, msgID, "错误列表失败: "+telegram.EscapeHTML(err1.Error()), opsKeyboard())
 	}
+
+	rows := [][]telegram.InlineKeyboardButton{}
+
 	bld.WriteString(telegram.Bold("上游错误") + "\n")
 	if err1 != nil {
 		fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err1.Error()))
 	} else {
-		writeErrorItems(&bld, up)
+		writeErrorItems(&bld, up, "u", 5, &rows)
 	}
 	bld.WriteString("\n" + telegram.Bold("请求错误") + "\n")
 	if err2 != nil {
 		fmt.Fprintf(&bld, "拉取失败: %s\n", telegram.EscapeHTML(err2.Error()))
 	} else {
-		writeErrorItems(&bld, req)
+		writeErrorItems(&bld, req, "r", 3, &rows)
 	}
-	return b.editOrSend(ctx, chatID, msgID, bld.String(), opsKeyboard())
+
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("✅ 全部标已解决(上游)", "oe:resolve_all:u"),
+			telegram.Btn("🔄 刷新", "ops_errors"),
+		},
+		[]telegram.InlineKeyboardButton{
+			telegram.Btn("« 运维菜单", "ops_menu"),
+			telegram.Btn("« 主面板", "home"),
+		},
+	)
+	return b.editOrSend(ctx, chatID, msgID, bld.String(), &telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
-func writeErrorItems(bld *strings.Builder, page *sub2api.OpsErrorPage) {
+// writeErrorItems renders error lines and appends resolve/manage buttons.
+// kind is "u" (upstream) or "r" (request) for compact callback_data.
+func writeErrorItems(bld *strings.Builder, page *sub2api.OpsErrorPage, kind string, maxShow int, rows *[][]telegram.InlineKeyboardButton) {
 	if page == nil || len(page.Items) == 0 {
 		bld.WriteString("无\n")
 		return
 	}
-	for i, e := range page.Items {
-		if i >= 6 {
+	items := append([]sub2api.OpsError(nil), page.Items...)
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Resolved != items[j].Resolved {
+			return !items[i].Resolved && items[j].Resolved
+		}
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	shown := 0
+	for _, e := range items {
+		if e.Resolved {
+			continue
+		}
+		if shown >= maxShow {
 			break
 		}
 		name := e.AccountName
-		if name == "" {
+		if name == "" && e.AccountID > 0 {
 			name = fmt.Sprintf("#%d", e.AccountID)
+		}
+		if name == "" {
+			name = "(无账号)"
 		}
 		model := e.Model
 		if model == "" {
 			model = e.RequestedModel
 		}
-		fmt.Fprintf(bld, "• [%s] %s %s\n  %s · %s\n  %s\n",
+		fmt.Fprintf(bld, "• #%d [%s] %s %s\n  %s · %s\n  %s\n",
+			e.ID,
 			telegram.EscapeHTML(e.Severity),
 			telegram.Code(strconv.Itoa(e.StatusCode)),
-			telegram.EscapeHTML(truncateRunes(name, 16)),
+			telegram.EscapeHTML(truncateRunes(name, 14)),
 			telegram.EscapeHTML(e.Platform),
-			telegram.EscapeHTML(truncateRunes(model, 20)),
+			telegram.EscapeHTML(truncateRunes(model, 18)),
 			telegram.EscapeHTML(truncateRunes(e.Message, 70)),
 		)
+		btnRow := []telegram.InlineKeyboardButton{
+			telegram.Btn(fmt.Sprintf("✅ 解决 #%d", e.ID), fmt.Sprintf("oe:r:%s:%d", kind, e.ID)),
+		}
+		if e.AccountID > 0 {
+			btnRow = append(btnRow, telegram.Btn(fmt.Sprintf("管理 #%d", e.AccountID), fmt.Sprintf("mgr_acc:%d", e.AccountID)))
+		}
+		*rows = append(*rows, btnRow)
+		shown++
+	}
+	if shown == 0 {
+		bld.WriteString("无未解决项。\n")
 	}
 	if page.Total > 0 {
-		fmt.Fprintf(bld, "共 %s 条\n", telegram.Code(itoa(page.Total)))
+		fmt.Fprintf(bld, "列表共约 %s 条\n", telegram.Code(itoa(page.Total)))
 	}
+}
+
+// resolveOpsError marks one ops error resolved and refreshes the list.
+func (b *Bot) resolveOpsError(ctx context.Context, chatID, msgID, userID int64, kind string, errorID int64) error {
+	cli, _, err := b.userClient(userID, 15*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	apiKind := "upstream"
+	if kind == "r" {
+		apiKind = "request"
+	}
+	if err := cli.ResolveOpsError(ctx, apiKind, errorID); err != nil {
+		return b.showErrorsNotice(ctx, chatID, msgID, userID, "❌ 标记失败: "+telegram.EscapeHTML(err.Error()))
+	}
+	return b.showErrorsNotice(ctx, chatID, msgID, userID, fmt.Sprintf("✅ 已标记错误 #%d 为已解决", errorID))
+}
+
+// resolveAllUpstreamErrors resolves up to N unresolved upstream errors.
+func (b *Bot) resolveAllUpstreamErrors(ctx context.Context, chatID, msgID, userID int64) error {
+	cli, _, err := b.userClient(userID, 30*time.Second)
+	if err != nil {
+		return b.editOrSend(ctx, chatID, msgID, "❌ "+telegram.EscapeHTML(err.Error()), connKeyboard())
+	}
+	page, err := cli.ListUpstreamErrors(ctx, 1, 20)
+	if err != nil {
+		return b.showErrorsNotice(ctx, chatID, msgID, userID, "❌ 拉取失败: "+telegram.EscapeHTML(err.Error()))
+	}
+	okN, failN, n := 0, 0, 0
+	const maxOps = 15
+	for _, e := range page.Items {
+		if e.Resolved {
+			continue
+		}
+		if n >= maxOps {
+			break
+		}
+		n++
+		if err := cli.ResolveOpsError(ctx, "upstream", e.ID); err != nil {
+			failN++
+		} else {
+			okN++
+		}
+	}
+	if n == 0 {
+		return b.showErrorsNotice(ctx, chatID, msgID, userID, "✅ 没有未解决的上游错误。")
+	}
+	return b.showErrorsNotice(ctx, chatID, msgID, userID,
+		fmt.Sprintf("✅ 批量标记上游错误：成功 %d · 失败 %d", okN, failN))
 }
 
 func (b *Bot) showConcurrency(ctx context.Context, chatID, msgID, userID int64) error {

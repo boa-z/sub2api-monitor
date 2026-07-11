@@ -337,6 +337,43 @@ func (b *Bot) handleCallback(ctx context.Context, cq *telegram.CallbackQuery) er
 			return nil
 		}
 		return b.bulkClearErrorsExecute(ctx, chatID, msgID, cq.From.ID)
+	case data == "mgr_bulk_recover":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkRecoverPrompt(ctx, chatID, msgID, cq.From.ID)
+	case data == "mgr_bulk_recover_go":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkAccountActionExecute(ctx, chatID, msgID, cq.From.ID, "recover")
+	case data == "mgr_bulk_sched_on":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkSchedOnPrompt(ctx, chatID, msgID, cq.From.ID)
+	case data == "mgr_bulk_sched_on_go":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.bulkAccountActionExecute(ctx, chatID, msgID, cq.From.ID, "sched_on")
+	case data == "oe:resolve_all:u":
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		return b.resolveAllUpstreamErrors(ctx, chatID, msgID, cq.From.ID)
+	case strings.HasPrefix(data, "oe:r:"):
+		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
+			return nil
+		}
+		// oe:r:<u|r>:<errorID>
+		rest := strings.TrimPrefix(data, "oe:r:")
+		kind, idStr, ok := strings.Cut(rest, ":")
+		if !ok {
+			return b.showErrors(ctx, chatID, msgID, cq.From.ID)
+		}
+		eid, _ := strconv.ParseInt(idStr, 10, 64)
+		return b.resolveOpsError(ctx, chatID, msgID, cq.From.ID, kind, eid)
 	case data == "seed_conn":
 		if b.denyIfNotAdmin(ctx, chatID, msgID, cq.From.ID, cq.ID) {
 			return nil
