@@ -9,8 +9,8 @@ import (
 
 	"github.com/boa/sub2api-monitor/internal/alerter"
 	"github.com/boa/sub2api-monitor/internal/config"
-	"github.com/boa/sub2api-monitor/internal/sub2api"
 	"github.com/boa/sub2api-monitor/internal/notify"
+	"github.com/boa/sub2api-monitor/internal/sub2api"
 )
 
 type Runner struct {

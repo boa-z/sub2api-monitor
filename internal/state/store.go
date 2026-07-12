@@ -106,7 +106,7 @@ type fileStore struct {
 }
 
 type fileData struct {
-	Alerts map[string]time.Time     `json:"alerts"`
+	Alerts map[string]time.Time       `json:"alerts"`
 	Blobs  map[string]json.RawMessage `json:"blobs"`
 }
 

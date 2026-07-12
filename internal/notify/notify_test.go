@@ -12,8 +12,8 @@ type stub struct {
 	n       atomic.Int32
 }
 
-func (s *stub) Name() string    { return s.name }
-func (s *stub) Enabled() bool   { return s.enabled }
+func (s *stub) Name() string  { return s.name }
+func (s *stub) Enabled() bool { return s.enabled }
 func (s *stub) Send(ctx context.Context, msg Message) error {
 	s.n.Add(1)
 	return nil

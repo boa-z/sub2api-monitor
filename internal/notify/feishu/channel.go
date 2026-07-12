@@ -29,11 +29,11 @@ type Channel struct {
 	// default receive ids when message has no recipients (open_id / chat_id / user_id)
 	defaultIDs []string
 
-	http   *http.Client
-	mu     sync.Mutex
+	http *http.Client
+	mu   sync.Mutex
 	// reserved for tenant access token cache
-	token     string
-	tokenExp  time.Time
+	token    string
+	tokenExp time.Time
 }
 
 var _ notify.Channel = (*Channel)(nil)

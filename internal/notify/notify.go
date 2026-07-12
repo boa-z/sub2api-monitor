@@ -39,7 +39,7 @@ const (
 
 // Message is a channel-agnostic notification payload.
 type Message struct {
-	Title    string
+	Title string
 	// Text is plain-text body (always populated). Channels that need rich text
 	// should prefer HTML/Markdown when set, else fall back to Text.
 	Text     string
