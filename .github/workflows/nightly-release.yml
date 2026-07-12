@@ -133,13 +133,28 @@ jobs:
             echo "./sub2api-monitor_${VERSION}_linux_amd64 -config config.yaml"
             echo '```'
             echo
-            echo "This is an automated rolling nightly. Assets on the \`nightly\` tag are replaced each run."
+            echo "This is an automated rolling nightly. Only assets from the current build are retained."
             echo
             echo "### Recent commits"
             git log -10 --pretty=format:'- %h %s'
             echo
           } > RELEASE_NOTES.md
           cat RELEASE_NOTES.md
+
+      - name: Remove previous nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view nightly --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release delete nightly \
+              --repo "${GITHUB_REPOSITORY}" \
+              --cleanup-tag \
+              --yes
+          else
+            # A tag without a release would otherwise keep pointing at an old commit.
+            git push origin :refs/tags/nightly 2>/dev/null || true
+          fi
 
       - name: Publish / update nightly release
         uses: softprops/action-gh-release@v2
